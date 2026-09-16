@@ -20,9 +20,14 @@ print(tomllib.load(open('$repo/sources.toml','rb'))['source'].get('$arm',{}).get
     gemini-38-flash) /home/gabe/Documents/farmerbob/fb-isolated "$wd" agy -p "$prompt" --print-timeout 45m --model gemini-3.8-flash-high --add-dir "$wd" \
                          --dangerously-skip-permissions --output-format text ;;
     glm-53-flash)    /home/gabe/Documents/farmerbob/fb-isolated "$wd" zcode --prompt "$prompt" ;;
+    # --dir makes the worktree opencode's project root; --auto stops an UNRELATED refusal
+    # from killing the run. Without them a single touch outside the tree ends the agent:
+    # "permission requested: external_directory (...); auto-rejecting" and it stops there.
+    # Five implementer runs and every critic on prior/bandit-route/crossx died this way, all
+    # scored as the model producing nothing.  (beads farmerbob-1bd, farmerbob-k9f)
     ifm-*)           set -a; . "$HOME/.config/farmerbob/secrets.env"; set +a
-                     /home/gabe/Documents/farmerbob/fb-isolated "$wd" opencode run -m "$model" "$prompt" ;;
-    or-*)            /home/gabe/Documents/farmerbob/fb-isolated "$wd" ori opencode run -m "$model" "$prompt" ;;
+                     /home/gabe/Documents/farmerbob/fb-isolated "$wd" opencode run --dir "$wd" --auto -m "$model" "$prompt" ;;
+    or-*)            /home/gabe/Documents/farmerbob/fb-isolated "$wd" ori opencode run --dir "$wd" --auto -m "$model" "$prompt" ;;
     *)               echo "fb_launch: unknown arm $arm" >&2; return 127 ;;
   esac
 }

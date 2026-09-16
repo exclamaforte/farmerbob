@@ -443,3 +443,24 @@ mod tests {
         assert_eq!(frontier, vec!["cheap".to_string(), "capable".to_string()]);
     }
 }
+#[cfg(test)]
+mod promoted_claims {
+    // Promoted from ifm-k2-think's critique of or-deepseek-v4-flash (backfilled). Both
+    // allege a violation of the spec's "No NaN may escape" / saturation rules against code
+    // now merged to master. Executed, not believed.
+    use super::*;
+
+    #[test]
+    fn claim_mean_of_a_zero_posterior_is_not_nan() {
+        let p = Posterior { alpha: 0.0, beta: 0.0 };
+        assert!(p.mean().is_finite(), "mean() returned {} for alpha=beta=0", p.mean());
+    }
+
+    #[test]
+    fn claim_update_saturates_rather_than_reaching_infinity() {
+        let p = Posterior { alpha: f64::MAX, beta: f64::MAX };
+        let q = update(p, u32::MAX, u32::MAX);
+        assert!(q.alpha.is_finite(), "alpha became {}", q.alpha);
+        assert!(q.beta.is_finite(), "beta became {}", q.beta);
+    }
+}
