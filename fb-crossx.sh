@@ -34,17 +34,13 @@ echo "candidates: ${ARMS[*]}"
 # Rewrite those imports to the crate root, which is what the pinned public API is exported
 # from anyway.
 SRCDIR_REL="crates/$CRATE/src"
+TARGET_REL="$FILE"          # the module a suite is grafted into
 for a in "${ARMS[@]}"; do
   # A test module inherits its parent FILE's imports. Grafted into lib.rs those are gone,
   # producing E0433 "cannot find type PathBuf/Utc/Uuid" -- tooling noise, not an API
   # mismatch. Re-supply the crate's common imports so that only genuine signature
   # divergence shows up as nocompile.
-  cat > "$TMP/suite.$a.rs" <<'PRE'
-#[cfg(test)]
-#[allow(unused_imports)]
-mod xprelude { pub use std::path::PathBuf; pub use std::time::Duration;
-               pub use chrono::{DateTime, Utc}; pub use uuid::Uuid; }
-PRE
+  : > "$TMP/suite.$a.rs"
   # Which files hold this candidate's work. Prefer the task's own declaration -- the spec
   # states `fb:creates` / `fb:modifies`, which is precise and survives the candidate being
   # committed or merged (at which point a diff against HEAD is empty). Fall back to the
@@ -68,8 +64,6 @@ PRE
     # are grafted into. A suite from vrouter.rs means crate::vrouter::*; one from lib.rs means
     # crate::*. Rewriting every case to `crate::*` silently pointed at the wrong module and
     # made every suite look API-incompatible.
-    base=$(basename "$f" .rs)
-    if [ "$base" = lib ]; then modpath="crate"; else modpath="crate::$base"; fi
     # A test module inherits its parent FILE's top-level imports. The hand-maintained
     # xprelude guessed at which ones (PathBuf/Utc/Uuid) and missed serde_json::Value, so a
     # suite failed to compile against its OWN implementation -- an impossible result that
@@ -78,8 +72,6 @@ PRE
     USES=$(awk '/#\[cfg\(test\)\]/{exit} /^use /{print}' "$f")
     awk '/#\[cfg\(test\)\]/{f=1} f' "$f" \
       | sed -e "s/^\( *\)mod tests/\1mod xtests_${n}/" \
-            -e "s|use super::\*;|use ${modpath}::*; use crate::xprelude::*;|" \
-            -e "s|use super::|use ${modpath}::|" \
       | awk -v uses="$USES" '{print} /^ *mod xtests_[0-9]+ *\{/ && !done {print uses; done=1}' \
       >> "$TMP/suite.$a.rs"
     echo >> "$TMP/suite.$a.rs"
@@ -101,7 +93,14 @@ run_one() {
     [ -f "$f" ] || continue
     awk '/#\[cfg\(test\)\]/{exit} {print}' "$f" > "$f.stripped" && mv "$f.stripped" "$f"
   done
-  cat "$TMP/suite.$suite.rs" >> "$C/$SRCDIR_REL/lib.rs"
+  # A test module is a CHILD of the module it tests and can see its private items.
+  # Grafting it into lib.rs stripped that privilege, so a suite touching a private field
+  # failed to compile against its OWN implementation (or-hy3 on speed: E0616 on
+  # first_write_ms) and the matrix read "no signal". Graft into the module under test,
+  # where `use super::*` resolves exactly as the author wrote it.  (bead farmerbob-74l)
+  local target="$C/$TARGET_REL"
+  if [ -f "$target" ]; then cat "$TMP/suite.$suite.rs" >> "$target"
+  else cat "$TMP/suite.$suite.rs" >> "$C/$SRCDIR_REL/lib.rs"; fi
   local o="$C/out"
   if (cd "$C" && timeout 300 cargo test -p "$CRATE" >"$o" 2>&1); then echo pass > "$RES/$impl|$suite"
   elif grep -qE '^error\[E[0-9]+\]:|could not compile' "$o"; then echo nocompile > "$RES/$impl|$suite"
@@ -121,13 +120,23 @@ for impl in "${ARMS[@]}"; do
     R["$impl|$suite"]=$(cat "$RES/$impl|$suite" 2>/dev/null || echo nocompile)
   done
 done
-for impl in "${ARMS[@]}"; do
-  for suite in "${ARMS[@]}"; do
-    if false; then
-      :
-    fi
-  done
+# THE DIAGONAL INVARIANT. Every arm's own suite must pass against its own implementation:
+# it demonstrably did so inside the candidate's worktree, so a failure here is the transplant,
+# never the candidate. Twice this produced a matrix that read "no signal" -- once from dropped
+# file-level imports, once from grafting into lib.rs and losing private-field access -- and
+# both times the harness reported two candidates as indistinguishable while measuring nothing.
+# A broken instrument must say so instead of returning a confident null.  (bead farmerbob-74l)
+DIAG_BAD=()
+for a in "${ARMS[@]}"; do
+  [ "${R["$a|$a"]}" = pass ] || DIAG_BAD+=("$a(${R["$a|$a"]})")
 done
+if [ "${#DIAG_BAD[@]}" -gt 0 ]; then
+  echo
+  echo "VOID: the diagonal is not all-pass -- ${DIAG_BAD[*]}"
+  echo "A suite that cannot run against the code it shipped with is a grafting failure."
+  echo "Scores are NOT written; fix the transplant before trusting any cell."
+  exit 3
+fi
 
 echo; printf '%-24s' 'impl \ suite'; for s in "${ARMS[@]}"; do printf '%-10s' "${s:0:9}"; done; echo
 for impl in "${ARMS[@]}"; do
