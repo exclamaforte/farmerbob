@@ -36,15 +36,25 @@ while :; do
                 t=$(basename "$sc" .score.json)
                 [ -f .fb/prompts/"$t".md ] || continue
                 f=$(grep -ohE '<!-- fb:creates [^ ]+ -->' .fb/prompts/"$t".md 2>/dev/null | awk '{print $3}' | head -1)
-                [ -n "$f" ] && [ -f "$f" ] && continue            # already merged
+                # No fb:creates means the pipeline cannot infer a target and exits nonzero.
+                # Without this the loop retries the same task every 5s forever and NEVER
+                # reaches the launch branch -- an idle machine plus a spin. (fnd-cli did this.)
+                [ -n "$f" ] || continue
+                [ -f "$f" ] && continue                           # already merged
                 [ -s "$HOME/.local/share/farmerbob/logs/$t.claims.json" ] && continue
+                [ -f "$DONE/.skip.$t" ] && continue
                 echo "$t"
               done | head -1)
     if [ -n "$pending" ]; then
       crate=$(awk -F'\t' -v t="$pending" '$1==t{print $2}' .fb/queue/dispatched/*.tsv .fb/wave*.tsv 2>/dev/null | head -1)
       say "no wave needed yet; running missing pipeline stages for $pending"
-      ./fb-pipeline.sh "$pending" "${crate:-farmerbob-core}" >> "$LOG" 2>&1
-      sleep 5
+      if ! ./fb-pipeline.sh "$pending" "${crate:-farmerbob-core}" >> "$LOG" 2>&1; then
+        # Never retry a failing stage immediately: record it and fall through to dispatch,
+        # so one unpipelineable task cannot starve the whole loop.
+        say "pipeline FAILED for $pending -- skipping it this cycle"
+        touch "$DONE/.skip.$pending"
+      fi
+      sleep 30
       continue
     fi
 
