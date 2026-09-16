@@ -18,6 +18,7 @@ pub mod experiment;
 pub mod grade;
 pub mod ids;
 pub mod lease;
+pub mod lease_manager;
 pub mod proto;
 pub mod resource;
 pub mod run;
