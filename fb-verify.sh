@@ -12,6 +12,7 @@
 #   fb-verify.sh <bead> <crate> <target-file-rel> <verifier-arm> [spec.md]
 set -uo pipefail
 export PATH="$HOME/.cargo/bin:$PATH"
+. /home/gabe/Documents/farmerbob/fb-verdict.sh
 BEAD="${1:?bead}"; CRATE="${2:?crate}"; TARGET="${3:?target file}"; VARM="${4:?verifier arm}"
 SPEC="${5:-.fb/prompts/$BEAD.md}"
 REPO=/home/gabe/Documents/farmerbob
@@ -88,9 +89,9 @@ PRE
 done
 
 # ---- 3. flag tests that fail everywhere: suspect the VERIFIER, not the candidates -------
-python3 - "$OUT" "$NT" < "$TMP/rows"  <<'PY'
+python3 - "$OUT" "$NT" "$TMP/rows" <<'PY'
 import sys,json
-rows=[l.split() for l in sys.stdin.read().splitlines() if l.strip()]
+rows=[l.split() for l in open(sys.argv[3]).read().splitlines() if l.strip()]
 nt=int(sys.argv[2])
 res={a:{"result":r,"passed":int(p),"of":nt} for a,r,p in rows}
 ok=[a for a,v in res.items() if v["result"]=="pass"]

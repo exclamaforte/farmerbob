@@ -8,7 +8,7 @@ M="${1:?matrix.tsv}"
 PROVIDER_CAP=${FB_PROVIDER_CAP:-3}
 SLOT_GB=${FB_SLOT_GB:-1.5}        # admission arithmetic: measured p95 was 1.26G
 HARD_GB=${FB_MEM_GB:-2}           # per-run MemoryMax: contains an overrun inside its own scope
-HEADROOM_GB=${FB_HEADROOM_GB:-4}   # confined+serialised verification is 4G
+HEADROOM_GB=${FB_HEADROOM_GB:-3}   # orchestrator + one confined verification
 avail() { free -g | awk '/^Mem:/{print $7}'; }
 SLOTS=$(awk -v a="$(avail)" -v h="$HEADROOM_GB" -v g="$SLOT_GB" 'BEGIN{printf "%d", (a-h)/g}')
 [ "$SLOTS" -lt 1 ] && SLOTS=1

@@ -4,6 +4,7 @@
 #   fb-score.sh <bead> [crate]
 set -uo pipefail
 export PATH="$HOME/.cargo/bin:$PATH"
+. /home/gabe/Documents/farmerbob/fb-verdict.sh
 BEAD="${1:?bead}"; CRATE="${2:-farmerbob-core}"
 WT_ROOT="$HOME/.local/share/farmerbob/worktrees"
 LOG_ROOT="$HOME/.local/share/farmerbob/logs"
@@ -57,13 +58,8 @@ for WT in "$WT_ROOT/$BEAD--"*; do
   # correct 16-27 line implementations of a deliberately small task, while passing the one
   # arm that happened to write 31. Task size is a property of the task, not the arm.
   # PASS = it compiled, tests executed and passed, and it actually changed something.
-  V="FAIL"
-  if   [ "$LOC" -eq 0 ];    then V="NO-OP"
-  elif [ "$B" != "pass" ];  then V="NO-COMPILE"
-  elif [ "$T" != "pass" ];  then V="TESTS-FAIL"
-  elif [ "$N" -eq 0 ];      then V="NO-TESTS"
-  else                           V="PASS"
-  fi
+  V=$(fb_verdict "$B" "$T" "$N" "$LOC")
+
   DUR=$(python3 -c "
 import json,os
 p='$LOG_ROOT/$BEAD--$SRC.json'

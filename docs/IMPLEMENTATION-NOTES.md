@@ -275,3 +275,23 @@ Verification is the opposite shape: `rustc` is cpu- and memory-hungry and barely
 network, so it stays serialised behind its own lease. Two resource classes with inverted
 profiles, sharing one machine -- which is exactly the generic named-resource arbitration
 gpu-lease was widened to cover.
+
+## One verdict function
+
+`fb-dispatch`, `fb-score`, `fb-crossx` and `fb-verify` each decided independently whether a
+run had passed. The same two bugs therefore appeared more than once:
+
+- an absolute `lines > 30` gate, which grades on VOLUME. Removed from `fb-score`, then found
+  still live in `fb-dispatch`, where it had failed a correct 12-line implementation.
+- the empty-test pass — cargo prints `ok. 0 passed` when a filter matches nothing. This was
+  the FIRST bug filed in this project (farmerbob-slh) and it reappeared verbatim in
+  `fb-verify`, which reported `PASS 0/4` for twelve candidates.
+
+The verdict decides what the bandit learns, which makes it the most safety-critical code in
+the system, and it was the code most duplicated. It now lives in `fb-verdict.sh` and is
+sourced. In the Rust implementation it belongs in `farmerbob-core` beside `RunState`.
+
+The general rule this session keeps producing: **when a measurement bug is found, grep for
+every other implementation of that measurement.** A fix that lands in one copy while three
+others keep producing false labels is worse than no fix, because the disagreement between
+tools looks like signal.
