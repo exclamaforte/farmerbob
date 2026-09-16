@@ -22,7 +22,8 @@ import glob, json, os, re, sys
 cdir, out = sys.argv[1], sys.argv[2]
 
 claims = []
-for f in sorted(glob.glob(f"{cdir}/*.on.*.md")):
+_reviews = sorted(glob.glob(f"{cdir}/*.on.*.md"))
+for f in _reviews:
     base = os.path.basename(f)[:-3]
     critic, subject = base.split(".on.")
     txt = open(f).read()
@@ -98,6 +99,16 @@ for t, group in by_topic.items():
                                        "b_expects": b["expect"][:90]})
                 break
 
+# "No critic found a defect" and "no critic produced a review" are DIFFERENT facts, and
+# writing an empty claims file for both makes the second invisible: fb-status then reports
+# the task as critiqued and ready to adjudicate. prior, bandit-route and crossx were all
+# recorded as 0-claims when in truth zero critiques were ever written -- the critics had
+# been told to write a relative .fb/critique.md, which resolved to /.fb/critique.md and was
+# refused.  Refuse to write the artefact rather than assert a measurement that was not made.
+#   (beads farmerbob-k9f, farmerbob-1bd)
+if not _reviews:
+    print("NO critiques were written -- refusing to emit an empty claims file")
+    raise SystemExit(3)
 json.dump({"claims": claims, "contradictions": contradictions}, open(out, "w"), indent=1)
 
 from collections import Counter

@@ -60,7 +60,7 @@ import sys
 tpl = open(sys.argv[1]).read()
 patch = """$(printf '%s' "$patch" | sed 's/\\/\\\\/g; s/"/\\"/g' | head -c 60000)"""
 handoff = """$(printf '%s' "$handoff" | sed 's/\\/\\\\/g; s/"/\\"/g' | head -c 4000)"""
-open(sys.argv[2], "w").write(tpl.replace("{PATCH}", patch).replace("{HANDOFF}", handoff))
+open(sys.argv[2], "w").write(tpl.replace("{PATCH}", patch).replace("{HANDOFF}", handoff).replace("{OUT}", "$cw/.fb/critique.md"))
 PY
     rm -f "$cw/.fb/critique.md"; mkdir -p "$cw/.fb"
     P="$(cat "$p")"

@@ -20,7 +20,16 @@ suite, defect-detection, clippy warnings, line counts, cost, latency, memory.
 
 ## What to write
 
-Write `.fb/critique.md`, under 400 words, in two clearly separated sections.
+Write your critique to this exact absolute path:
+
+    {OUT}
+
+Use the absolute path verbatim. A relative `.fb/critique.md` resolves against whatever
+the launcher thinks the working directory is, which for several launchers is `/` -- the
+write is then refused as an external directory and your review is lost with no error
+that anyone sees.
+
+Under 400 words, in two clearly separated sections.
 
 ### CLAIMS
 
