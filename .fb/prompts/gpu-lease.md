@@ -1,9 +1,13 @@
+<!-- fb:modifies crates/farmerbob-core/src/lease.rs -->
 # Task: implement the resource lease manager
 
 Rust workspace, already builds. Work only inside `crates/farmerbob-core`.
 
-Create `crates/farmerbob-core/src/lease.rs` and declare it from `lib.rs` with
-`pub mod lease;`. Do not modify anything else.
+`crates/farmerbob-core/src/lease.rs` ALREADY EXISTS and defines the `Lease`, `LeaseClass`
+and `LeaseId` **types**. It has no manager. Add the `LeaseManager` described below to that
+file, reusing the existing types rather than redefining them. Do not modify anything else.
+
+Read the existing file first. If a type you need is already there, use it.
 
 ## Context
 

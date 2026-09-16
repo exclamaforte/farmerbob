@@ -19,6 +19,32 @@ git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
 git -C "$REPO" branch -D "$BRANCH" >/dev/null 2>&1
 git -C "$REPO" worktree add -q -b "$BRANCH" "$WT" "$BASE" || { echo "$SRC: worktree failed"; exit 1; }
 
+# --- preconditions -------------------------------------------------------
+# A task spec is authored against a base commit. Merging a winner can create the very file
+# a queued task was told to create, at which point every arm correctly no-ops and the
+# harness scores them all as failures.  (bead farmerbob-m71)
+# Task prompts declare their effects as comment lines:
+#     <!-- fb:creates crates/x/src/y.rs -->      must NOT exist on the base
+#     <!-- fb:modifies crates/x/src/lib.rs -->   MUST exist on the base
+fail_precondition() {
+  printf '%-24s %-13s %s\n' "$SRC" "TASK-INVALID" "$1"
+  REASON="$1" python3 -c "
+import json, os
+json.dump({'source': os.environ['SRC'], 'bead': os.environ['BEAD'],
+           'verdict': 'TASK-INVALID', 'outcome_class': 'task_invalid',
+           'reason': os.environ['REASON'], 'rc': -1, 'duration_s': 0,
+           'lines_added': 0, 'worktree': os.environ['WT'],
+           'branch': os.environ['BRANCH']}, open(os.environ['META'], 'w'), indent=1)"
+  exit 3
+}
+export SRC BEAD WT BRANCH META
+for path in $(grep -oE '<!-- fb:creates [^ ]+ -->' "$PROMPT_FILE" 2>/dev/null | awk '{print $3}'); do
+  [ -e "$WT/$path" ] && fail_precondition "declares creates:$path but it already exists on the base"
+done
+for path in $(grep -oE '<!-- fb:modifies [^ ]+ -->' "$PROMPT_FILE" 2>/dev/null | awk '{print $3}'); do
+  [ -e "$WT/$path" ] || fail_precondition "declares modifies:$path but it does not exist on the base"
+done
+
 MODEL=$(python3 -c "
 import tomllib;print(tomllib.load(open('$REPO/sources.toml','rb'))['source']['$SRC'].get('model',''))")
 cp "$PROMPT_FILE" "$WT/.fb-task.md"

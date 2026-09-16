@@ -1,3 +1,4 @@
+<!-- fb:creates crates/farmerbobd/src/worktree.rs -->
 # Task: implement git worktree provisioning
 
 Rust workspace, already builds. Work only inside `crates/farmerbobd`.

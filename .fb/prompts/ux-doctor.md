@@ -1,3 +1,4 @@
+<!-- fb:creates crates/fb/src/doctor.rs -->
 # Task: implement `fb doctor` — environment preflight
 
 Rust workspace, already builds. Work only inside `crates/fb`.

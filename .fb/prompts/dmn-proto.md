@@ -1,3 +1,4 @@
+<!-- fb:creates crates/farmerbob-core/src/proto.rs -->
 # Task: implement the daemon wire protocol
 
 Rust workspace, already builds. Work only inside `crates/farmerbob-core`.

@@ -1,3 +1,4 @@
+<!-- fb:modifies crates/farmerbob-store/src/lib.rs -->
 # Task: implement the SQLite storage layer
 
 Rust workspace, already builds. Work only inside `crates/farmerbob-store`.

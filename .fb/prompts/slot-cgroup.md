@@ -1,3 +1,4 @@
+<!-- fb:creates crates/farmerbobd/src/cgroup.rs -->
 # Task: implement cgroup confinement via systemd transient scopes
 
 Rust workspace, already builds. Work only inside `crates/farmerbobd`.
