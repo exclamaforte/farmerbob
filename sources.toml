@@ -135,6 +135,7 @@ price_in = 0.0
 price_out = 0.0
 context = 1000000
 quota_bucket = "nvidia"   # the upstream vendor is what rate-limits, not openrouter
+parked_until = "2026-09-17T00:00:00+00:00"   # OpenRouter free-tier DAILY cap, shared by every :free model
 
 [source.or-laguna-s-21]
 status = "verified"
@@ -146,6 +147,7 @@ model  = "openrouter/poolside/laguna-s-2.1:free"
 price_in = 0.0
 price_out = 0.0
 quota_bucket = "poolside"   # the upstream vendor is what rate-limits, not openrouter
+parked_until = "2026-09-17T00:00:00+00:00"   # OpenRouter free-tier DAILY cap, shared by every :free model
 
 [source.or-inkling]
 status = "verified"
@@ -157,6 +159,7 @@ model  = "openrouter/thinkingmachines/inkling:free"
 price_in = 0.0
 price_out = 0.0
 quota_bucket = "thinkingmachines"   # the upstream vendor is what rate-limits, not openrouter
+parked_until = "2026-09-17T00:00:00+00:00"   # OpenRouter free-tier DAILY cap, shared by every :free model
 
 [source.or-ling-30-flash]
 status = "verified"
@@ -169,6 +172,7 @@ price_in = 0.0
 price_out = 0.0            # (!) plain ling-3.0-flash has no free variant; -vl:free chosen
 context = 262144
 quota_bucket = "inclusionai"   # the upstream vendor is what rate-limits, not openrouter
+parked_until = "2026-09-17T00:00:00+00:00"   # OpenRouter free-tier DAILY cap, shared by every :free model
 
 [source.or-mercury-25]
 status = "verified"                            # confirmed 2026-09-15 as the unnamed "0.04/0.15" line
@@ -346,3 +350,4 @@ price_out = 0.0
 context = 262144
 price_checked = "2026-09-16"
 quota_bucket = "nex-agi"   # the upstream vendor is what rate-limits, not openrouter
+parked_until = "2026-09-17T00:00:00+00:00"   # OpenRouter free-tier DAILY cap, shared by every :free model
