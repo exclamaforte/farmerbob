@@ -1,0 +1,69 @@
+# Task: implement the SQLite storage layer
+
+Rust workspace, already builds. Work only inside `crates/farmerbob-store`.
+
+Write `crates/farmerbob-store/src/lib.rs` (split into modules if you like).
+
+## Context
+
+farmerbob is a daemon that orchestrates AI coding agents. Everything it holds in
+memory must be reconstructible from this database, because the daemon has to survive
+being killed mid-run and re-adopt or reap what it finds. Durability here is what makes
+crash recovery possible.
+
+## What to implement
+
+A `Store` wrapping a `rusqlite::Connection`.
+
+1. `Store::open(path: &Path) -> Result<Store>` — must set:
+   `PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON`, `PRAGMA busy_timeout=5000`,
+   `PRAGMA synchronous=NORMAL`.
+2. `Store::open_in_memory() -> Result<Store>` — for tests.
+3. **Embedded migrations.** A `const MIGRATIONS: &[(&str, &str)]` of
+   `(version_name, sql)` applied in order inside a transaction, tracked in a
+   `schema_version` table. Applying twice must be a no-op. Never re-run an applied
+   migration.
+
+## Schema
+
+Tables, with real foreign keys and indexes on the columns you query by:
+
+- `agents`      — id PK, kind, model, provider
+- `tasks`       — id PK, name, repo_path, task_dir
+- `runs`        — id PK, task_id FK, agent_id FK, worktree, branch, slot INTEGER NULL,
+                  state TEXT, state_data TEXT NULL (JSON for states carrying data),
+                  created_at, started_at NULL, ended_at NULL
+- `leases`      — id PK, resource, class, holder_run_id FK, token, acquired_at, ttl_secs
+- `experiments` — id PK, run_id FK, command, metrics TEXT (JSON), correct INTEGER NULL,
+                  duration_ms NULL, quarantined INTEGER NOT NULL DEFAULT 0
+- `grades`      — id PK, run_id FK, grader, quality, approach, adherence, autonomy,
+                  honesty, rationale, created_at
+- `run_events`  — id PK autoincrement, run_id FK, at, kind, detail TEXT
+                  (append-only audit log; index on (run_id, id))
+
+Timestamps: store as RFC3339 TEXT, UTC.
+
+## Required operations
+
+- insert/get/list for agents, tasks, runs
+- `update_run_state(run_id, state, state_data, at)` which ALSO appends a `run_events`
+  row in the **same transaction** — a state change and its audit record must never
+  diverge
+- `runs_by_state(state)` and `active_runs()`
+- `record_experiment`, `record_grade`
+- `leaderboard()` — per agent: run count, success count, mean grade
+
+## Rules
+
+- Every multi-statement write goes through a transaction.
+- No `unwrap()`/`expect()` on fallible paths; return `Result`.
+- Available deps: farmerbob-core, rusqlite (bundled), anyhow, thiserror, chrono,
+  serde_json. Add none. You may define your own minimal structs rather than depending
+  on farmerbob-core's types if that is simpler — but say so.
+- Tests using `open_in_memory()` covering: migrations are idempotent (run twice);
+  a run round-trips; `update_run_state` writes both the run and its event atomically;
+  a foreign key violation is actually rejected.
+- `cargo build -p farmerbob-store` and `cargo test -p farmerbob-store` must pass. Run
+  them yourself and fix failures before finishing.
+
+When done, briefly state what you implemented.

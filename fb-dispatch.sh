@@ -1,80 +1,102 @@
 #!/usr/bin/env bash
-# fb-dispatch — the manual stand-in for farmerbob, used to bootstrap farmerbob.
-# Runs one implementer in its own git worktree and records timing + exit status.
-#
+# fb-dispatch — manual stand-in for farmerbob, used to bootstrap farmerbob.
 #   fb-dispatch.sh <source-id> <bead-id> <prompt-file>
-#
-# Reads sources.toml for the launcher. Everything it does by hand here is a
-# thing farmerbob is meant to do properly: worktree provisioning, per-run
-# confinement, structured result capture.
 set -uo pipefail
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 
 SRC="${1:?source id}"; BEAD="${2:?bead id}"; PROMPT_FILE="${3:?prompt file}"
+CRATE="${4:-farmerbob-core}"
 REPO="/home/gabe/Documents/farmerbob"
 WT_ROOT="${FB_WT_ROOT:-$HOME/.local/share/farmerbob/worktrees}"
 LOG_ROOT="${FB_LOG_ROOT:-$HOME/.local/share/farmerbob/logs}"
 BASE="${FB_BASE:-HEAD}"
-MEM_MAX="${FB_MEM_MAX:-6G}"
-CPU_QUOTA="${FB_CPU_QUOTA:-400%}"
-
 mkdir -p "$WT_ROOT" "$LOG_ROOT"
-RUN="${BEAD}--${SRC}"
-WT="$WT_ROOT/$RUN"
-LOG="$LOG_ROOT/$RUN.log"
-META="$LOG_ROOT/$RUN.json"
-BRANCH="fb/$BEAD/$SRC"
 
-# --- worktree -------------------------------------------------------------
-git -C "$REPO" worktree remove --force "$WT" 2>/dev/null
-git -C "$REPO" branch -D "$BRANCH" 2>/dev/null
-git -C "$REPO" worktree add -q -b "$BRANCH" "$WT" "$BASE" || { echo "worktree failed"; exit 1; }
+RUN="${BEAD}--${SRC}"; WT="$WT_ROOT/$RUN"; LOG="$LOG_ROOT/$RUN.log"
+META="$LOG_ROOT/$RUN.json"; BRANCH="fb/$BEAD/$SRC"
 
-PROMPT="$(cat "$PROMPT_FILE")"
+git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
+git -C "$REPO" branch -D "$BRANCH" >/dev/null 2>&1
+git -C "$REPO" worktree add -q -b "$BRANCH" "$WT" "$BASE" || { echo "$SRC: worktree failed"; exit 1; }
 
-# --- launcher per source (from sources.toml) ------------------------------
-launch() {
-  case "$SRC" in
-    codex-luna)
-      codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.6-luna "$PROMPT" ;;
-    gemini-38-flash)
-      command agy -p "$PROMPT" --model gemini-3.8-flash-high --add-dir "$WT" \
-              --dangerously-skip-permissions --output-format text ;;
-    glm-53-flash)
-      zcode --prompt "$PROMPT" ;;
-    ifm-*)
-      set -a; . "$HOME/.config/farmerbob/secrets.env"; set +a
-      opencode run -m "$(fb_model)" "$PROMPT" ;;
-    or-*)
-      ori opencode run -m "$(fb_model)" "$PROMPT" ;;
-    *) echo "unknown source $SRC"; return 127 ;;
-  esac
-}
-fb_model() {
-  python3 - "$SRC" <<'PY'
-import sys,tomllib
-s=tomllib.load(open('/home/gabe/Documents/farmerbob/sources.toml','rb'))['source']
-print(s[sys.argv[1]]['model'])
-PY
-}
+MODEL=$(python3 -c "
+import tomllib;print(tomllib.load(open('$REPO/sources.toml','rb'))['source']['$SRC'].get('model',''))")
+cp "$PROMPT_FILE" "$WT/.fb-task.md"
 
-# --- run, confined --------------------------------------------------------
+# Per-run state isolation. A git worktree isolates the REPO only; agent CLIs keep
+# their own databases under XDG dirs and N of them deadlock on one SQLite file
+# (bead farmerbob-p3r). Give every run private state dirs.
+FBSTATE="$WT/.fb/state"
+mkdir -p "$FBSTATE/data" "$FBSTATE/state" "$FBSTATE/cache"
+# Do not hand the implementer the orchestrator's own issue-tracker instructions.
+rm -f "$WT/CLAUDE.md" "$WT/AGENTS.md"
+rm -rf "$WT/.beads" "$WT/.cursor" "$WT/.codex" "$WT/.agents"
+
 START=$(date +%s)
-cd "$WT" || exit 1
-systemd-run --user --scope --quiet --unit="fb-$RUN-$$" \
-  -p MemoryMax="$MEM_MAX" -p CPUQuota="$CPU_QUOTA" -p TasksMax=2048 \
-  -- bash -c "$(declare -f launch fb_model); cd '$WT'; SRC='$SRC'; WT='$WT'; PROMPT='$(printf '%s' "$PROMPT" | sed "s/'/'\\\\''/g")'; launch" \
-  >"$LOG" 2>&1
+CGSNAP="$LOG_ROOT/$RUN.cgroup"; : > "$CGSNAP"
+( for _ in $(seq 1 400); do
+    for pid in $(pgrep -f "$WT" 2>/dev/null); do
+      sed -n 's|^0::||p' "/proc/$pid/cgroup" 2>/dev/null; done
+    sleep 3
+  done ) >> "$CGSNAP" 2>/dev/null &
+CGPID=$!
+UNIT="fb-${RUN//[^a-zA-Z0-9_-]/_}-$$"
+(
+  cd "$WT" || exit 1
+  P="$(cat .fb-task.md)"
+  # Confine the agent. --scope would place it in the CALLER's cgroup subtree;
+  # we need our own unit, and we must VERIFY it, because systemd-run failing
+  # open is indistinguishable from it working (see bead: confinement-unverified).
+  run_confined() {
+    systemd-run --user --scope --quiet --unit="$UNIT" \
+      -E XDG_DATA_HOME="$FBSTATE/data" -E XDG_STATE_HOME="$FBSTATE/state" \
+      -E XDG_CACHE_HOME="$FBSTATE/cache" \
+      -p MemoryMax="${FB_MEM_MAX:-6G}" -p MemoryHigh="${FB_MEM_HIGH:-5G}" \
+      -p CPUQuota="${FB_CPU_QUOTA:-400%}" -p TasksMax=2048 -- "$@"
+  }
+  case "$SRC" in
+    codex-luna)      run_confined codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.6-luna "$P" ;;
+    gemini-38-flash) run_confined agy -p "$P" --model gemini-3.8-flash-high --add-dir "$WT" \
+                         --dangerously-skip-permissions --output-format text ;;
+    glm-53-flash)    run_confined zcode --prompt "$P" ;;
+    ifm-*)           set -a; . "$HOME/.config/farmerbob/secrets.env"; set +a
+                     run_confined opencode run -m "$MODEL" "$P" ;;
+    or-*)            run_confined ori opencode run -m "$MODEL" "$P" ;;
+    *) echo "unknown source $SRC"; exit 127 ;;
+  esac
+) >"$LOG" 2>&1
 RC=$?
 END=$(date +%s)
 
-# --- result ---------------------------------------------------------------
+# Did confinement actually apply? A scope that silently failed to materialise
+# looks exactly like one that worked, so record it as evidence rather than assume.
+CONFINED="unknown"
+if [ -f "$LOG_ROOT/$RUN.cgroup" ]; then
+  grep -q "$UNIT" "$LOG_ROOT/$RUN.cgroup" && CONFINED="yes" || CONFINED="NO"
+fi
+
+kill $CGPID 2>/dev/null; rm -f "$WT/.fb-task.md"
+cd "$WT" || exit 1
+BUILD="skip"; TEST="skip"
+if cargo build -p "$CRATE" >>"$LOG" 2>&1; then BUILD="pass"; else BUILD="FAIL"; fi
+if [ "$BUILD" = "pass" ] && cargo test -p "$CRATE" >>"$LOG" 2>&1; then TEST="pass"; else
+  [ "$BUILD" = "pass" ] && TEST="FAIL"; fi
+LOC=$(git -C "$WT" diff --numstat HEAD -- crates/ | awk '{a+=$1} END{print a+0}')
 FILES=$(git -C "$WT" status --porcelain | wc -l)
-DIFF=$(git -C "$WT" diff --stat HEAD 2>/dev/null | tail -1)
-python3 - "$META" "$SRC" "$BEAD" "$RC" "$((END-START))" "$WT" "$BRANCH" "$FILES" "$DIFF" <<'PY'
+# an empty crate builds and "tests" clean -- count tests that actually RAN
+NTESTS=$(grep -oE '^test result: ok\. [0-9]+ passed' "$LOG" | awk '{s+=$4} END{print s+0}')
+# verdict is the only field that means anything: real work, compiles, tests exist and pass
+VERDICT="FAIL"
+if [ "$BUILD" = "pass" ] && [ "$TEST" = "pass" ] && [ "$LOC" -gt 30 ] && [ "$NTESTS" -gt 0 ]; then
+  VERDICT="PASS"
+elif [ "$LOC" -eq 0 ]; then VERDICT="NO-OP"
+elif [ "$BUILD" != "pass" ]; then VERDICT="NO-COMPILE"
+elif [ "$NTESTS" -eq 0 ]; then VERDICT="NO-TESTS"
+fi
+
+python3 -c "
 import json,sys
-p,src,bead,rc,dur,wt,br,files,diff=sys.argv[1:10]
-json.dump({"source":src,"bead":bead,"rc":int(rc),"duration_s":int(dur),
-           "worktree":wt,"branch":br,"files_changed":int(files),"diffstat":diff},
-          open(p,'w'),indent=1)
-PY
-printf '%-22s rc=%-3s %4ss  files=%-3s %s\n' "$SRC" "$RC" "$((END-START))" "$FILES" "$DIFF"
+json.dump({'source':'$SRC','bead':'$BEAD','model':'$MODEL','rc':$RC,'duration_s':$((END-START)),
+ 'build':'$BUILD','test':'$TEST','verdict':'$VERDICT','confined':'$CONFINED','tests_run':$NTESTS,'lines_added':$LOC,'files_touched':$FILES,
+ 'worktree':'$WT','branch':'$BRANCH','log':'$LOG'}, open('$META','w'), indent=1)"
+printf '%-24s %-11s rc=%-3s %4ss  build=%-5s tests=%-3s +%s lines\n' "$SRC" "$VERDICT" "$RC" "$((END-START))" "$BUILD" "$NTESTS" "$LOC"
