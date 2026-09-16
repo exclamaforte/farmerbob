@@ -20,7 +20,13 @@ for s in "$LOGS"/*.score.json; do
   t=$(basename "$s" .score.json)
   # a task is merged when its declared file exists on master
   f=$(grep -ohE '<!-- fb:creates [^ ]+ -->' ".fb/prompts/$t.md" 2>/dev/null | awk '{print $3}' | head -1)
-  if [ -n "$f" ] && [ -f "$f" ]; then state="MERGED"; else state="** NEEDS ADJUDICATION **"; fi
+  # A task is not adjudicable until the SUBJECTIVE tier has run. The critique/promote/prove
+  # stages silently stopped happening for 15 tasks when the parallel wave path replaced
+  # `fb trial`, and nothing reported their absence because the objective numbers kept
+  # flowing. A missing stage must be visible here.  (bead farmerbob-k9f)
+  if [ -n "$f" ] && [ -f "$f" ]; then state="MERGED"
+  elif [ ! -f "$LOGS/$t.claims.json" ]; then state="** NEEDS CRITIQUE **"
+  else state="** NEEDS ADJUDICATION **"; fi
   n=$(python3 -c "import json;d=json.load(open('$s'));print(sum(1 for r in d if r.get('verdict')=='PASS'))" 2>/dev/null || echo '?')
   printf '  %-16s %-26s %s passing\n' "$t" "$state" "$n"
 done
