@@ -6,6 +6,7 @@ set -uo pipefail
 export PATH="$HOME/.cargo/bin:$PATH"
 BEAD="${1:?bead}"; CRATE="${2:-farmerbob-core}"; SUITE="${3:?suite.rs}"
 WT_ROOT="$HOME/.local/share/farmerbob/worktrees"
+EXPECT=$(grep -c '#\[test\]' "$SUITE")
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 printf '%-24s %-9s %s\n' ARM RESULT FAILURES
 for WT in "$WT_ROOT/$BEAD--"*; do
@@ -20,8 +21,15 @@ for WT in "$WT_ROOT/$BEAD--"*; do
   cat "$SUITE" >> "$SRCDIR/lib.rs"
   OUT="$TMP/$SRC.log"
   if (cd "$C" && cargo test -p "$CRATE" fb_conformance --offline >"$OUT" 2>&1 || cargo test -p "$CRATE" fb_conformance >"$OUT" 2>&1); then
-    N=$(grep -oE '[0-9]+ passed' "$OUT"|head -1|awk '{print $1}')
-    printf '%-24s %-9s %s/7 passed\n' "$SRC" "CONFORM" "${N:-?}"
+    N=$(grep -oE '[0-9]+ passed' "$OUT"|head -1|awk '{print $1}'); N=${N:-0}
+    # Zero executed tests is NOT conformance. cargo prints "ok. 0 passed" when a filter
+    # matches nothing -- the founding bug of this project (farmerbob-slh), now hit in a
+    # fourth tool. Guard it here too rather than trusting the exit code.
+    if [ "$N" -eq 0 ]; then
+      printf '%-24s %-9s %s\n' "$SRC" "NO-TESTS" "suite did not execute -- harness fault"
+    else
+      printf '%-24s %-9s %s/%s passed\n' "$SRC" "CONFORM" "$N" "$EXPECT"
+    fi
   else
     if grep -q '^error\[E0' "$OUT" || grep -q 'cannot find' "$OUT"; then
       W=$(grep -oE 'cannot find [a-z]+ `[A-Za-z_]+`|no method named `[a-z_]+`|no function or associated item named `[a-z_]+`' "$OUT"|sort -u|head -2|tr '\n' ';')
