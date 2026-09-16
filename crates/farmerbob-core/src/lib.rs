@@ -23,6 +23,7 @@ pub mod lease_manager;
 pub mod proto;
 pub mod resource;
 pub mod run;
+pub mod selection;
 pub mod task;
 pub mod taskid;
 pub mod task_contract;
