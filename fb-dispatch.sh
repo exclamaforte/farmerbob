@@ -62,6 +62,16 @@ mkdir -p "$FBSTATE/data" "$FBSTATE/state" "$FBSTATE/cache"
 rm -f "$WT/CLAUDE.md" "$WT/AGENTS.md"
 rm -rf "$WT/.beads" "$WT/.cursor" "$WT/.codex" "$WT/.agents"
 
+# The hidden suites must actually be hidden. `.fb/` is tracked, so every worktree shipped the
+# conformance tests, the injected-defect patches, and every other task's prompt. An agent that
+# reads .fb/conformance/<task>.rs can write code that passes exactly those assertions -- which
+# would explain a suite saturating at 15/15 without measuring anything. Observed live: an arm
+# read .fb/conformance before writing a line.   (bead: hidden-suite-leak)
+rm -rf "$WT/.fb/conformance" "$WT/.fb/defects" "$WT/.fb/prompts"
+rm -f "$WT/.fb"/*.tsv
+# also remove the harness itself: it describes how scoring works
+rm -f "$WT"/fb-*.sh
+
 START=$(date +%s)
 CGSNAP="$LOG_ROOT/$RUN.cgroup"; : > "$CGSNAP"
 MEMSNAP="$LOG_ROOT/$RUN.mem"; : > "$MEMSNAP"
