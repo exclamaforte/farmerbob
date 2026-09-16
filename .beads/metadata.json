@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "farmerbob",
+  "project_id": "7cd52426-9d64-47fe-b9c5-c012016f9647"
+}
