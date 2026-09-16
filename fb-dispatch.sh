@@ -99,13 +99,13 @@ UNIT="fb-${RUN//[^a-zA-Z0-9_-]/_}-$$"
       -p CPUQuota="${FB_CPU_QUOTA:-400%}" -p TasksMax=2048 -- "$@"
   }
   case "$SRC" in
-    codex-luna)      run_confined fb_isolated "$WT" codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.6-luna "$P" ;;
-    gemini-38-flash) run_confined fb_isolated "$WT" agy -p "$P" --model gemini-3.8-flash-high --add-dir "$WT" \
+    codex-luna)      run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.6-luna "$P" ;;
+    gemini-38-flash) run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" agy -p "$P" --model gemini-3.8-flash-high --add-dir "$WT" \
                          --dangerously-skip-permissions --output-format text ;;
-    glm-53-flash)    run_confined fb_isolated "$WT" zcode --prompt "$P" ;;
+    glm-53-flash)    run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" zcode --prompt "$P" ;;
     ifm-*)           set -a; . "$HOME/.config/farmerbob/secrets.env"; set +a
-                     run_confined fb_isolated "$WT" opencode run -m "$MODEL" "$P" ;;
-    or-*)            run_confined fb_isolated "$WT" ori opencode run -m "$MODEL" "$P" ;;
+                     run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" opencode run -m "$MODEL" "$P" ;;
+    or-*)            run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" ori opencode run -m "$MODEL" "$P" ;;
     *) echo "unknown source $SRC"; exit 127 ;;
   esac
 ) >"$LOG" 2>&1

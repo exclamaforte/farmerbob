@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# fb-isolated — run a command with sibling worktrees hidden.
+#
+# Must be a real executable, not a shell function: systemd-run execs its argument directly and
+# reports "Failed to find executable fb_isolated" for a function. Two runs died at 0s that way.
+#
+#   fb-isolated <worktree> <cmd...>
+set -uo pipefail
+wt="${1:?worktree}"; shift
+root="$HOME/.local/share/farmerbob/worktrees"
+if [ "${FB_NO_ISOLATE:-0}" = 1 ] || ! command -v bwrap >/dev/null 2>&1; then
+  exec "$@"
+fi
+exec bwrap --dev-bind / / --tmpfs "$root" --bind "$wt" "$wt" -- "$@"
