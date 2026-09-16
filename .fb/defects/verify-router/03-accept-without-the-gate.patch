@@ -1,0 +1,6 @@
+Spec: Accept requires ExecutedGate clean PLUS another clean check. Dropping the gate lets two
+opinions accept work that was never executed.
+@@@
+    if gate_clean && clean_checks >= 2 {
+--->
+    if clean_checks >= 2 {

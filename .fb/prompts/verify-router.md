@@ -129,8 +129,11 @@ pub fn is_shadow(v: &VerifierId, cfg: &RouterConfig) -> bool;
   → `TargetedReproduction` (only when a `SuspectedDefect` exists, carrying its detail as
   `claim`) → `DeputyDiscriminatingTest` → `OrchestratorAudit`.
 - Never pick a verifier in `excluded`.
-- Prefer a verifier whose model family differs from every verifier already used on this
-  candidate; fall back to any eligible one only if none differs.
+- Prefer a verifier whose model family differs from every verifier that has already **run a
+  check** on this candidate; fall back to any eligible one only if none differs.
+  Entries in `excluded` are *not* "already used" for this purpose: they never ran a check, so
+  their family does not count against diversity. (This sentence exists because two independent
+  reviewers read the earlier wording in opposite ways — see the ambiguity note below.)
 - Among otherwise-equal candidates prefer the higher `sensitivity()`, treating `None` as
   worse than any measured value.
 
@@ -182,3 +185,22 @@ optimise for the real bar rather than guess at it.
 **Not scored:** wallclock. Taking longer to produce better work is the preferred trade.
 There is a generous resource budget; a run is cut early only if it stops making progress or
 regresses past its own best error count.
+
+## Handoff (required)
+
+When you are done, write `.fb/handoff.md` in the repository root. Keep it under 300 words.
+
+**Do not state anything the harness can check.** No test counts, no "all tests pass", no "this
+handles empty input", no performance claims. Those are measured independently and a claim
+about them adds nothing — the harness has already run them by the time anyone reads this.
+
+Write only what cannot be measured:
+
+- **Approach.** The shape of the solution and why this shape rather than an obvious alternative.
+- **Trade-offs.** What you chose against, and what it would cost to choose differently.
+- **Risk.** Where you think this is most likely to be wrong, or hardest to change later.
+- **Deliberate omissions.** What the spec allows that you did not do, and why.
+
+If you found the specification ambiguous or underdetermined, say exactly where. That is the
+most valuable thing this file can contain: it routes back to the task author instead of
+becoming a defect argued about later.

@@ -1,0 +1,7 @@
+SUBTLE. Spec: "prefer the higher sensitivity, treating None as WORSE than any measured value."
+Mapping None to 1.0 instead makes a verifier with no track record outrank every proven one --
+precisely the arm a shadow policy exists to keep away from real labels.
+@@@
+        let cand = (v.clone(), differs, stats.sensitivity());
+--->
+        let cand = (v.clone(), differs, Some(stats.sensitivity().unwrap_or(1.0)));

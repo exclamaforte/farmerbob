@@ -75,7 +75,7 @@ PRE
     else
       printf '%-24s %-12s %s/%s passed\n' "$A" PASS "$n" "$NT"; echo "$A pass $n" >> "$TMP/rows"
     fi
-  elif grep -qE '^error(\[E[0-9]+\])?:' "$TMP/o"; then
+  elif grep -qE '^error\[E[0-9]+\]:|could not compile' "$TMP/o"; then
     w=$(grep -m1 -oE 'cannot find [a-z]+ `[A-Za-z_]+`|no method named `[a-z_]+`|takes [0-9]+ arguments?' "$TMP/o")
     printf '%-24s %-12s %s\n' "$A" SPEC-DEVIATION "${w:-does not match the specified interface}"
     echo "$A deviation 0" >> "$TMP/rows"

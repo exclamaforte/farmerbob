@@ -1,0 +1,10 @@
+Spec: "only SuspectedDefect and no demonstration -> Repair". Treating suspicion as proof
+rejects valid work, the expensive error the sensitivity/specificity split exists to separate.
+@@@
+    if ev.completed.iter().any(|(_, f)| f.is_suspected()) {
+        return Decision::Repair;
+    }
+--->
+    if ev.completed.iter().any(|(_, f)| f.is_suspected()) {
+        return Decision::Reject;
+    }

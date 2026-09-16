@@ -1,0 +1,6 @@
+SUBTLE. Dropping the saturating add makes a large `spent` wrap around and appear to be within
+budget, so the router keeps spending forever. Only detected by a test using values near u32::MAX.
+@@@
+    if ev.spent.saturating_add(cfg.cost_per_check) > cfg.review_budget {
+--->
+    if ev.spent + cfg.cost_per_check > cfg.review_budget {

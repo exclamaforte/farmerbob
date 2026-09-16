@@ -1,0 +1,12 @@
+SUBTLE. Spec: the accessors return None when unmeasured. Returning Some(0.0) instead makes
+an unmeasured verifier indistinguishable from one measured at zero -- and in the ranking rule
+"None sorts below any measured value", a 0.0 sorts equal to a genuinely terrible verifier
+rather than being flagged unknown. Requires a test that asserts None specifically.
+@@@
+    if denominator == 0 {
+        return None;
+    }
+--->
+    if denominator == 0 {
+        return Some(0.0);
+    }

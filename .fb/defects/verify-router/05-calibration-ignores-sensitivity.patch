@@ -1,0 +1,8 @@
+Spec: "Calibrated once it has at least min_n observations AND has seen at least one defective
+case (otherwise sensitivity is unmeasured)." Dropping the second clause certifies an
+approve-everything verifier, which on a 70% base rate looks 70% accurate while detecting
+nothing.
+@@@
+        self.n() >= min_n && saw_defective
+--->
+        self.n() >= min_n

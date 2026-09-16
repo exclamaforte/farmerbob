@@ -1,0 +1,16 @@
+Spec: "SpecAmbiguous outranks DemonstratedDefect: if the spec does not determine the answer,
+a defect against it is not established." Swapping the order silently reverses that.
+@@@
+    if ev.spec_is_ambiguous() {
+        return Decision::Undetermined;
+    }
+    if ev.completed.iter().any(|(_, f)| f.is_demonstrated()) {
+        return Decision::Reject;
+    }
+--->
+    if ev.completed.iter().any(|(_, f)| f.is_demonstrated()) {
+        return Decision::Reject;
+    }
+    if ev.spec_is_ambiguous() {
+        return Decision::Undetermined;
+    }

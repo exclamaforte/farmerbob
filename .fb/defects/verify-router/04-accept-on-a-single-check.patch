@@ -1,0 +1,5 @@
+Spec: Accept needs the gate AND at least one other clean finding.
+@@@
+    if gate_clean && clean_checks >= 2 {
+--->
+    if gate_clean && clean_checks >= 1 {

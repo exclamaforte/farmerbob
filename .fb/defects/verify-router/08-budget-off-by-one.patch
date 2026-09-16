@@ -1,0 +1,7 @@
+SUBTLE. Spec: "Stop when spent + cost_per_check > review_budget." Using >= stops one check
+early; using > on the wrong side spends one check past the budget. Only a test that sits
+exactly on the boundary detects it.
+@@@
+    if ev.spent.saturating_add(cfg.cost_per_check) > cfg.review_budget {
+--->
+    if ev.spent.saturating_add(cfg.cost_per_check) >= cfg.review_budget {

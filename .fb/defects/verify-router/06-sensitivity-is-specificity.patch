@@ -1,0 +1,14 @@
+Spec: sensitivity is P(reject | defective). Computing it over the acceptable cases instead
+silently reports the wrong error rate -- the exact conflation the two-number design forbids.
+@@@
+        ratio(
+            self.rejected_defective,
+            self.rejected_defective
+                .saturating_add(self.missed_defective),
+        )
+--->
+        ratio(
+            self.approved_acceptable,
+            self.approved_acceptable
+                .saturating_add(self.rejected_acceptable),
+        )

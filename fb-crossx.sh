@@ -15,6 +15,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 . /home/gabe/Documents/farmerbob/fb-verdict.sh
 BEAD="${1:?bead}"; CRATE="${2:-farmerbob-core}"; FILE="${3:?relative path of the file under test}"
 WT_ROOT="$HOME/.local/share/farmerbob/worktrees"
+REPO=/home/gabe/Documents/farmerbob
 OUT="$HOME/.local/share/farmerbob/logs/$BEAD.crossx.json"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
@@ -44,9 +45,25 @@ for a in "${ARMS[@]}"; do
 mod xprelude { pub use std::path::PathBuf; pub use std::time::Duration;
                pub use chrono::{DateTime, Utc}; pub use uuid::Uuid; }
 PRE
+  # Which files hold this candidate's work. Prefer the task's own declaration -- the spec
+  # states `fb:creates` / `fb:modifies`, which is precise and survives the candidate being
+  # committed or merged (at which point a diff against HEAD is empty). Fall back to the
+  # worktree diff, then to the single target file.
+  #
+  # Collecting EVERY file in the crate was wrong: it swept up the inherited domain-model
+  # tests, which reference types from sibling modules (ExperimentId lives in crate::ids,
+  # not crate::experiment) and cannot compile once grafted elsewhere.
   n=0
-  for f in "$WT_ROOT/$BEAD--$a/$SRCDIR_REL"/*.rs; do
+  DECLARED=$(grep -ohE '<!-- fb:(creates|modifies) [^ ]+ -->' "$REPO/.fb/prompts/$BEAD.md" 2>/dev/null | awk '{print $3}')
+  CHANGED=$( { git -C "$WT_ROOT/$BEAD--$a" diff --name-only HEAD -- "$SRCDIR_REL" 2>/dev/null
+               git -C "$WT_ROOT/$BEAD--$a" ls-files --others --exclude-standard "$SRCDIR_REL" 2>/dev/null
+             } | sort -u )
+  FILES="${DECLARED:-$CHANGED}"
+  FILES="${FILES:-$FILE}"
+  for rel in $FILES; do
+    f="$WT_ROOT/$BEAD--$a/$rel"
     [ -f "$f" ] || continue
+    case "$f" in *.rs) ;; *) continue ;; esac
     # `use super::*` resolves against the module the tests were WRITTEN in, not the one they
     # are grafted into. A suite from vrouter.rs means crate::vrouter::*; one from lib.rs means
     # crate::*. Rewriting every case to `crate::*` silently pointed at the wrong module and
@@ -79,7 +96,7 @@ run_one() {
   cat "$TMP/suite.$suite.rs" >> "$C/$SRCDIR_REL/lib.rs"
   local o="$C/out"
   if (cd "$C" && timeout 300 cargo test -p "$CRATE" >"$o" 2>&1); then echo pass > "$RES/$impl|$suite"
-  elif grep -qE '^error(\[E[0-9]+\])?:' "$o"; then echo nocompile > "$RES/$impl|$suite"
+  elif grep -qE '^error\[E[0-9]+\]:|could not compile' "$o"; then echo nocompile > "$RES/$impl|$suite"
   else echo fail > "$RES/$impl|$suite"; fi
   rm -rf "$C"
 }

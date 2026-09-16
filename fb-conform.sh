@@ -31,7 +31,7 @@ for WT in "$WT_ROOT/$BEAD--"*; do
       printf '%-24s %-9s %s/%s passed\n' "$SRC" "CONFORM" "$N" "$EXPECT"
     fi
   else
-    if grep -q '^error\[E0' "$OUT" || grep -q 'cannot find' "$OUT"; then
+    if grep -qE '^error\[E[0-9]+\]:' "$OUT" || grep -q 'cannot find' "$OUT"; then
       W=$(grep -oE 'cannot find [a-z]+ `[A-Za-z_]+`|no method named `[a-z_]+`|no function or associated item named `[a-z_]+`' "$OUT"|sort -u|head -2|tr '\n' ';')
       printf '%-24s %-9s API-MISMATCH %s\n' "$SRC" "FAIL" "$W"
     else
