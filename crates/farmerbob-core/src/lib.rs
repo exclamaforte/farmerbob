@@ -41,6 +41,7 @@ pub mod task;
 pub mod taskid;
 pub mod task_contract;
 pub mod timing;
+pub mod verifier;
 pub mod vrouter;
 
 pub use agent::{Agent, AgentKind};
