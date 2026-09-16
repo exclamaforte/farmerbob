@@ -25,6 +25,20 @@ optimise for the real bar rather than guess at it.
 5. **Documentation** — `///` on every public item.
 6. **Structure** — coherent modules over one large file, where the crate warrants it.
 
+**How to read a list in this spec.** Every enumerated list of keywords, formats or cases
+states its own status, and you should read it literally:
+
+- *"exactly these and no others"* — accepting anything further is a defect.
+- *"at least these; accepting more is neither required nor penalised"* — a superset is fine,
+  and **your tests may not assert on cases outside the list**, because another correct
+  implementation may reasonably not handle them.
+- *"at least these, plus the obvious morphological variants"* — the stemming rule is pinned
+  where it says so.
+
+If a list carries no such marker, treat it as the second form, and say so in your handoff.
+Three earlier tasks were decided by candidates disagreeing about exactly this, every time
+because a test asserted a case the specification never fixed.
+
 **Not scored:** wallclock. Taking longer to produce better work is the preferred trade.
 There is a generous resource budget; a run is cut early only if it stops making progress or
 regresses past its own best error count.
