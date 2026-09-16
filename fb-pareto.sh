@@ -132,6 +132,30 @@ for rate, c, arm, a, per in sorted(table, key=lambda t: (-t[0], t[1])):
 tot = sum(a["cost"] for a in agg.values())
 ok = sum(a["ok"] for a in agg.values())
 n = sum(a["n"] for a in agg.values())
+# RECONCILE against the provider. Every cost above is INFERRED from opencode's own price
+# table, which drifts from actual billing -- measured against the dashboard it over-reports
+# one model by 5% while under-reporting another by 15%, so the error is not a constant and
+# can reorder arms that sit close together. OpenRouter reports what it actually charged;
+# that is the authority, and the difference is this axis's honest error bar.
+billed = None
+try:
+    import subprocess as _sp
+    _k = json.load(open(os.path.expanduser("~/.ori/credentials.json")))["key"]
+    _r = _sp.run(["curl", "-s", "--max-time", "8", "-H", f"Authorization: Bearer {_k}",
+                  "https://openrouter.ai/api/v1/credits"], capture_output=True, text=True)
+    billed = json.loads(_r.stdout)["data"]["total_usage"]
+except Exception:
+    pass
+
+if billed is not None:
+    local_or = sum(a["cost"] for arm, a in agg.items()
+                   if (reg.get(arm, {}).get("model") or "").startswith("openrouter/"))
+    drift = (local_or - billed) / billed * 100 if billed else 0
+    print(f"\n  openrouter billed ${billed:.2f}; this board infers ${local_or:.2f} for those arms"
+          f"  ({drift:+.0f}%)")
+    print(f"  per-arm $/success therefore carries roughly a +-{abs(drift):.0f}% error bar;"
+          f" arms closer than that are NOT separable on cost.")
+
 print(f"\n  of which ${shared_total:.2f} is critic/prover spend from the shared store,"
       f" attributed by model")
 print(f"  {n} scored runs, {ok} completed, ${tot:.2f} measured spend"
