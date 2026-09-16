@@ -36,6 +36,7 @@ pub mod promote;
 pub mod proto;
 pub mod quota;
 pub mod resource;
+pub mod resume;
 pub mod reviewer;
 pub mod router;
 pub mod run;
