@@ -122,6 +122,14 @@ impl Trial {
         true
     }
 
+    /// Where the trial's evidence is persisted. Printing it is not enough: a pipe that
+    /// filters stdout can swallow the whole report, and then an empty output reads as
+    /// "nothing happened" rather than "you filtered it". The artefact on disk is the
+    /// reliable source.
+    pub fn report_path(&self) -> PathBuf {
+        Self::logs().join(format!("{}.trial.txt", self.task))
+    }
+
     pub fn run(&self, from: Stage) -> i32 {
         for stage in Stage::from_here(from) {
             eprintln!("\n── {} ──────────────────────────────", stage.name());
@@ -135,6 +143,14 @@ impl Trial {
                 }
                 Stage::Report => self.report(),
             };
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.report_path())
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    writeln!(f, "{}\t{}", stage.name(), if ok { "ok" } else { "FAILED" })
+                });
             if !ok {
                 // A failed stage is reported and the trial stops there rather than pressing on
                 // with missing evidence -- an adjudication table built on a stage that did not
@@ -143,6 +159,7 @@ impl Trial {
                 return 1;
             }
         }
+        eprintln!("\n  evidence: {}", self.report_path().display());
         0
     }
 }
