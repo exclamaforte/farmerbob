@@ -31,6 +31,39 @@ for db in glob.glob(f"{base}/state/*/data/opencode/opencode.db"):
     cost[run] = sum(r[0] or 0 for r in rows)
     toks[run] = sum((r[1] or 0) + (r[2] or 0) for r in rows)
 
+# Critics and provers run through fb_launch, which does NOT set the per-run XDG_DATA_HOME
+# that fb-dispatch gives implementers. Their sessions therefore land in the SHARED opencode
+# store and were invisible to this board: $3.03 across 137 sessions, against a reported
+# total of $6.41. The user's provider dashboard read $11.28 and this is most of the gap.
+# Attribute that store by model, since the session row carries it.
+shared = {}
+sp = os.path.expanduser("~/.local/share/opencode/opencode.db")
+if os.path.exists(sp):
+    model_to_arm = {}
+    for arm, v in reg.items():
+        m = v.get("model")
+        if m:
+            model_to_arm[m.split("/", 1)[-1] if "/" in m else m] = arm
+    try:
+        sc = sqlite3.connect(f"file:{sp}?mode=ro", uri=True)
+        # NB: do not name this `cost` -- that is the per-run dict built above, and
+        # rebinding it to a float here silently broke every per-run attribution.
+        for model_json, scost, tin, tout in sc.execute(
+                "select model, cost, tokens_input, tokens_output from session"):
+            mid = ""
+            try:
+                mid = json.loads(model_json or "{}").get("id", "")
+            except Exception:
+                pass
+            arm = model_to_arm.get(mid)
+            if not arm:
+                continue
+            c0, t0 = shared.get(arm, (0.0, 0))
+            shared[arm] = (c0 + (scost or 0), t0 + (tin or 0) + (tout or 0))
+        sc.close()
+    except Exception:
+        pass
+
 rows = json.load(open(f"{base}/logs/objective.json"))
 agg = defaultdict(lambda: {"n": 0, "ok": 0, "cost": 0.0, "tok": 0, "secs": 0, "excl": 0})
 for r in rows:
@@ -45,6 +78,14 @@ for r in rows:
     a["secs"] += r.get("secs") or 0
     if r["verdict"] == "PASS":
         a["ok"] += 1
+
+# fold the shared-store spend in, under a distinct label so it is never mistaken for
+# per-run attribution
+shared_total = sum(c for c, _ in shared.values())
+for arm, (c, t) in shared.items():
+    if arm in agg:
+        agg[arm]["cost"] += c
+        agg[arm]["tok"] += t
 
 table = []
 for arm, a in agg.items():
@@ -91,7 +132,9 @@ for rate, c, arm, a, per in sorted(table, key=lambda t: (-t[0], t[1])):
 tot = sum(a["cost"] for a in agg.values())
 ok = sum(a["ok"] for a in agg.values())
 n = sum(a["n"] for a in agg.values())
-print(f"\n  {n} scored runs, {ok} completed, ${tot:.2f} measured spend"
+print(f"\n  of which ${shared_total:.2f} is critic/prover spend from the shared store,"
+      f" attributed by model")
+print(f"  {n} scored runs, {ok} completed, ${tot:.2f} measured spend"
       f"  ({'$%.4f' % (tot / ok) if ok else 'n/a'} per completed task)")
 json.dump({k: v for k, v in agg.items()}, open(f"{base}/logs/pareto.json", "w"), indent=1)
 print(f"-> {base}/logs/pareto.json")
