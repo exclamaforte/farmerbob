@@ -17,6 +17,34 @@ def jload(p):
     try: return json.load(open(p))
     except Exception: return None
 
+# A run the provider refused is NOT a run the arm failed. Scoring a quota block as a
+# NO-OP charges a model for its vendor's billing policy: gemini-38-flash read 50% on the
+# leaderboard while two of its four runs never started ("error: Individual quota reached.
+# ... Resets in 153h54m42s").   (bead farmerbob-h04)
+#
+# Patterns are ANCHORED to the launcher's own error prefix. An unanchored search for
+# "quota" would fire on the limit-detect task, whose spec text is about quotas -- the
+# classifier must not be fooled by an agent discussing the thing it is being tested on.
+LIMIT_PATTERNS = (
+    "error: individual quota reached",          # agy
+    "error: quota exceeded",
+    "error: rate limit exceeded",
+    "error: 429",
+    "usage limit reached",                      # codex
+)
+
+def quota_blocked(rec):
+    """True when the run's own log opens with a provider refusal."""
+    path = rec.get("log")
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        with open(path, errors="replace") as fh:
+            head = "".join(fh.readline() for _ in range(5)).lower()
+    except OSError:
+        return False
+    return any(pat in head for pat in LIMIT_PATTERNS)
+
 # per-task aggregates the harness already produced
 score   = {os.path.basename(p).split('.')[0]: jload(p) for p in glob.glob(f"{logs}/*.score.json")}
 crossx  = {os.path.basename(p).split('.')[0]: jload(p) for p in glob.glob(f"{logs}/*.crossx.json")}
@@ -64,6 +92,7 @@ for task, entries in sorted(score.items()):
             "outcome": rec.get("outcome_class") or
                        ("task_invalid" if e.get("verdict") == "TASK-INVALID" else
                         "orchestrator_cancelled" if rec.get("rc") in (143, 137) else
+                        "quota_limited" if quota_blocked(rec) else
                         "unknown" if rec.get("verdict") is None else "arm_result"),
         })
 

@@ -24,6 +24,25 @@ if st == 'disabled':
     raise SystemExit(1)
 if st not in ('verified', 'untested'):
     print(f"{arm}: status={st}, not dispatchable", file=sys.stderr); raise SystemExit(1)
+# An arm whose provider has refused it is not dispatchable until the stated reset. Without
+# this, the scheduler keeps firing runs into a wall and the harness scores each refusal as
+# an arm failure: gemini-38-flash read 50% complete while three of its runs never started.
+# (bead farmerbob-h04)
+parked = v.get('parked_until')
+if parked:
+    import datetime
+    try:
+        until = datetime.datetime.fromisoformat(parked)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if until > now:
+            left = until - now
+            print(f"{arm}: parked until {parked} ({left.days}d{left.seconds // 3600}h left) -- "
+                  f"quota exhausted, not an arm failure", file=sys.stderr)
+            raise SystemExit(1)
+    except ValueError:
+        print(f"{arm}: parked_until is not a valid timestamp: {parked!r}", file=sys.stderr)
+        raise SystemExit(1)
+
 # a paid arm may not run while its free equivalent is healthy
 free = v.get('redundant_with')
 if free and (v.get('price_in') or 0) > 0:

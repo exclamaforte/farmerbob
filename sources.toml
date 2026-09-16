@@ -46,6 +46,11 @@ model       = "gemini-3.8-flash"
 provider    = "google-oauth"
 quota       = "plan"
 quota_bucket = "google-oauth-exclamaforte"   # possibly shared with the `gemini` CLI — unconfirmed
+parked_until = "2026-09-22T19:07:00+00:00"
+# "error: Individual quota reached. Please upgrade your subscription to increase your limits.
+#  Resets in 153h54m42s." -- observed 2026-09-16T09:12Z on three runs (bandit-route, crossx,
+#  defect-sens), each of which the harness scored NO-OP. A quota block is not an arm failure;
+#  those three are reclassified quota_limited and excluded from the posterior. (farmerbob-h04)
 notes       = "agy also exposes 3.7/3.6-flash, 3.1-pro, claude-sonnet-4-6, claude-opus-4-6, gpt-oss-120b"
 
 [source.glm-53-flash]
