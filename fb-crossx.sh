@@ -148,6 +148,34 @@ for impl in "${ARMS[@]}"; do
     R["$impl|$suite"]=$(cat "$RES/$impl|$suite" 2>/dev/null || echo nocompile)
   done
 done
+# THE PARTITION SHAPE. A defect shows as 1-of-N; an over-fitted suite as N-1-of-N. A clean
+# split into camps that pass within themselves and fail across is NEITHER -- it is the spec
+# admitting two readings, with each camp implementing one correctly. compare produced exactly
+# that and the harness reported four discriminating suites and survival 1/3 for everyone,
+# which says every arm found two defects when none did.  (bead: partition shape)
+detect_partition() {
+  python3 - "$RJSON_TMP" "${ARMS[*]}" <<'PYP'
+import json, sys
+R = json.load(open(sys.argv[1])); arms = sys.argv[2].split()
+if len(arms) < 4: raise SystemExit(1)
+# camp(a) = the set of suites a's IMPLEMENTATION passes
+camps = {}
+for a in arms:
+    camps[a] = frozenset(s for s in arms if R.get(f"{a}|{s}") == "pass")
+groups = {}
+for a, c in camps.items(): groups.setdefault(c, []).append(a)
+if len(groups) < 2: raise SystemExit(1)
+for c, members in groups.items():
+    # internally all-pass, and fails every arm outside the camp
+    if set(members) - set(c): raise SystemExit(1)
+    for a in members:
+        for other in arms:
+            if other in c: continue
+            if R.get(f"{a}|{other}") != "fail": raise SystemExit(1)
+print(" | ".join("{" + ",".join(sorted(m)) + "}" for m in groups.values()))
+PYP
+}
+
 # THE DIAGONAL INVARIANT. Every arm's own suite must pass against its own implementation:
 # it demonstrably did so inside the candidate's worktree, so a failure here is the transplant,
 # never the candidate. Twice this produced a matrix that read "no signal" -- once from dropped
@@ -165,6 +193,22 @@ if [ "${#DIAG_BAD[@]}" -gt 0 ]; then
   echo "Scores are NOT written; fix the transplant before trusting any cell."
   exit 3
 fi
+
+RJSON_TMP=$(mktemp)
+python3 -c "
+import json,sys
+R={}
+for k in sys.argv[1:]:
+    a,b,v=k.split('|'); R[f'{a}|{b}']=v
+json.dump(R,open('$RJSON_TMP','w'))" $(for impl in "${ARMS[@]}"; do for suite in "${ARMS[@]}"; do printf '%s|%s|%s ' "$impl" "$suite" "${R["$impl|$suite"]}"; done; done)
+if PART=$(detect_partition 2>/dev/null); then
+  echo
+  echo "SPEC-AMBIGUOUS: the field partitions into self-consistent camps -- $PART"
+  echo "Each camp passes within itself and fails across, which is neither a defect (1-of-N)"
+  echo "nor an over-fitted suite (N-1-of-N). Two readings of the spec, both implemented"
+  echo "correctly. Treat every cross-camp failure as vetoed and fix the specification."
+fi
+rm -f "$RJSON_TMP"
 
 echo; printf '%-24s' 'impl \ suite'; for s in "${ARMS[@]}"; do printf '%-10s' "${s:0:9}"; done; echo
 for impl in "${ARMS[@]}"; do
