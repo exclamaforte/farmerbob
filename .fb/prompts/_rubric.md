@@ -36,6 +36,16 @@ states its own status, and you should read it literally:
   where it says so.
 
 If a list carries no such marker, treat it as the second form, and say so in your handoff.
+
+**The same applies to every numeric boundary.** Where a clause says "after N has elapsed",
+"at least N", or "below N", the behaviour AT N and at the degenerate value (N = 0, an empty
+collection, a timestamp that runs backwards) is part of the contract. If the spec does not
+pin it, your tests may not assert on it either -- another correct implementation may
+reasonably choose the other side. Say in your handoff which boundary you found unpinned and
+which way you resolved it.
+
+Three tasks have now been decided by candidates disagreeing about exactly this rather than
+about anything either of them got wrong.
 Three earlier tasks were decided by candidates disagreeing about exactly this, every time
 because a test asserted a case the specification never fixed.
 
