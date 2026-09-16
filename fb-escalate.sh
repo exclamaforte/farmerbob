@@ -81,6 +81,21 @@ hdr = (f"\n// ESCALATED: {conf} confirmed finding(s) by critic {critic}, found o
 open(suite, "a").write(hdr + body + "\n")
 print(f"  {subj}: escalated {conf} finding(s) from {critic}")
 PYE
+      # RUN THE VETO HERE, against the reference as it is NOW. fb-prove's veto ran when the
+      # task may not yet have been merged -- reviewer.rs did not exist on master during the
+      # backfill, so there was no reference and nothing could be vetoed. An escalation
+      # admitted on a veto that could not run is exactly the false confirmation the
+      # discipline exists to prevent.
+      if ! cargo test -p "$crate" "$marker" >/dev/null 2>&1; then
+        echo "  $subj: VETOED against the merged reference -- retracting"
+        python3 - "$suite" <<'PYV'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+m = re.search(r'\n// ESCALATED:(?:(?!\n// ESCALATED:).)*$', s, re.S)
+if m: open(p, 'w').write(s[:m.start()] + '\n')
+PYV
+        continue
+      fi
       ./fb-escalate.sh credit "$T" "$critic" "$subj" "$conf" >/dev/null
       any=1
     done
