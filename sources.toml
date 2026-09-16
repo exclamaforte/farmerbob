@@ -63,7 +63,7 @@ launcher    = "zcode"
 
 # ------------------------------------------------- API-keyed, via opencode
 [source.ifm-k2-horizon]
-status     = "blocked"    # key rotated 2026-09-15; replacement not yet on this machine
+status     = "limited"    # key OK; UNUSABLE for multi-turn coding via opencode -- see multiturn
 kind       = "opencode"
 launcher   = "opencode"   # NOT `ori opencode` -- ori replaces the env and drops IFM_API_KEY
 model      = "ifm/IFM/K2-Horizon-375B-A23B"
@@ -75,7 +75,7 @@ multiturn  = false
 notes      = "vLLM-backed OpenAI-compatible. Emits a separate `reasoning` field; see multiturn caveat on ifm-k2-think."
 
 [source.ifm-k2-think]
-status     = "blocked"       # key rotated 2026-09-15; also single-turn only -- see multiturn
+status     = "limited"       # single-turn only -- see multiturn
 kind       = "opencode"
 launcher   = "opencode"   # NOT `ori opencode` -- ori replaces the env and drops IFM_API_KEY
 model      = "ifm/IFM/K2-Think-v2"

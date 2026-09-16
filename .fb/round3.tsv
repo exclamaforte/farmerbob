@@ -1,0 +1,6 @@
+fnd-store	farmerbob-store	glm-53-flash,or-inkling,or-deepseek-v4-flash,or-ling-30-flash
+dmn-proto	farmerbob-core	codex-luna,or-mercury-25,or-nemotron-ultra
+gpu-lease	farmerbob-core	or-gemini-38-flash,or-laguna-s-21,gemini-38-flash
+slot-cgroup	farmerbobd	glm-53-flash,or-mercury-25
+wt-provision	farmerbobd	codex-luna,or-inkling,or-nemotron-ultra
+ux-doctor	fb	or-gemini-38-flash,or-deepseek-v4-flash,or-laguna-s-21
