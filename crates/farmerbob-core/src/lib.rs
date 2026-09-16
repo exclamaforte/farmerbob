@@ -24,6 +24,7 @@ pub mod envelope;
 pub mod error;
 pub mod experiment;
 pub mod grade;
+pub mod grading;
 pub mod ids;
 pub mod lease;
 pub mod limit_signal;
