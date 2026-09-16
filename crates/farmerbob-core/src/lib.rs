@@ -16,6 +16,7 @@ pub mod experiment;
 pub mod grade;
 pub mod ids;
 pub mod lease;
+pub mod proto;
 pub mod resource;
 pub mod run;
 pub mod task;
@@ -26,6 +27,10 @@ pub use experiment::Experiment;
 pub use grade::{Grade, RubricScores};
 pub use ids::{AgentId, ExperimentId, LeaseId, RunId, TaskId};
 pub use lease::{Lease, LeaseClass};
+pub use proto::{
+    check_version, decode_line, encode, ErrorCode, Event, FrameReader, Hello, Method, ProtoError,
+    PROTO_VERSION, Request, Response, ResponseErr, ResponseOk, Subscribe, Topic,
+};
 pub use resource::{ResourceSpec, Slot};
 pub use run::{Run, RunState};
 pub use task::Task;
