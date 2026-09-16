@@ -244,3 +244,34 @@ Two of the quoted figures were real prices for a *different* row: `z-ai/glm-5.3-
 the `-contributor` tier against 1.25/4.25 for the regular one — a **13x** spread on the same
 model. Tier is part of arm identity; `meta/muse-spark-1.3` and
 `meta/muse-spark-1.3-contributor` are different arms with identical weights.
+
+## Agent runs are network-bound; the machine is not the constraint
+
+Measured on four concurrent live agents (2026-09-16):
+
+    peak memory   724M .. 1506M      (budget was 3072M -- 2-4x too high)
+    cpu           6s/404s = 1.5%  ..  65s/279s = 23%
+    wchan         do_epoll_wait, all of them
+    load          1.27 on 32 cores, memory 50% used
+
+An LLM coding agent spends almost all of its wall time waiting for tokens. It holds about a
+gigabyte and a few percent of one core. **Sizing slots by CPU or memory models the wrong
+resource**, and the earlier OOMs reinforced that mistake by making the machine look like the
+bottleneck -- when the real culprit was unconfined concurrent `rustc`, which is farmerbob's
+own work, not the agents'.
+
+Two consequences for `slot-table`:
+
+1. Slot budgets come from measured `memory.peak` per run, not a round number. The dispatcher
+   now records `mem_peak_mb`; observed p95 is ~1.5G, so the same machine holds 7 agent slots
+   where it was holding 3.
+2. **The binding constraint is the provider.** Poolside rate-limited a run when free-tier
+   calls were bursted, and that failure was nearly attributed to the arm. So admission has
+   two independent limits: machine resources, and a per-provider concurrency cap keyed on
+   `quota_bucket` (which is why agy and the gemini CLI, sharing one Google OAuth bucket,
+   must count against the same cap).
+
+Verification is the opposite shape: `rustc` is cpu- and memory-hungry and barely touches the
+network, so it stays serialised behind its own lease. Two resource classes with inverted
+profiles, sharing one machine -- which is exactly the generic named-resource arbitration
+gpu-lease was widened to cover.
