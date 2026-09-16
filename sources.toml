@@ -63,7 +63,7 @@ launcher    = "zcode"
 
 # ------------------------------------------------- API-keyed, via opencode
 [source.ifm-k2-horizon]
-status     = "limited"    # key OK; UNUSABLE for multi-turn coding via opencode -- see multiturn
+status     = "verified"   # multi-turn works VIA shims/ifm-proxy.py (injects the required reasoning field)
 kind       = "opencode"
 launcher   = "opencode"   # NOT `ori opencode` -- ori replaces the env and drops IFM_API_KEY
 model      = "ifm/IFM/K2-Horizon-375B-A23B"
@@ -71,8 +71,9 @@ provider   = "ifm"
 quota      = "metered"
 base_url   = "https://api.ifm.ai/v1"
 key_env    = "IFM_API_KEY"
-multiturn  = false
-notes      = "vLLM-backed OpenAI-compatible. Emits a separate `reasoning` field; see multiturn caveat on ifm-k2-think."
+multiturn  = true   # only through the shim; direct opencode -> IFM is still broken
+shim       = "shims/ifm-proxy.py"
+notes      = "vLLM-backed. IFM requires a `reasoning` field on every replayed assistant message; opencode omits it, so the shim injects it. Verified: PASSED gpu-lease, 552 lines, 41 requests patched."
 
 [source.ifm-k2-think]
 status     = "limited"       # single-turn only -- see multiturn
@@ -176,7 +177,7 @@ context = 260000
 # never trust a hardcoded figure for cost-normalised scoring.
 
 [source.or-muse-spark]
-status = "untested"
+status = "verified"
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
@@ -187,9 +188,10 @@ price_out = 0.2
 context = 1048576
 price_checked = "2026-09-16"
 notes = "contributor tier: 13x cheaper than meta/muse-spark-1.3 at 1.25/4.25"
+probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 29s
 
 [source.or-hy4-preview]
-status = "untested"
+status = "verified"
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
@@ -199,9 +201,10 @@ price_in = 0.834
 price_out = 2.501
 context = 1048576
 price_checked = "2026-09-16"
+probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 36s
 
 [source.or-hy3]
-status = "untested"
+status = "verified"
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
@@ -212,9 +215,10 @@ price_out = 0.528
 context = 262144
 price_checked = "2026-09-16"
 notes = "quoted 0.105/0.435; live differs -- see price drift"
+probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 43s
 
 [source.or-luna-pro]
-status = "untested"
+status = "verified"
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
@@ -225,9 +229,10 @@ price_out = 1.2
 context = 1050000
 price_checked = "2026-09-16"
 notes = "paid sibling of the plan-based codex-luna arm"
+probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 53s
 
 [source.or-qwen38-flash]
-status = "untested"
+status = "verified"
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
@@ -237,9 +242,10 @@ price_in = 0.15
 price_out = 0.47
 context = 1000000
 price_checked = "2026-09-16"
+probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 29s
 
 [source.or-qwen38-max]
-status = "untested"
+status = "verified"
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
@@ -250,9 +256,10 @@ price_out = 6.0
 context = 1000000
 price_checked = "2026-09-16"
 notes = "most expensive arm in the pool"
+probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 86s
 
 [source.or-glm-53-flash]
-status = "untested"
+status = "verified"
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
@@ -263,9 +270,10 @@ price_out = 0.3333
 context = 1310720
 price_checked = "2026-09-16"
 notes = "paid route to the same model as the free zcode arm glm-53-flash"
+probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 59s
 
 [source.or-glm-53]
-status = "untested"
+status = "verified"
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
@@ -275,9 +283,10 @@ price_in = 1.4
 price_out = 4.4
 context = 1310720
 price_checked = "2026-09-16"
+probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 26s
 
 [source.or-deepseek-v4-pro]
-status = "untested"
+status = "verified"
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
@@ -287,9 +296,10 @@ price_in = 0.9834
 price_out = 2.9502
 context = 1048576
 price_checked = "2026-09-16"
+probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 25s
 
 [source.or-deepseek-v4-latest]
-status = "untested"
+status = "verified"
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
@@ -300,3 +310,4 @@ price_out = 0.1
 context = 1310720
 price_checked = "2026-09-16"
 notes = "floating alias: model can change under the leaderboard"
+probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 46s

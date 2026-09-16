@@ -5,7 +5,7 @@
 #   fb-admit.sh <matrix.tsv>      lines: task<TAB>crate<TAB>arm1,arm2,...
 set -uo pipefail
 M="${1:?matrix.tsv}"
-PER_GB=${FB_MEM_GB:-2}   # measured p95 agent peak is ~1.5G, not 3G
+PER_GB=${FB_MEM_GB:-2}   # measured: median 1050M, p95 1694M over 12 runs
 HEADROOM_GB=${FB_HEADROOM_GB:-4}   # confined+serialised verification is 4G
 avail() { free -g | awk '/^Mem:/{print $7}'; }
 SLOTS=$(( ( $(avail) - HEADROOM_GB ) / PER_GB ))

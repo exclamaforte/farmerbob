@@ -53,12 +53,16 @@ for WT in "$WT_ROOT/$BEAD--"*; do
   fi
   rm -f "$TL"
 
+  # No absolute line threshold. A fixed `lines > 30` graded on VOLUME and failed nine
+  # correct 16-27 line implementations of a deliberately small task, while passing the one
+  # arm that happened to write 31. Task size is a property of the task, not the arm.
+  # PASS = it compiled, tests executed and passed, and it actually changed something.
   V="FAIL"
-  if   [ "$LOC" -eq 0 ];                                   then V="NO-OP"
-  elif [ "$B" != "pass" ];                                 then V="NO-COMPILE"
-  elif [ "$T" != "pass" ];                                 then V="TESTS-FAIL"
-  elif [ "$N" -eq 0 ];                                     then V="NO-TESTS"
-  elif [ "$LOC" -gt 30 ];                                  then V="PASS"
+  if   [ "$LOC" -eq 0 ];    then V="NO-OP"
+  elif [ "$B" != "pass" ];  then V="NO-COMPILE"
+  elif [ "$T" != "pass" ];  then V="TESTS-FAIL"
+  elif [ "$N" -eq 0 ];      then V="NO-TESTS"
+  else                           V="PASS"
   fi
   DUR=$(python3 -c "
 import json,os
