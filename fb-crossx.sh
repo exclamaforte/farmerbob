@@ -48,7 +48,7 @@ PRE
     [ -f "$f" ] || continue
     awk '/#\[cfg\(test\)\]/{f=1} f' "$f" \
       | sed -e "s/^\( *\)mod tests/\1mod xtests_${n}/" \
-            -e "s/use super::\*/use crate::*; use crate::xprelude::*;/" \
+            -e "s/use super::\*;/use crate::*; use crate::xprelude::*;/" \
             -e "s/use super::/use crate::/" >> "$TMP/suite.$a.rs"
     echo >> "$TMP/suite.$a.rs"
     n=$((n+1))

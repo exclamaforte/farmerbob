@@ -6,12 +6,13 @@
 set -uo pipefail
 M="${1:?matrix.tsv}"
 PROVIDER_CAP=${FB_PROVIDER_CAP:-3}
-PER_GB=${FB_MEM_GB:-2}   # measured: median 1050M, p95 1694M over 12 runs
+SLOT_GB=${FB_SLOT_GB:-1.5}        # admission arithmetic: measured p95 was 1.26G
+HARD_GB=${FB_MEM_GB:-2}           # per-run MemoryMax: contains an overrun inside its own scope
 HEADROOM_GB=${FB_HEADROOM_GB:-4}   # confined+serialised verification is 4G
 avail() { free -g | awk '/^Mem:/{print $7}'; }
-SLOTS=$(( ( $(avail) - HEADROOM_GB ) / PER_GB ))
+SLOTS=$(awk -v a="$(avail)" -v h="$HEADROOM_GB" -v g="$SLOT_GB" 'BEGIN{printf "%d", (a-h)/g}')
 [ "$SLOTS" -lt 1 ] && SLOTS=1
-echo "admission: ${PER_GB}G/run, ${HEADROOM_GB}G headroom, $(avail)G available -> $SLOTS slots, max $PROVIDER_CAP per provider"
+echo "admission: ${SLOT_GB}G/slot (measured), ${HARD_GB}G hard cap, ${HEADROOM_GB}G headroom, $(avail)G avail -> $SLOTS slots, max $PROVIDER_CAP per upstream vendor"
 
 # Agents are network-bound (measured: ~5% cpu, do_epoll_wait), so the machine is not the
 # binding constraint -- the PROVIDER is. Poolside rate-limited a run when we burst free-tier
@@ -39,14 +40,14 @@ for item in "${QUEUE[@]}"; do
   # block until a slot frees AND memory actually allows it
   PROV=$(provider_of "$arm")
   while [ "$(jobs -rp | wc -l)" -ge "$SLOTS" ] \
-     || [ "$(avail)" -lt $(( PER_GB + HEADROOM_GB )) ] \
+     || [ "$(avail)" -lt "$HEADROOM_GB" ] \
      || [ "$(in_flight_for "$PROV")" -ge "$PROVIDER_CAP" ]; do
     sleep 5
   done
   touch "$LOCKDIR/$PROV.$$.$RANDOM"
   echo "dispatch $task/$arm  (avail $(avail)G, running $(jobs -rp|wc -l)/$SLOTS)"
   LK=$(ls "$LOCKDIR/$PROV".* 2>/dev/null | tail -1)
-  ( FB_MEM_MAX="${PER_GB}G" ./fb-dispatch.sh "$arm" "$task" ".fb/prompts/$task.md" "$crate"; rm -f "$LK" ) &
+  ( FB_MEM_MAX="${HARD_GB}G" ./fb-dispatch.sh "$arm" "$task" ".fb/prompts/$task.md" "$crate"; rm -f "$LK" ) &
   sleep 2
 done
 wait

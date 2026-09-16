@@ -106,6 +106,7 @@ quota = "metered"
 model  = "openrouter/google/gemini-3.8-flash"
 price_in = 0.750
 price_out = 3.750                            # (!) requested as "5.8 flash"; no 5.8 exists
+quota_bucket = "google"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-deepseek-v4-flash]
 status = "verified"
@@ -118,6 +119,7 @@ price_in = 0.06
 price_out = 0.12                            # (!) requested "0732"; -0731 is the pinned build
 context = 1310720
 pinned = true
+quota_bucket = "deepseek"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-nemotron-ultra]
 status = "verified"
@@ -129,6 +131,7 @@ model  = "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
 price_in = 0.0
 price_out = 0.0
 context = 1000000
+quota_bucket = "nvidia"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-laguna-s-21]
 status = "verified"
@@ -139,6 +142,7 @@ quota = "metered"
 model  = "openrouter/poolside/laguna-s-2.1:free"
 price_in = 0.0
 price_out = 0.0
+quota_bucket = "poolside"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-inkling]
 status = "verified"
@@ -149,6 +153,7 @@ quota = "metered"
 model  = "openrouter/thinkingmachines/inkling:free"
 price_in = 0.0
 price_out = 0.0
+quota_bucket = "thinkingmachines"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-ling-30-flash]
 status = "verified"
@@ -160,6 +165,7 @@ model  = "openrouter/inclusionai/ling-3.0-flash-vl:free"
 price_in = 0.0
 price_out = 0.0            # (!) plain ling-3.0-flash has no free variant; -vl:free chosen
 context = 262144
+quota_bucket = "inclusionai"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-mercury-25]
 status = "verified"                            # confirmed 2026-09-15 as the unnamed "0.04/0.15" line
@@ -175,6 +181,7 @@ context = 260000
 # ---- added 2026-09-16; prices fetched live from the OpenRouter catalogue ----
 # Prices DRIFT (see docs/IMPLEMENTATION-NOTES.md). Refresh with ./fb-prices.sh;
 # never trust a hardcoded figure for cost-normalised scoring.
+quota_bucket = "inception"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-muse-spark]
 status = "verified"
@@ -189,6 +196,7 @@ context = 1048576
 price_checked = "2026-09-16"
 notes = "contributor tier: 13x cheaper than meta/muse-spark-1.3 at 1.25/4.25"
 probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 29s
+quota_bucket = "meta"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-hy4-preview]
 status = "verified"
@@ -202,6 +210,7 @@ price_out = 2.501
 context = 1048576
 price_checked = "2026-09-16"
 probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 36s
+quota_bucket = "tencent"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-hy3]
 status = "verified"
@@ -216,6 +225,7 @@ context = 262144
 price_checked = "2026-09-16"
 notes = "quoted 0.105/0.435; live differs -- see price drift"
 probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 43s
+quota_bucket = "tencent"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-luna-pro]
 status = "verified"
@@ -230,6 +240,7 @@ context = 1050000
 price_checked = "2026-09-16"
 notes = "paid sibling of the plan-based codex-luna arm"
 probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 53s
+quota_bucket = "openai"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-qwen38-flash]
 status = "verified"
@@ -243,6 +254,7 @@ price_out = 0.47
 context = 1000000
 price_checked = "2026-09-16"
 probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 29s
+quota_bucket = "qwen"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-qwen38-max]
 status = "verified"
@@ -257,6 +269,7 @@ context = 1000000
 price_checked = "2026-09-16"
 notes = "most expensive arm in the pool"
 probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 86s
+quota_bucket = "qwen"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-glm-53-flash]
 status = "verified"
@@ -271,6 +284,7 @@ context = 1310720
 price_checked = "2026-09-16"
 notes = "paid route to the same model as the free zcode arm glm-53-flash"
 probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 59s
+quota_bucket = "z-ai"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-glm-53]
 status = "verified"
@@ -284,6 +298,7 @@ price_out = 4.4
 context = 1310720
 price_checked = "2026-09-16"
 probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 26s
+quota_bucket = "z-ai"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-deepseek-v4-pro]
 status = "verified"
@@ -297,6 +312,7 @@ price_out = 2.9502
 context = 1048576
 price_checked = "2026-09-16"
 probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 25s
+quota_bucket = "deepseek"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-deepseek-v4-latest]
 status = "verified"
@@ -311,6 +327,7 @@ context = 1310720
 price_checked = "2026-09-16"
 notes = "floating alias: model can change under the leaderboard"
 probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 46s
+quota_bucket = "deepseek"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-nex-n25-pro]
 status = "untested"
@@ -323,3 +340,4 @@ price_in = 0.0
 price_out = 0.0
 context = 262144
 price_checked = "2026-09-16"
+quota_bucket = "nex-agi"   # the upstream vendor is what rate-limits, not openrouter
