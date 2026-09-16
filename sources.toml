@@ -1,0 +1,172 @@
+# farmerbob source registry
+# Every way of getting an agent to do work. Consumed by the adapter registry (adp-trait).
+# NO SECRETS IN THIS FILE — keys live in ~/.config/farmerbob/secrets.env (0600).
+#
+# status: verified | blocked | unconfigured
+# quota:  plan (free until a usage limit -> park & resume) | metered (billed per token)
+
+# ---------------------------------------------------------------- native CLIs
+[source.claude-sonnet]
+status      = "verified"
+kind        = "cli"
+cmd         = "claude"
+args        = ["-p", "{prompt}", "--permission-mode", "bypassPermissions",
+               "--model", "sonnet", "--output-format", "json"]
+cwd_honored = true
+model       = "claude-sonnet-5"
+provider    = "anthropic"
+quota       = "plan"
+context     = 1000000
+max_output  = 64000
+# Richest accounting of any source: costUSD, per-model token split incl. cache, num_turns, ttft.
+accounting  = "full"
+reference   = true          # adapter all others are validated against
+
+[source.codex-luna]
+status      = "verified"
+kind        = "cli"
+cmd         = "codex"
+args        = ["exec", "--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-5.6-luna", "{prompt}"]
+cwd_honored = true
+model       = "gpt-5.6-luna"
+provider    = "openai-chatgpt-plan"
+quota       = "plan"
+accounting  = "tokens-only"  # emits "tokens used", no dollar cost
+notes       = "auth_mode=chatgpt, OPENAI_API_KEY null -> plan limit, not billing"
+
+[source.gemini-38-flash]
+status      = "verified"
+kind        = "cli"
+cmd         = "agy"
+args        = ["-p", "{prompt}", "--model", "gemini-3.8-flash-low",
+               "--add-dir", "{worktree}", "--dangerously-skip-permissions",
+               "--output-format", "stream-json"]
+cwd_honored = false          # !! MUST pass --add-dir or it writes to its own scratch dir
+model       = "gemini-3.8-flash"
+provider    = "google-oauth"
+quota       = "plan"
+quota_bucket = "google-oauth-exclamaforte"   # possibly shared with the `gemini` CLI — unconfirmed
+notes       = "agy also exposes 3.7/3.6-flash, 3.1-pro, claude-sonnet-4-6, claude-opus-4-6, gpt-oss-120b"
+
+[source.glm-53-flash]
+status      = "verified"
+kind        = "cli"
+cmd         = "zcode"
+args        = ["--prompt", "{prompt}"]
+model       = "GLM-5.3-Flash"
+model_ref   = "zai/glm-5.3-flash"
+provider    = "zai-coding-plan"
+quota       = "plan"
+context     = 1000000
+max_output  = 128000
+launcher    = "zcode"
+
+# ------------------------------------------------- API-keyed, via opencode
+[source.ifm-k2-horizon]
+status     = "verified"
+kind       = "opencode"
+launcher   = "opencode"   # NOT `ori opencode` -- ori replaces the env and drops IFM_API_KEY
+model      = "ifm/IFM/K2-Horizon-375B-A23B"
+provider   = "ifm"
+quota      = "metered"
+base_url   = "https://api.ifm.ai/v1"
+key_env    = "IFM_API_KEY"
+multiturn  = false
+notes      = "vLLM-backed OpenAI-compatible. Emits a separate `reasoning` field; see multiturn caveat on ifm-k2-think."
+
+[source.ifm-k2-think]
+status     = "verified"      # single-turn only -- see multiturn
+kind       = "opencode"
+launcher   = "opencode"   # NOT `ori opencode` -- ori replaces the env and drops IFM_API_KEY
+model      = "ifm/IFM/K2-Think-v2"
+provider   = "ifm"
+quota      = "metered"
+key_env    = "IFM_API_KEY"
+multiturn  = false
+notes      = """Wrote the file correctly, then the FOLLOWING turn failed: \
+'messages.2.assistant.reasoning_content: property is unsupported' (wrong_api_format). \
+opencode replays the assistant reasoning field and IFM's endpoint rejects it, so any \
+task needing more than one turn breaks. Also mangled an absolute path in an earlier run \
+(transcribed one digit of a directory name wrong), which opencode correctly rejected as \
+an external directory. Prefer relative paths in prompts for this model."""
+
+# ---------------------------------------------------------------- OpenRouter
+# Launched via `ori opencode` -- ori injects the OpenRouter credential from
+# ~/.ori/credentials.json. NOTE: ori REPLACES the environment, so IFM cannot be
+# launched through it; IFM uses plain `opencode` with IFM_API_KEY exported.
+# Prices are $/1M tokens, in/out, read from the OpenRouter catalogue 2026-09-15.
+# Slugs marked (!) diverge from the shorthand originally requested — see bead farmerbob-h2k.
+[source.or-gemini-38-flash]
+status = "verified"
+kind = "opencode"
+launcher = "ori opencode"
+provider = "openrouter"
+quota = "metered"
+model  = "openrouter/google/gemini-3.8-flash"
+price_in = 0.750
+price_out = 3.750                            # (!) requested as "5.8 flash"; no 5.8 exists
+
+[source.or-deepseek-v4-flash]
+status = "verified"
+kind = "opencode"
+launcher = "ori opencode"
+provider = "openrouter"
+quota = "metered"
+model  = "openrouter/deepseek/deepseek-v4-flash-0731"
+price_in = 0.055
+price_out = 0.110                            # (!) requested "0732"; -0731 is the pinned build
+context = 1310720
+pinned = true
+
+[source.or-nemotron-ultra]
+status = "verified"
+kind = "opencode"
+launcher = "ori opencode"
+provider = "openrouter"
+quota = "metered"
+model  = "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+price_in = 0.0
+price_out = 0.0
+context = 1000000
+
+[source.or-laguna-s-21]
+status = "verified"
+kind = "opencode"
+launcher = "ori opencode"
+provider = "openrouter"
+quota = "metered"
+model  = "openrouter/poolside/laguna-s-2.1:free"
+price_in = 0.0
+price_out = 0.0
+
+[source.or-inkling]
+status = "verified"
+kind = "opencode"
+launcher = "ori opencode"
+provider = "openrouter"
+quota = "metered"
+model  = "openrouter/thinkingmachines/inkling:free"
+price_in = 0.0
+price_out = 0.0
+
+[source.or-ling-30-flash]
+status = "verified"
+kind = "opencode"
+launcher = "ori opencode"
+provider = "openrouter"
+quota = "metered"
+model  = "openrouter/inclusionai/ling-3.0-flash-vl:free"
+price_in = 0.0
+price_out = 0.0            # (!) plain ling-3.0-flash has no free variant; -vl:free chosen
+context = 262144
+
+[source.or-mercury-25]
+status = "verified"                            # confirmed 2026-09-15 as the unnamed "0.04/0.15" line
+kind = "opencode"
+launcher = "ori opencode"
+provider = "openrouter"
+quota = "metered"
+model  = "openrouter/inception/mercury-2.5"
+price_in = 0.040
+price_out = 0.150
+context = 260000

@@ -1,0 +1,15 @@
+[package]
+name = "farmerbobd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+farmerbob-core.workspace = true
+farmerbob-store.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
