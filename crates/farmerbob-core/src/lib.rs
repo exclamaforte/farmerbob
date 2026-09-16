@@ -12,6 +12,7 @@
 
 pub mod adapter;
 pub mod agent;
+pub mod attempt_log;
 pub mod error;
 pub mod experiment;
 pub mod grade;
