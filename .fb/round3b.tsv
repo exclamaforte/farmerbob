@@ -1,4 +1,4 @@
-ux-doctor	fb	or-gemini-38-flash,or-deepseek-v4-flash,or-laguna-s-21
+ux-doctor	fb	or-deepseek-v4-flash,or-laguna-s-21
 fnd-store	farmerbob-store	glm-53-flash,ifm-k2-horizon
 gpu-lease	farmerbob-core	ifm-k2-horizon
 dmn-proto	farmerbob-core	ifm-k2-think

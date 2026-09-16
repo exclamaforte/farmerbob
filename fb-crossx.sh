@@ -12,6 +12,7 @@
 # Runs on copies; never touches a candidate worktree.        (bead farmerbob-xle)
 set -uo pipefail
 export PATH="$HOME/.cargo/bin:$PATH"
+. /home/gabe/Documents/farmerbob/fb-verdict.sh
 BEAD="${1:?bead}"; CRATE="${2:-farmerbob-core}"; FILE="${3:?relative path of the file under test}"
 WT_ROOT="$HOME/.local/share/farmerbob/worktrees"
 OUT="$HOME/.local/share/farmerbob/logs/$BEAD.crossx.json"

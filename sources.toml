@@ -76,14 +76,14 @@ shim       = "shims/ifm-proxy.py"
 notes      = "vLLM-backed. IFM requires a `reasoning` field on every replayed assistant message; opencode omits it, so the shim injects it. Verified: PASSED gpu-lease, 552 lines, 41 requests patched."
 
 [source.ifm-k2-think]
-status     = "limited"       # single-turn only -- see multiturn
+status     = "verified"      # multi-turn works via shims/ifm-proxy.py; PASSED the probe in 23s
 kind       = "opencode"
 launcher   = "opencode"   # NOT `ori opencode` -- ori replaces the env and drops IFM_API_KEY
 model      = "ifm/IFM/K2-Think-v2"
 provider   = "ifm"
 quota      = "metered"
 key_env    = "IFM_API_KEY"
-multiturn  = false
+multiturn  = true   # via the shim only
 notes      = """Wrote the file correctly, then the FOLLOWING turn failed: \
 'messages.2.assistant.reasoning_content: property is unsupported' (wrong_api_format). \
 opencode replays the assistant reasoning field and IFM's endpoint rejects it, so any \
@@ -98,7 +98,7 @@ an external directory. Prefer relative paths in prompts for this model."""
 # Prices are $/1M tokens, in/out, read from the OpenRouter catalogue 2026-09-15.
 # Slugs marked (!) diverge from the shorthand originally requested — see bead farmerbob-h2k.
 [source.or-gemini-38-flash]
-status = "verified"
+status = "disabled"
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
@@ -107,6 +107,8 @@ model  = "openrouter/google/gemini-3.8-flash"
 price_in = 0.750
 price_out = 3.750                            # (!) requested as "5.8 flash"; no 5.8 exists
 quota_bucket = "google"   # the upstream vendor is what rate-limits, not openrouter
+redundant_with = "gemini-38-flash"   # same model via a free route; prefer that unless comparing routes
+disabled_reason = "paid duplicate of the free arm gemini-38-flash; identical model"
 
 [source.or-deepseek-v4-flash]
 status = "verified"
@@ -272,7 +274,7 @@ probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 86s
 quota_bucket = "qwen"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-glm-53-flash]
-status = "verified"
+status = "disabled"
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
@@ -285,6 +287,7 @@ price_checked = "2026-09-16"
 notes = "paid route to the same model as the free zcode arm glm-53-flash"
 probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 59s
 quota_bucket = "z-ai"   # the upstream vendor is what rate-limits, not openrouter
+disabled_reason = "paid duplicate of the free arm glm-53-flash; identical model"
 
 [source.or-glm-53]
 status = "verified"
