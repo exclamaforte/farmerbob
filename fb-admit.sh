@@ -5,6 +5,7 @@
 #   fb-admit.sh <matrix.tsv>      lines: task<TAB>crate<TAB>arm1,arm2,...
 set -uo pipefail
 M="${1:?matrix.tsv}"
+PROVIDER_CAP=${FB_PROVIDER_CAP:-3}
 PER_GB=${FB_MEM_GB:-2}   # measured: median 1050M, p95 1694M over 12 runs
 HEADROOM_GB=${FB_HEADROOM_GB:-4}   # confined+serialised verification is 4G
 avail() { free -g | awk '/^Mem:/{print $7}'; }
@@ -15,7 +16,6 @@ echo "admission: ${PER_GB}G/run, ${HEADROOM_GB}G headroom, $(avail)G available -
 # Agents are network-bound (measured: ~5% cpu, do_epoll_wait), so the machine is not the
 # binding constraint -- the PROVIDER is. Poolside rate-limited a run when we burst free-tier
 # calls. Cap concurrency per provider bucket as well as per machine.  (bead farmerbob-4ix)
-PROVIDER_CAP=${FB_PROVIDER_CAP:-3}
 provider_of() {
   python3 -c "
 import tomllib,sys

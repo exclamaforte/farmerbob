@@ -311,3 +311,15 @@ context = 1310720
 price_checked = "2026-09-16"
 notes = "floating alias: model can change under the leaderboard"
 probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 46s
+
+[source.or-nex-n25-pro]
+status = "untested"
+kind = "opencode"
+launcher = "ori opencode"
+provider = "openrouter"
+quota = "metered"
+model = "openrouter/nex-agi/nex-n2.5-pro:free"
+price_in = 0.0
+price_out = 0.0
+context = 262144
+price_checked = "2026-09-16"

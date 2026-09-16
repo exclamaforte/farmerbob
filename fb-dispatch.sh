@@ -141,7 +141,9 @@ FILES=$(git -C "$WT" status --porcelain | wc -l)
 NTESTS=$(grep -oE '^test result: ok\. [0-9]+ passed' "$LOG" | awk '{s+=$4} END{print s+0}')
 # verdict is the only field that means anything: real work, compiles, tests exist and pass
 VERDICT="FAIL"
-if [ "$BUILD" = "pass" ] && [ "$TEST" = "pass" ] && [ "$LOC" -gt 30 ] && [ "$NTESTS" -gt 0 ]; then
+# No absolute line threshold: it grades on VOLUME and fails correct implementations of
+# small tasks. Task size is a property of the task, not the arm.  (see fb-score.sh)
+if [ "$BUILD" = "pass" ] && [ "$TEST" = "pass" ] && [ "$LOC" -gt 0 ] && [ "$NTESTS" -gt 0 ]; then
   VERDICT="PASS"
 elif [ "$LOC" -eq 0 ]; then VERDICT="NO-OP"
 elif [ "$BUILD" != "pass" ]; then VERDICT="NO-COMPILE"

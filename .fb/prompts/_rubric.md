@@ -16,7 +16,12 @@ optimise for the real bar rather than guess at it.
 2. **Panic-freedom** — no `unwrap()`, `expect()`, `panic!`, `todo!` or `unimplemented!` on
    any path reachable from input, outside `#[cfg(test)]`.
 3. **`cargo clippy -- -D warnings` clean.**
-4. **Test depth** — number of distinct behaviours covered, not number of assertions.
+4. **Test depth and generality** — number of distinct behaviours covered, not number of
+   assertions. Your tests must be good enough to catch a bug in **any** correct-looking
+   implementation of this spec, not only your own: test the behaviour the specification
+   requires, not your particular implementation's internals. Asserting on exact error
+   strings, private field names, or an output format the spec does not fix makes a test
+   worthless.
 5. **Documentation** — `///` on every public item.
 6. **Structure** — coherent modules over one large file, where the crate warrants it.
 
