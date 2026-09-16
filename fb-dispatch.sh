@@ -64,9 +64,13 @@ rm -rf "$WT/.beads" "$WT/.cursor" "$WT/.codex" "$WT/.agents"
 
 START=$(date +%s)
 CGSNAP="$LOG_ROOT/$RUN.cgroup"; : > "$CGSNAP"
+MEMSNAP="$LOG_ROOT/$RUN.mem"; : > "$MEMSNAP"
 ( for _ in $(seq 1 400); do
     for pid in $(pgrep -f "$WT" 2>/dev/null); do
-      sed -n 's|^0::||p' "/proc/$pid/cgroup" 2>/dev/null; done
+      cg=$(sed -n 's|^0::||p' "/proc/$pid/cgroup" 2>/dev/null)
+      [ -n "$cg" ] && echo "$cg"
+      [ -n "$cg" ] && cat "/sys/fs/cgroup$cg/memory.peak" 2>/dev/null >> "$MEMSNAP"
+    done
     sleep 3
   done ) >> "$CGSNAP" 2>/dev/null &
 CGPID=$!
@@ -100,6 +104,8 @@ END=$(date +%s)
 
 # Did confinement actually apply? A scope that silently failed to materialise
 # looks exactly like one that worked, so record it as evidence rather than assume.
+MEMPEAK=$(sort -n "$MEMSNAP" 2>/dev/null | tail -1)
+MEMPEAK=$(( ${MEMPEAK:-0} / 1048576 ))
 CONFINED="unknown"
 if [ -f "$LOG_ROOT/$RUN.cgroup" ]; then
   grep -q "$UNIT" "$LOG_ROOT/$RUN.cgroup" && CONFINED="yes" || CONFINED="NO"
@@ -145,6 +151,6 @@ fi
 python3 -c "
 import json,sys
 json.dump({'source':'$SRC','bead':'$BEAD','model':'$MODEL','rc':$RC,'duration_s':$((END-START)),
- 'build':'$BUILD','test':'$TEST','verdict':'$VERDICT','confined':'$CONFINED','tests_run':$NTESTS,'lines_added':$LOC,'files_touched':$FILES,
+ 'build':'$BUILD','test':'$TEST','verdict':'$VERDICT','confined':'$CONFINED','mem_peak_mb':$MEMPEAK,'tests_run':$NTESTS,'lines_added':$LOC,'files_touched':$FILES,
  'worktree':'$WT','branch':'$BRANCH','log':'$LOG'}, open('$META','w'), indent=1)"
 printf '%-24s %-11s rc=%-3s %4ss  build=%-5s tests=%-3s +%s lines\n' "$SRC" "$VERDICT" "$RC" "$((END-START))" "$BUILD" "$NTESTS" "$LOC"

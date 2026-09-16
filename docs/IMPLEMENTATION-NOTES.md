@@ -209,3 +209,38 @@ Also: `NO-COMPILE` is a terminal state for one run and a transient one for anoth
 `ling-30-flash` passed through it, correctly diagnosed "clap derive can't resolve types
 defined after the enum", and kept going. Only terminal states may be scored, which is an
 independent reason not to touch a live worktree.
+
+## Prices drift, so cost cannot be hardcoded
+
+Ten OpenRouter arms were added on 2026-09-16. Four of the prices supplied for them
+already disagreed with the live catalogue, and one arm already in the registry had
+moved **within this session**:
+
+    deepseek/deepseek-v4-flash-0731    0.055/0.110  ->  0.060/0.120   (+9%, same day)
+    tencent/hy3                        0.105/0.435  ->  0.132/0.528   (+25%)
+    z-ai/glm-5.3                       0.877/2.970  ->  1.400/4.400   (+59%)
+    deepseek/deepseek-v4-pro-0813      0.960/2.880  ->  0.983/2.950   (+2%)
+
+`grade-leaderboard`'s cost-normalised rankings and the router's
+`- dollar_weight * predicted_cost` term are both computed from these numbers. Stale
+figures do not fail loudly — they quietly reorder the leaderboard, and a 59% error on
+one arm is enough to flip a ranking.
+
+So the registry stores `price_checked` alongside each price, and `fb-prices.sh` refetches
+from the catalogue and reports drift before applying it. Two further rules:
+
+- **Predicted cost should come from the attempt log, not the price list.** A cheap
+  per-token arm that needs 4x the tokens is not cheap. The price is one input to an
+  observed-cost estimate, not the estimate itself.
+- **A price change is not a new arm.** It changes the routing objective, not the thing
+  being measured — so unlike a model or harness change (farmerbob-pdr) it must NOT reset
+  a posterior. Keeping success, dollars and latency as separate observations is what makes
+  that possible: re-pricing history is a recomputation, not a relabelling.
+
+### Watch for tier confusion
+
+Two of the quoted figures were real prices for a *different* row: `z-ai/glm-5.3-flash` at
+0.075/0.250 is the `:batch` variant (non-batch is 0.100/0.333), and muse-spark's 0.1/0.2 is
+the `-contributor` tier against 1.25/4.25 for the regular one — a **13x** spread on the same
+model. Tier is part of arm identity; `meta/muse-spark-1.3` and
+`meta/muse-spark-1.3-contributor` are different arms with identical weights.

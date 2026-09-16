@@ -6,7 +6,7 @@
 set -uo pipefail
 M="${1:?matrix.tsv}"
 PER_GB=${FB_MEM_GB:-3}
-HEADROOM_GB=${FB_HEADROOM_GB:-10}
+HEADROOM_GB=${FB_HEADROOM_GB:-6}
 avail() { free -g | awk '/^Mem:/{print $7}'; }
 SLOTS=$(( ( $(avail) - HEADROOM_GB ) / PER_GB ))
 [ "$SLOTS" -lt 1 ] && SLOTS=1
