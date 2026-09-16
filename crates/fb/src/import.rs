@@ -27,6 +27,9 @@ pub enum OutcomeClass {
     TaskInvalid,
     /// The harness, not the arm, produced the verdict.
     HarnessBug,
+    /// The record is incomplete — no verdict was recorded at all. Distinct from a non-arm
+    /// outcome: here we simply do not know what happened, and saying so is the point.
+    Unknown,
 }
 
 impl OutcomeClass {
@@ -42,6 +45,7 @@ impl OutcomeClass {
             OutcomeClass::OrchestratorCancelled => "orchestrator_cancelled",
             OutcomeClass::TaskInvalid => "task_invalid",
             OutcomeClass::HarnessBug => "harness_bug",
+            OutcomeClass::Unknown => "unknown",
         }
     }
 }
@@ -92,6 +96,9 @@ impl RunRecord {
         match self.rc {
             // 128+SIGTERM and 128+SIGKILL: something stopped this run deliberately.
             Some(143) | Some(137) => OutcomeClass::OrchestratorCancelled,
+            // No verdict recorded. The early harness did not write one, so the run is
+            // unscoreable rather than failed -- "we don't know" must be representable.
+            _ if self.verdict.is_none() => OutcomeClass::Unknown,
             _ => OutcomeClass::ArmResult,
         }
     }
@@ -189,12 +196,20 @@ mod tests {
     }
 
     #[test]
+    fn a_record_with_no_verdict_is_unknown_not_a_failure() {
+        let r = RunRecord { verdict: None, ..rec("PASS", 0, None) };
+        assert_eq!(r.classify(), OutcomeClass::Unknown);
+        assert_eq!(r.accepted(), None, "an incomplete record is not evidence of anything");
+    }
+
+    #[test]
     fn only_arm_results_reach_the_posterior() {
         for c in [
             OutcomeClass::Infrastructure,
             OutcomeClass::OrchestratorCancelled,
             OutcomeClass::TaskInvalid,
             OutcomeClass::HarnessBug,
+            OutcomeClass::Unknown,
         ] {
             assert!(!c.counts_for_posterior(), "{} must be excluded", c.as_str());
         }

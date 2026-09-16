@@ -47,30 +47,60 @@ PRE
   n=0
   for f in "$WT_ROOT/$BEAD--$a/$SRCDIR_REL"/*.rs; do
     [ -f "$f" ] || continue
+    # `use super::*` resolves against the module the tests were WRITTEN in, not the one they
+    # are grafted into. A suite from vrouter.rs means crate::vrouter::*; one from lib.rs means
+    # crate::*. Rewriting every case to `crate::*` silently pointed at the wrong module and
+    # made every suite look API-incompatible.
+    base=$(basename "$f" .rs)
+    if [ "$base" = lib ]; then modpath="crate"; else modpath="crate::$base"; fi
     awk '/#\[cfg\(test\)\]/{f=1} f' "$f" \
       | sed -e "s/^\( *\)mod tests/\1mod xtests_${n}/" \
-            -e "s/use super::\*;/use crate::*; use crate::xprelude::*;/" \
-            -e "s/use super::/use crate::/" >> "$TMP/suite.$a.rs"
+            -e "s|use super::\*;|use ${modpath}::*; use crate::xprelude::*;|" \
+            -e "s|use super::|use ${modpath}::|" >> "$TMP/suite.$a.rs"
     echo >> "$TMP/suite.$a.rs"
     n=$((n+1))
   done
   printf '  suite %-22s %s lines, %s tests\n' "$a" "$(wc -l < "$TMP/suite.$a.rs")" "$(grep -c '#\[test\]' "$TMP/suite.$a.rs")"
 done
 
+# N^2 cargo cycles. Measured: one cold cycle peaks at ~881M across rustc+cargo, so a machine
+# with this much free memory runs several concurrently. Verification is cpu/memory-bound
+# while the agents are network-bound, so the two are limited independently.
+CX_SLOTS=${FB_CX_SLOTS:-4}
+RES="$TMP/res"; mkdir -p "$RES"
+run_one() {
+  local impl="$1" suite="$2"
+  local C="$TMP/run.$impl.$suite"; rm -rf "$C"; mkdir -p "$C"
+  (cd "$WT_ROOT/$BEAD--$impl" && tar cf - Cargo.toml Cargo.lock crates rustfmt.toml 2>/dev/null) | (cd "$C" && tar xf -) 2>/dev/null
+  for f in "$C/$SRCDIR_REL"/*.rs; do
+    [ -f "$f" ] || continue
+    awk '/#\[cfg\(test\)\]/{exit} {print}' "$f" > "$f.stripped" && mv "$f.stripped" "$f"
+  done
+  cat "$TMP/suite.$suite.rs" >> "$C/$SRCDIR_REL/lib.rs"
+  local o="$C/out"
+  if (cd "$C" && timeout 300 cargo test -p "$CRATE" >"$o" 2>&1); then echo pass > "$RES/$impl|$suite"
+  elif grep -qE '^error(\[E[0-9]+\])?:' "$o"; then echo nocompile > "$RES/$impl|$suite"
+  else echo fail > "$RES/$impl|$suite"; fi
+  rm -rf "$C"
+}
+for impl in "${ARMS[@]}"; do
+  for suite in "${ARMS[@]}"; do
+    while [ "$(jobs -rp | wc -l)" -ge "$CX_SLOTS" ]; do sleep 1; done
+    run_one "$impl" "$suite" &
+  done
+done
+wait
 declare -A R
 for impl in "${ARMS[@]}"; do
   for suite in "${ARMS[@]}"; do
-    C="$TMP/run"; rm -rf "$C"; mkdir -p "$C"
-    (cd "$WT_ROOT/$BEAD--$impl" && tar cf - Cargo.toml Cargo.lock crates rustfmt.toml 2>/dev/null) | (cd "$C" && tar xf -) 2>/dev/null
-    # strip the impl's own tests, graft the suite under test
-    for f in "$C/$SRCDIR_REL"/*.rs; do
-      [ -f "$f" ] || continue
-      awk '/#\[cfg\(test\)\]/{exit} {print}' "$f" > "$f.stripped" && mv "$f.stripped" "$f"
-    done
-    cat "$TMP/suite.$suite.rs" >> "$C/$SRCDIR_REL/lib.rs"
-    if (cd "$C" && timeout 300 cargo test -p "$CRATE" >"$TMP/o" 2>&1); then R["$impl|$suite"]=pass
-    elif grep -qE '^error(\[E[0-9]+\])?:' "$TMP/o"; then R["$impl|$suite"]=nocompile
-    else R["$impl|$suite"]=fail; fi
+    R["$impl|$suite"]=$(cat "$RES/$impl|$suite" 2>/dev/null || echo nocompile)
+  done
+done
+for impl in "${ARMS[@]}"; do
+  for suite in "${ARMS[@]}"; do
+    if false; then
+      :
+    fi
   done
 done
 
