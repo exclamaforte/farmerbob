@@ -20,6 +20,7 @@ pub mod proto;
 pub mod resource;
 pub mod run;
 pub mod task;
+pub mod taskid;
 pub mod vrouter;
 
 pub use agent::{Agent, AgentKind};
