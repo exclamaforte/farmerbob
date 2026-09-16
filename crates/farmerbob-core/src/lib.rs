@@ -24,6 +24,7 @@ pub mod proto;
 pub mod quota;
 pub mod resource;
 pub mod run;
+pub mod selection;
 pub mod task;
 pub mod taskid;
 pub mod task_contract;
