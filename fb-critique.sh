@@ -22,6 +22,7 @@ WT="$HOME/.local/share/farmerbob/worktrees"
 LOGS="$HOME/.local/share/farmerbob/logs"
 SLOTS=${FB_SLOTS:-6}
 . "$REPO/fb-eligible.sh"
+. "$REPO/fb-launch.sh"
 
 # candidates that actually produced an implementation
 ARMS=()
@@ -62,21 +63,8 @@ handoff = """$(printf '%s' "$handoff" | sed 's/\\/\\\\/g; s/"/\\"/g' | head -c 4
 open(sys.argv[2], "w").write(tpl.replace("{PATCH}", patch).replace("{HANDOFF}", handoff))
 PY
     rm -f "$cw/.fb/critique.md"; mkdir -p "$cw/.fb"
-    MODEL=$(python3 -c "
-import tomllib;print(tomllib.load(open('$REPO/sources.toml','rb'))['source']['$critic'].get('model',''))")
     P="$(cat "$p")"
-    (
-      cd "$cw"
-      case "$critic" in
-        codex-luna)      codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.6-luna "$P" ;;
-        gemini-38-flash) command agy -p "$P" --model gemini-3.8-flash-high --add-dir "$cw" \
-                             --dangerously-skip-permissions --output-format text ;;
-        glm-53-flash)    zcode --prompt "$P" ;;
-        ifm-*)           set -a; . "$HOME/.config/farmerbob/secrets.env"; set +a
-                         opencode run -m "$MODEL" "$P" ;;
-        or-*)            ori opencode run -m "$MODEL" "$P" ;;
-      esac
-    ) > "$LOGS/critiques/$BEAD/$critic.log" 2>&1
+    ( fb_launch "$critic" "$P" "$cw" ) > "$LOGS/critiques/$BEAD/$critic.log" 2>&1
     if [ -s "$cw/.fb/critique.md" ]; then
       cp "$cw/.fb/critique.md" "$LOGS/critiques/$BEAD/$critic.on.$subject.md"
       printf '  %-22s reviewed %-22s %s claims, %s words\n' "$critic" "$subject" \

@@ -11,6 +11,7 @@ set -uo pipefail
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 BEAD="${1:?bead}"; CRATE="${2:?crate}"; TARGET="${3:?target}"; PROVER="${4:-or-mercury-25}"
 REPO=/home/gabe/Documents/farmerbob
+. /home/gabe/Documents/farmerbob/fb-launch.sh
 WT="$HOME/.local/share/farmerbob/worktrees"
 LOGS="$HOME/.local/share/farmerbob/logs"
 SLOTS=${FB_SLOTS:-5}
@@ -53,10 +54,8 @@ PY
     # prove in a scratch copy so the candidate worktree is never mutated
     d="$LOGS/proofs/$BEAD/$subj.tree"; rm -rf "$d"; mkdir -p "$d"
     (cd "$sw" && tar cf - Cargo.toml Cargo.lock crates rustfmt.toml 2>/dev/null) | (cd "$d" && tar xf -) 2>/dev/null
-    MODEL=$(python3 -c "
-import tomllib;print(tomllib.load(open('$REPO/sources.toml','rb'))['source']['$PROVER'].get('model',''))")
     P="$(cat "$p")"
-    (cd "$d" && ori opencode run -m "$MODEL" "$P") > "$LOGS/proofs/$BEAD/$subj.log" 2>&1
+    ( fb_launch "$PROVER" "$P" "$d" ) > "$LOGS/proofs/$BEAD/$subj.log" 2>&1
     (cd "$d" && timeout 400 cargo test -p "$CRATE" proved > "$LOGS/proofs/$BEAD/$subj.test" 2>&1)
     pass=$(grep -oE '[0-9]+ passed' "$LOGS/proofs/$BEAD/$subj.test"|head -1|awk '{print $1}')
     fail=$(grep -oE '[0-9]+ failed' "$LOGS/proofs/$BEAD/$subj.test"|head -1|awk '{print $1}')

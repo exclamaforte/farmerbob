@@ -1,6 +1,7 @@
 mod doctor;
 mod import;
 mod sources;
+mod trial;
 
 use clap::{Parser, Subcommand};
 
@@ -20,6 +21,26 @@ struct Cli {
 enum Command {
     /// Run environment preflight checks and print an actionable report.
     Doctor,
+    /// Run a full bakeoff: dispatch, score, cross-review, prove claims, report.
+    Trial {
+        /// Task name; the spec is .fb/prompts/<task>.md
+        task: String,
+        /// Crate the task targets.
+        #[arg(long = "crate")]
+        krate: String,
+        /// File the task creates or modifies, relative to the repo root.
+        #[arg(long)]
+        target: String,
+        /// Implementers, comma-separated.
+        #[arg(long)]
+        agents: String,
+        /// Arm that turns critics' claims into executed tests.
+        #[arg(long, default_value = "glm-53-flash")]
+        prover: String,
+        /// Resume from a stage: dispatch|score|critique|promote|prove|report
+        #[arg(long, default_value = "dispatch")]
+        from: String,
+    },
     /// Summarise run history per arm, excluding outcomes that say nothing about the arm.
     Leaderboard {
         /// Directory of harness run records.
@@ -219,6 +240,22 @@ fn main() {
         Some(Command::Doctor) => doctor::run(cli.json),
         Some(Command::Agents { all }) => agents(all, cli.json),
         Some(Command::Leaderboard { from, excluded }) => leaderboard(&from, excluded, cli.json),
+        Some(Command::Trial { task, krate, target, agents, prover, from }) => {
+            match trial::Stage::parse(&from) {
+                None => {
+                    eprintln!("error: unknown stage `{from}`");
+                    2
+                }
+                Some(stage) => trial::Trial {
+                    task,
+                    krate,
+                    target,
+                    arms: agents.split(',').map(str::to_string).collect(),
+                    prover,
+                }
+                .run(stage),
+            }
+        }
         None => {
             println!("fb — farmerbob. Try `fb --help`.");
             exit::OK
