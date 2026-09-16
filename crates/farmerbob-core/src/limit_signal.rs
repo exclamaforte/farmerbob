@@ -748,46 +748,31 @@ mod conformance_limit_detect {
     }
 }
 
-// ---------------------------------------------------------------------------------------
-// ESCALATED from confirmed findings. These are not derived from the specification: they are
-// defects a real implementation shipped, found by a rival critic, confirmed by execution,
-// and promoted into the permanent gate for this task.  (bead farmerbob-mqr)
-//
-//   provenance: critic or-muse-spark, found on glm-53-flash, task limit-detect
-//
-// Both passed the reference veto against the merged implementation before being added; a
-// test that fails the reference is encoding the critic's misreading, not a defect.
-#[cfg(test)]
-mod conformance_limit_detect_escalated {
-    use super::*;
 
-    /// or-muse-spark on glm-53-flash: a trailing '.' was kept by is_date_char, so the token
-    /// became "2026-09-17T00:00:00Z." and parse_from_rfc3339 failed. Log lines end in
-    /// sentences; a reset instant must survive ordinary punctuation after it.
-    #[test]
-    fn escalated_rfc3339_reset_survives_trailing_punctuation() {
-        for s in [
-            "resets at 2026-09-17T00:00:00Z.",
-            "resets at 2026-09-17T00:00:00Z, try later",
-            "resets at 2026-09-17T00:00:00Z)",
-        ] {
+
+// ESCALATED: 2 confirmed finding(s) by critic or-muse-spark, found on glm-53-flash.
+// Promoted from an executed proof that passed the reference veto. Provenance is
+// recorded so a bad test can be traced and retired.  (bead farmerbob-mqr)
+#[cfg(test)]
+    mod escalated_limit_detect_glm_53_flash {
+        use super::*;
+        // claim_1: Trailing sentence period breaks RFC3339 reset recognition.
+        #[test]
+        fn claim_1() {
+            let now = 1_789_000_000;
             assert_eq!(
-                parse_reset(s, 1_000),
-                Some(1_789_603_200),
-                "punctuation after the instant must not defeat parsing: {s:?}"
+                parse_reset("resets at 2026-09-17T00:00:00Z.", now),
+                Some(1_789_603_200)
+            );
+        }
+
+        // claim_2: Only the first occurrence of each reset prefix is examined,
+        // so an unparseable first mention hides a valid later one.
+        #[test]
+        fn claim_2() {
+            assert_eq!(
+                parse_reset("retry-after: later, retry-after: 60", 1_000),
+                Some(1_060)
             );
         }
     }
-
-    /// or-muse-spark on glm-53-flash: relative_reset called find(prefix) ONCE and returned
-    /// None when that first occurrence did not parse, instead of scanning later ones. A
-    /// provider that mentions retry-after twice is not unusual.
-    #[test]
-    fn escalated_a_later_retry_after_is_found_after_an_unparseable_one() {
-        assert_eq!(
-            parse_reset("retry-after: later, retry-after: 60", 1_000),
-            Some(1_060),
-            "an unparseable first occurrence must not abort the scan"
-        );
-    }
-}

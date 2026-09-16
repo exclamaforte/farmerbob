@@ -68,12 +68,25 @@ def dominated(x, others):
 
 front = {x[2] for x in table if not dominated(x, table)}
 
-print(f"{'ARM':<24}{'COMPLETE':>10}{'N':>4}{'TOTAL $':>10}{'$/SUCCESS':>11}{'TOKENS':>10}{'EXCL':>6}  FRONTIER")
-print("-" * 92)
+# Finding defects in a rival is a DIFFERENT capability from implementing, and until now
+# nothing measured it. An arm that implements adequately but reliably sharpens the suite is
+# worth knowing about, and the leaderboard could not express that.  (bead farmerbob-mqr)
+credits = {}
+try:
+    led = json.load(open(f"{repo}/.fb/credits.json"))
+    for c in led["contributions"]:
+        credits[c["critic"]] = credits.get(c["critic"], 0) + c["tests"]
+except Exception:
+    pass
+
+print(f"{'ARM':<24}{'COMPLETE':>10}{'N':>4}{'TOTAL $':>10}{'$/SUCCESS':>11}{'TOKENS':>10}{'EXCL':>6}{'ESC':>5}  FRONTIER")
+print("-" * 97)
 for rate, c, arm, a, per in sorted(table, key=lambda t: (-t[0], t[1])):
     mark = "  <= pareto" if arm in front else ""
     p = f"{per:.4f}" if per is not None else "  n/a"
-    print(f"{arm:<24}{rate:>9.0%}{a['n']:>4}{c:>10.4f}{p:>11}{a['tok']:>10}{a['excl']:>6}{mark}")
+    esc = credits.get(arm, 0)
+    print(f"{arm:<24}{rate:>9.0%}{a['n']:>4}{c:>10.4f}{p:>11}{a['tok']:>10}{a['excl']:>6}"
+          f"{(str(esc) if esc else '-'):>5}{mark}")
 
 tot = sum(a["cost"] for a in agg.values())
 ok = sum(a["ok"] for a in agg.values())

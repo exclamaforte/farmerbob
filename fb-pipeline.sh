@@ -56,4 +56,12 @@ run_stage crossx   "$LOGS/$T.crossx.json"  bash ./fb-crossx.sh  "$T" "$CRATE" "$
 run_stage critique "$LOGS/$T.claims.json"  bash ./fb-critique.sh "$T" "$CRATE" "$TARGET"
 run_stage promote  "$LOGS/$T.promoted.json" bash ./fb-promote.sh "$T" "$CRATE" "$TARGET"
 run_stage prove    "$LOGS/$T.proved.json"  bash ./fb-prove.sh   "$T" "$CRATE" "$TARGET"
+
+# ESCALATE. A confirmed finding should sharpen the gate for every future candidate on this
+# task, not settle one adjudication and vanish. fb-prove already wrote the test and ran it
+# against the merged reference; escalation keeps that artefact instead of discarding it, and
+# credits the critic that found it. Idempotent, so it is safe on every pipeline run.
+#   (bead farmerbob-mqr)
+./fb-escalate.sh auto "$T" 2>&1 | sed 's/^/  escalate: /'
+
 echo "== $T ready for adjudication"

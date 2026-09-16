@@ -28,6 +28,65 @@ LEDGER=.fb/credits.json
 CMD="${1:?verify|credit|ledger}"
 
 case "$CMD" in
+  auto)
+    # Harvest every CONFIRMED proof into the task's permanent suite. fb-prove already wrote
+    # the test, ran it against the subject, and ran it against the merged reference -- the
+    # artefact exists and was simply being discarded. Escalation keeps it.
+    T="${2:?task}"
+    tgt=$(grep -ohE '<!-- fb:creates [^ ]+ -->' ".fb/prompts/$T.md" 2>/dev/null | awk '{print $3}' | head -1)
+    [ -n "$tgt" ] || { echo "$T: no fb:creates target"; exit 2; }
+    crate=$(awk -F/ '{print $2}' <<< "$tgt")
+    PROOFS="$HOME/.local/share/farmerbob/logs/proofs/$T"
+    suite=".fb/conformance/$T.rs"
+    [ -d "$PROOFS" ] || { echo "$T: no proofs"; exit 0; }
+    any=0
+    for j in "$PROOFS"/*.json; do
+      [ -f "$j" ] || continue
+      subj=$(python3 -c "import json;print(json.load(open('$j'))['subject'])")
+      conf=$(python3 -c "import json;print(json.load(open('$j'))['confirmed'])")
+      [ "${conf:-0}" -gt 0 ] || continue
+      tree="$PROOFS/$subj.tree/$tgt"
+      [ -f "$tree" ] || { echo "  $subj: confirmed $conf but no proof tree"; continue; }
+      # Which critic found it. A claim names its critic; take the one with claims on this subject.
+      critic=$(python3 -c "
+import json,collections
+try: cs=json.load(open('$HOME/.local/share/farmerbob/logs/$T.claims.json'))['claims']
+except Exception: raise SystemExit
+c=collections.Counter(x['critic'] for x in cs if x.get('subject')=='$subj')
+print(c.most_common(1)[0][0] if c else '')" 2>/dev/null)
+      [ -n "$critic" ] || critic="unknown"
+      marker="escalated_${T//-/_}_${subj//-/_}"
+      if grep -q "$marker" "$suite" 2>/dev/null; then echo "  $subj: already escalated"; continue; fi
+      python3 - "$tree" "$suite" "$marker" "$T" "$subj" "$critic" "$conf" <<'PYE'
+import re, sys
+tree, suite, marker, task, subj, critic, conf = sys.argv[1:8]
+src = open(tree).read()
+m = re.search(r'#\[cfg\(test\)\]\s*mod proved\s*\{', src)
+if not m:
+    print(f"  {subj}: no `mod proved` block in the proof tree"); raise SystemExit(0)
+# Balance the braces. A greedy `.*` under DOTALL swallows the ENCLOSING module's closing
+# brace too, which appends a stray `}` and breaks the suite -- caught on the first run.
+i = src.index('{', m.start()); depth = 0; end = None
+for j in range(i, len(src)):
+    if src[j] == '{': depth += 1
+    elif src[j] == '}':
+        depth -= 1
+        if depth == 0: end = j + 1; break
+if end is None:
+    print(f"  {subj}: unbalanced `mod proved` block"); raise SystemExit(0)
+body = src[m.start():end].replace("mod proved", f"mod {marker}", 1)
+hdr = (f"\n// ESCALATED: {conf} confirmed finding(s) by critic {critic}, found on {subj}.\n"
+       f"// Promoted from an executed proof that passed the reference veto. Provenance is\n"
+       f"// recorded so a bad test can be traced and retired.  (bead farmerbob-mqr)\n")
+open(suite, "a").write(hdr + body + "\n")
+print(f"  {subj}: escalated {conf} finding(s) from {critic}")
+PYE
+      ./fb-escalate.sh credit "$T" "$critic" "$subj" "$conf" >/dev/null
+      any=1
+    done
+    [ "$any" -eq 1 ] && echo "  -> $suite  (run: ./fb-escalate.sh verify $T)"
+    exit 0
+    ;;
   verify)
     T="${2:?task}"
     suite=".fb/conformance/$T.rs"
@@ -43,6 +102,9 @@ case "$CMD" in
 import json, os, sys
 led, task, critic, subject, n = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
 d = json.load(open(led)) if os.path.exists(led) else {"contributions": []}
+key = (task, critic, subject)
+if any((c["task"], c["critic"], c["found_on"]) == key for c in d["contributions"]):
+    print(f"already credited: {critic} on {task}/{subject}"); raise SystemExit(0)
 d["contributions"].append({"task": task, "critic": critic, "found_on": subject, "tests": n})
 json.dump(d, open(led, "w"), indent=1)
 print(f"credited {critic}: {n} test(s) on {task}, found on {subject}")
