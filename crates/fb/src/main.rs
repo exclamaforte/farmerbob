@@ -1,3 +1,4 @@
+mod cmd;
 mod doctor;
 mod import;
 mod sources;
