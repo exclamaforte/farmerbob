@@ -21,6 +21,7 @@ pub mod ids;
 pub mod lease;
 pub mod lease_manager;
 pub mod proto;
+pub mod quota;
 pub mod resource;
 pub mod run;
 pub mod task;
