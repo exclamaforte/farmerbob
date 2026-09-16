@@ -77,8 +77,25 @@ if m:
     ref = open(sys.argv[2]).read()
     open(sys.argv[2], 'w').write(ref + "\n" + m.group(0))
 PYX
-    (cd "$ref" && timeout 400 cargo test -p "$CRATE" proved > "$LOGS/proofs/$BEAD/$subj.reftest" 2>&1)
-    reffail=$(grep -oE '[0-9]+ failed' "$LOGS/proofs/$BEAD/$subj.reftest"|head -1|awk '{print $1}')
+    # The veto is only meaningful if HEAD actually contains the module under test. When the
+    # task has not been merged yet there is no reference, the grafted proof cannot resolve
+    # its symbols, and the run reports 0 failures -- indistinguishable from "checked and
+    # clean". Say UNAVAILABLE instead, and mark the confirmations provisional.
+    veto_state=ok
+    if [ ! -s "$REPO/$TARGET" ]; then
+      veto_state=unavailable
+    else
+      (cd "$ref" && timeout 400 cargo test -p "$CRATE" proved > "$LOGS/proofs/$BEAD/$subj.reftest" 2>&1)
+      if grep -qE '^error\[E[0-9]+\]:|could not compile' "$LOGS/proofs/$BEAD/$subj.reftest"; then
+        veto_state=unavailable
+      fi
+    fi
+    if [ "$veto_state" = unavailable ]; then
+      reffail=0
+      echo "  $subj: VETO UNAVAILABLE -- HEAD has no reference for $TARGET; confirmations are PROVISIONAL"
+    else
+      reffail=$(grep -oE '[0-9]+ failed' "$LOGS/proofs/$BEAD/$subj.reftest"|head -1|awk '{print $1}')
+    fi
     reffail=${reffail:-0}
     # failures that also occur on the reference are invalid tests, not confirmations
     invalid=$(( reffail < ${fail:-0} ? reffail : ${fail:-0} ))
@@ -88,7 +105,8 @@ PYX
       "$subj" "$(( ${pass:-0} + ${fail:-0} + invalid ))" "${fail:-0}" "${pass:-0}" "$invalid"
     python3 -c "
 import json
-json.dump({'subject':'$subj','confirmed':${fail:-0},'refuted':${pass:-0},'vetoed':$invalid},
+json.dump({'subject':'$subj','confirmed':${fail:-0},'refuted':${pass:-0},'vetoed':$invalid,
+           'veto':'$veto_state','provisional':'$veto_state'=='unavailable'},
           open('$LOGS/proofs/$BEAD/$subj.json','w'))"
   ) &
 done

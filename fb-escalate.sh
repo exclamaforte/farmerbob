@@ -45,6 +45,11 @@ case "$CMD" in
       subj=$(python3 -c "import json;print(json.load(open('$j'))['subject'])")
       conf=$(python3 -c "import json;print(json.load(open('$j'))['confirmed'])")
       [ "${conf:-0}" -gt 0 ] || continue
+      prov=$(python3 -c "import json;print(json.load(open('$j')).get('provisional',False))" 2>/dev/null)
+      if [ "$prov" = "True" ]; then
+        echo "  $subj: confirmed $conf but the veto was UNAVAILABLE -- provisional, not escalating"
+        continue
+      fi
       tree="$PROOFS/$subj.tree/$tgt"
       [ -f "$tree" ] || { echo "  $subj: confirmed $conf but no proof tree"; continue; }
       # Which critic found it. A claim names its critic; take the one with claims on this subject.
