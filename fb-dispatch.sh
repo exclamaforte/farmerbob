@@ -100,7 +100,7 @@ UNIT="fb-${RUN//[^a-zA-Z0-9_-]/_}-$$"
   }
   case "$SRC" in
     codex-luna)      run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.6-luna "$P" ;;
-    gemini-38-flash) run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" agy -p "$P" --model gemini-3.8-flash-high --add-dir "$WT" \
+    gemini-38-flash) run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" agy -p "$P" --print-timeout 45m --model gemini-3.8-flash-high --add-dir "$WT" \
                          --dangerously-skip-permissions --output-format text ;;
     glm-53-flash)    run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" zcode --prompt "$P" ;;
     ifm-*)           set -a; . "$HOME/.config/farmerbob/secrets.env"; set +a

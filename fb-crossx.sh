@@ -70,10 +70,18 @@ PRE
     # made every suite look API-incompatible.
     base=$(basename "$f" .rs)
     if [ "$base" = lib ]; then modpath="crate"; else modpath="crate::$base"; fi
+    # A test module inherits its parent FILE's top-level imports. The hand-maintained
+    # xprelude guessed at which ones (PathBuf/Utc/Uuid) and missed serde_json::Value, so a
+    # suite failed to compile against its OWN implementation -- an impossible result that
+    # marks the instrument, not the candidate.  Carry the file's real imports instead of
+    # predicting them.  (bead farmerbob-74l)
+    USES=$(awk '/#\[cfg\(test\)\]/{exit} /^use /{print}' "$f")
     awk '/#\[cfg\(test\)\]/{f=1} f' "$f" \
       | sed -e "s/^\( *\)mod tests/\1mod xtests_${n}/" \
             -e "s|use super::\*;|use ${modpath}::*; use crate::xprelude::*;|" \
-            -e "s|use super::|use ${modpath}::|" >> "$TMP/suite.$a.rs"
+            -e "s|use super::|use ${modpath}::|" \
+      | awk -v uses="$USES" '{print} /^ *mod xtests_[0-9]+ *\{/ && !done {print uses; done=1}' \
+      >> "$TMP/suite.$a.rs"
     echo >> "$TMP/suite.$a.rs"
     n=$((n+1))
   done

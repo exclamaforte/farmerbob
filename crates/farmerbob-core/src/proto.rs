@@ -213,7 +213,7 @@ mod tests {
         assert!(encoded.ends_with('\n'));
         assert!(!encoded[..encoded.len() - 1].contains('\n'));
 
-        let decoded: Hello = decode_line(&encoded.trim_end()).unwrap();
+        let decoded: Hello = decode_line(encoded.trim_end()).unwrap();
         assert_eq!(decoded.proto_version, PROTO_VERSION);
     }
 
@@ -249,7 +249,7 @@ mod tests {
             params: serde_json::json!({ "task_id": "abc" }),
         };
         let encoded = encode(&req).unwrap();
-        let decoded: Request = decode_line(&encoded.trim_end()).unwrap();
+        let decoded: Request = decode_line(encoded.trim_end()).unwrap();
         assert_eq!(decoded.id, req.id);
         assert!(matches!(decoded.method, Method::RunStart));
         assert_eq!(decoded.params, req.params);
@@ -262,7 +262,7 @@ mod tests {
             result: serde_json::json!({ "run_id": "run-123" }),
         });
         let encoded = encode(&resp).unwrap();
-        let decoded: Response = decode_line(&encoded.trim_end()).unwrap();
+        let decoded: Response = decode_line(encoded.trim_end()).unwrap();
         assert!(matches!(decoded, Response::Ok(ref ok) if ok.id == 1));
     }
 
@@ -276,7 +276,7 @@ mod tests {
             },
         });
         let encoded = encode(&resp).unwrap();
-        let decoded: Response = decode_line(&encoded.trim_end()).unwrap();
+        let decoded: Response = decode_line(encoded.trim_end()).unwrap();
         assert!(matches!(decoded, Response::Err(ref err) if err.id == 2 && err.error.code == ErrorCode::NotFound));
     }
 
@@ -286,7 +286,7 @@ mod tests {
             topics: vec![Topic::Runs, Topic::Leases],
         };
         let encoded = encode(&sub).unwrap();
-        let decoded: Subscribe = decode_line(&encoded.trim_end()).unwrap();
+        let decoded: Subscribe = decode_line(encoded.trim_end()).unwrap();
         assert_eq!(decoded.topics, sub.topics);
     }
 
@@ -297,7 +297,7 @@ mod tests {
             state: "Running".to_string(),
         };
         let encoded = encode(&evt).unwrap();
-        let decoded: Event = decode_line(&encoded.trim_end()).unwrap();
+        let decoded: Event = decode_line(encoded.trim_end()).unwrap();
         assert!(matches!(decoded, Event::RunStateChanged { run_id, state } if run_id == "run-1" && state == "Running"));
     }
 
@@ -308,7 +308,7 @@ mod tests {
             run_id: "run-1".to_string(),
         };
         let encoded = encode(&evt).unwrap();
-        let decoded: Event = decode_line(&encoded.trim_end()).unwrap();
+        let decoded: Event = decode_line(encoded.trim_end()).unwrap();
         assert!(matches!(decoded, Event::LeaseGranted { lease_id, run_id } if lease_id == "lease-1" && run_id == "run-1"));
     }
 
@@ -318,7 +318,7 @@ mod tests {
             lease_id: "lease-1".to_string(),
         };
         let encoded = encode(&evt).unwrap();
-        let decoded: Event = decode_line(&encoded.trim_end()).unwrap();
+        let decoded: Event = decode_line(encoded.trim_end()).unwrap();
         assert!(matches!(decoded, Event::LeaseReleased { lease_id } if lease_id == "lease-1"));
     }
 
@@ -328,7 +328,7 @@ mod tests {
             experiment_id: "exp-1".to_string(),
         };
         let encoded = encode(&evt).unwrap();
-        let decoded: Event = decode_line(&encoded.trim_end()).unwrap();
+        let decoded: Event = decode_line(encoded.trim_end()).unwrap();
         assert!(matches!(decoded, Event::ExperimentFinished { experiment_id } if experiment_id == "exp-1"));
     }
 
@@ -338,7 +338,7 @@ mod tests {
             run_id: "run-1".to_string(),
         };
         let encoded = encode(&evt).unwrap();
-        let decoded: Event = decode_line(&encoded.trim_end()).unwrap();
+        let decoded: Event = decode_line(encoded.trim_end()).unwrap();
         assert!(matches!(decoded, Event::QuotaParked { run_id } if run_id == "run-1"));
     }
 
@@ -348,7 +348,7 @@ mod tests {
             timestamp: "2024-01-01T00:00:00Z".to_string(),
         };
         let encoded = encode(&evt).unwrap();
-        let decoded: Event = decode_line(&encoded.trim_end()).unwrap();
+        let decoded: Event = decode_line(encoded.trim_end()).unwrap();
         assert!(matches!(decoded, Event::Heartbeat { timestamp } if timestamp == "2024-01-01T00:00:00Z"));
     }
 
@@ -432,7 +432,7 @@ mod tests {
         ];
         for method in methods {
             let encoded = encode(&method).unwrap();
-            let decoded: Method = decode_line(&encoded.trim_end()).unwrap();
+            let decoded: Method = decode_line(encoded.trim_end()).unwrap();
             assert_eq!(format!("{:?}", method), format!("{:?}", decoded));
         }
     }

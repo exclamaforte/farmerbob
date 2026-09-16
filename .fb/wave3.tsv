@@ -1,0 +1,5 @@
+limit-detect	farmerbob-core	or-muse-spark,glm-53-flash
+crossx	farmerbob-core	or-hy4-preview,gemini-38-flash
+speed	farmerbob-core	or-hy3,codex-luna
+prior	farmerbob-core	or-deepseek-v4-flash,ifm-k2-think
+defect-sens	farmerbob-core	or-qwen-max,gemini-38-flash
