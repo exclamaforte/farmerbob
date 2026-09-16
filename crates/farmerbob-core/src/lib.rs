@@ -11,10 +11,14 @@
 #![forbid(unsafe_code)]
 
 pub mod adapter;
+pub mod adjudicate;
 pub mod agent;
 pub mod slots;
 pub mod attempt_log;
+pub mod corpus;
+pub mod cost;
 pub mod crossx;
+pub mod divergence;
 pub mod envelope;
 pub mod error;
 pub mod experiment;

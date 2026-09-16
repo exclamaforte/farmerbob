@@ -33,6 +33,22 @@ LIMIT_PATTERNS = (
     "usage limit reached",                      # codex
 )
 
+# A run the LAUNCHER refused is not a run the arm failed. opencode auto-rejects a tool
+# call touching what it considers an external directory -- including the run's own worktree
+# under ~/.local/share/farmerbob -- and the agent stops there. Three wave5 runs across three
+# arms died this way and were scored as "produced nothing".   (bead farmerbob-1bd)
+def permission_killed(rec):
+    path = rec.get("log")
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        with open(path, errors="replace") as fh:
+            body = fh.read(200_000).lower()
+    except OSError:
+        return False
+    return ("permission requested: external_directory" in body
+            and "rejected permission to use this specific tool call" in body)
+
 def quota_blocked(rec):
     """True when the run's own log opens with a provider refusal."""
     path = rec.get("log")
@@ -93,6 +109,7 @@ for task, entries in sorted(score.items()):
                        ("task_invalid" if e.get("verdict") == "TASK-INVALID" else
                         "orchestrator_cancelled" if rec.get("rc") in (143, 137) else
                         "quota_limited" if quota_blocked(rec) else
+                        "infrastructure" if permission_killed(rec) else
                         "unknown" if rec.get("verdict") is None else "arm_result"),
         })
 

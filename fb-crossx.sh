@@ -19,11 +19,25 @@ REPO=/home/gabe/Documents/farmerbob
 OUT="$HOME/.local/share/farmerbob/logs/$BEAD.crossx.json"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
+# Only candidates that PASSED the gate are cross-examined. A candidate whose build failed
+# cannot run its own suite against its own code, which would trip the diagonal invariant and
+# void a matrix that is otherwise sound -- ifm-k2-think did exactly that on adjudicate, where
+# the other three candidates were fine.  (bead farmerbob-74l)
+PASSED=$(python3 -c "
+import json,sys
+try: d=json.load(open('$HOME/.local/share/farmerbob/logs/$BEAD.score.json'))
+except Exception: sys.exit(0)
+print(' '.join(r['source'] for r in d if r.get('verdict')=='PASS'))" 2>/dev/null)
+
 ARMS=(); for W in "$WT_ROOT/$BEAD--"*; do
   [ -d "$W" ] || continue
   [ -f "$W/.fb-task.md" ] && continue          # never score a live run
   [ -f "$W/$FILE" ] || continue
-  ARMS+=("${W##*/$BEAD--}")
+  a="${W##*/$BEAD--}"
+  if [ -n "$PASSED" ]; then
+    case " $PASSED " in *" $a "*) ;; *) echo "  skip $a (did not pass the gate)"; continue ;; esac
+  fi
+  ARMS+=("$a")
 done
 echo "candidates: ${ARMS[*]}"
 [ "${#ARMS[@]}" -lt 2 ] && { echo "need >=2"; exit 1; }
