@@ -35,12 +35,13 @@ echo "candidates: ${ARMS[*]}"
 # from anyway.
 SRCDIR_REL="crates/$CRATE/src"
 TARGET_REL="$FILE"          # the module a suite is grafted into
+slug() { printf '%s' "$1" | tr -c 'a-zA-Z0-9' '_'; }
 for a in "${ARMS[@]}"; do
   # A test module inherits its parent FILE's imports. Grafted into lib.rs those are gone,
   # producing E0433 "cannot find type PathBuf/Utc/Uuid" -- tooling noise, not an API
   # mismatch. Re-supply the crate's common imports so that only genuine signature
   # divergence shows up as nocompile.
-  : > "$TMP/suite.$a.rs"
+  rm -f "$TMP/suite.$a."*.rs; : > "$TMP/manifest.$a"
   # Which files hold this candidate's work. Prefer the task's own declaration -- the spec
   # states `fb:creates` / `fb:modifies`, which is precise and survives the candidate being
   # committed or merged (at which point a diff against HEAD is empty). Fall back to the
@@ -73,11 +74,15 @@ for a in "${ARMS[@]}"; do
     awk '/#\[cfg\(test\)\]/{f=1} f' "$f" \
       | sed -e "s/^\( *\)mod tests/\1mod xtests_${n}/" \
       | awk -v uses="$USES" '{print} /^ *mod xtests_[0-9]+ *\{/ && !done {print uses; done=1}' \
-      >> "$TMP/suite.$a.rs"
-    echo >> "$TMP/suite.$a.rs"
+      >> "$TMP/suite.$a.$(slug "$rel").rs"
+    echo >> "$TMP/suite.$a.$(slug "$rel").rs"
+    grep -qxF "$rel" "$TMP/manifest.$a" || echo "$rel" >> "$TMP/manifest.$a"
     n=$((n+1))
   done
-  printf '  suite %-22s %s lines, %s tests\n' "$a" "$(wc -l < "$TMP/suite.$a.rs")" "$(grep -c '#\[test\]' "$TMP/suite.$a.rs")"
+  printf '  suite %-22s %s lines, %s tests, %s file(s)\n' "$a" \
+    "$(cat "$TMP/suite.$a."*.rs 2>/dev/null | wc -l)" \
+    "$(cat "$TMP/suite.$a."*.rs 2>/dev/null | grep -c '#\[test\]')" \
+    "$(wc -l < "$TMP/manifest.$a")"
 done
 
 # N^2 cargo cycles. Measured: one cold cycle peaks at ~881M across rustc+cargo, so a machine
@@ -98,9 +103,18 @@ run_one() {
   # failed to compile against its OWN implementation (or-hy3 on speed: E0616 on
   # first_write_ms) and the matrix read "no signal". Graft into the module under test,
   # where `use super::*` resolves exactly as the author wrote it.  (bead farmerbob-74l)
-  local target="$C/$TARGET_REL"
-  if [ -f "$target" ]; then cat "$TMP/suite.$suite.rs" >> "$target"
-  else cat "$TMP/suite.$suite.rs" >> "$C/$SRCDIR_REL/lib.rs"; fi
+  # A task may declare several files (fb:creates + fb:modifies). Concatenating their tests
+  # into one graft put quota.rs's tests inside limit_signal.rs, where `use super::*` names
+  # the wrong module and BOTH arms failed against their own code. Each file's tests go home.
+  local grafted=0 rel
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    local sfile="$TMP/suite.$suite.$(slug "$rel").rs"
+    [ -f "$sfile" ] || continue
+    if [ -f "$C/$rel" ]; then cat "$sfile" >> "$C/$rel"; grafted=$((grafted+1)); fi
+  done < "$TMP/manifest.$suite"
+  # The implementation does not have the file this suite tests: a genuine API divergence.
+  [ "$grafted" -eq 0 ] && { echo nocompile > "$RES/$impl|$suite"; rm -rf "$C"; return; }
   local o="$C/out"
   if (cd "$C" && timeout 300 cargo test -p "$CRATE" >"$o" 2>&1); then echo pass > "$RES/$impl|$suite"
   elif grep -qE '^error\[E[0-9]+\]:|could not compile' "$o"; then echo nocompile > "$RES/$impl|$suite"

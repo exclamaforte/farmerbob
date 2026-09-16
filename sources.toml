@@ -7,7 +7,8 @@
 
 # ---------------------------------------------------------------- native CLIs
 [source.claude-sonnet]
-status      = "verified"
+status      = "disabled"
+disabled_reason = "the orchestrator runs on the same plan; dispatching sonnet competes with it for tokens (user instruction, 2026-09-16). Kept in the registry as the reference adapter -- set FB_ALLOW_PAID_DUPES=1 only to re-validate another adapter against it."
 kind        = "cli"
 cmd         = "claude"
 args        = ["-p", "{prompt}", "--permission-mode", "bypassPermissions",

@@ -26,12 +26,29 @@ print(d.get('quota_bucket') or d.get('provider') or 'unknown')" "$1"
 in_flight_for() { ls "$LOCKDIR"/"$1".* 2>/dev/null | wc -l; }
 LOCKDIR=$(mktemp -d); trap 'rm -rf "$LOCKDIR"' EXIT
 
+# The eligibility guard existed and was called by nothing, so every protection it
+# encodes -- disabled arms, paid duplicates of free routes, unregistered names -- was
+# advisory. An unregistered arm reached provider_of and crashed it with a KeyError
+# after burning a dispatch.  (bead farmerbob-vgn)
+. /home/gabe/Documents/farmerbob/fb-eligible.sh
+
 QUEUE=()
 while IFS=$'\t' read -r task crate arms; do
   [ -z "${task:-}" ] && continue
   IFS=',' read -ra A <<< "$arms"
-  for a in "${A[@]}"; do QUEUE+=("$a|$task|$crate"); done
+  for a in "${A[@]}"; do
+    if ! fb_eligible "$a"; then
+      # A name absent from the registry is a typo, and a typo means this matrix does not
+      # run what its author believed. That is worth stopping the wave for; a deliberately
+      # disabled arm is not.
+      grep -q "^\[source\.$a\]" /home/gabe/Documents/farmerbob/sources.toml \
+        || { echo "abort: $a is not a registered arm"; exit 2; }
+      continue
+    fi
+    QUEUE+=("$a|$task|$crate")
+  done
 done < "$M"
+[ "${#QUEUE[@]}" -eq 0 ] && { echo "no eligible runs"; exit 1; }
 echo "queued ${#QUEUE[@]} runs"
 
 running=0

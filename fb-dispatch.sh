@@ -73,18 +73,25 @@ rm -f "$WT/.fb"/*.tsv
 rm -f "$WT"/fb-*.sh
 
 START=$(date +%s)
+UNIT="fb-${RUN//[^a-zA-Z0-9_-]/_}-$$"
 CGSNAP="$LOG_ROOT/$RUN.cgroup"; : > "$CGSNAP"
 MEMSNAP="$LOG_ROOT/$RUN.mem"; : > "$MEMSNAP"
+# pgrep -f "$WT" matched ANY process with the worktree path in its command line --
+# including this script's own `git worktree add ... "$WT"`, which runs in the CALLER's
+# cgroup. The max then reported the desktop session's memory as the agent's: 13815 MB
+# under a 2G cap.  The cgroup is the authority on which processes belong to this run,
+# so ask it directly and never sample a cgroup that is not ours.  (bead farmerbob-05p)
 ( for _ in $(seq 1 400); do
     for pid in $(pgrep -f "$WT" 2>/dev/null); do
       cg=$(sed -n 's|^0::||p' "/proc/$pid/cgroup" 2>/dev/null)
-      [ -n "$cg" ] && echo "$cg"
-      [ -n "$cg" ] && cat "/sys/fs/cgroup$cg/memory.peak" 2>/dev/null >> "$MEMSNAP"
+      [ -n "$cg" ] || continue
+      echo "$cg"
+      case "$cg" in *"$UNIT"*) ;; *) continue ;; esac   # foreign cgroup: record, never measure
+      cat "/sys/fs/cgroup$cg/memory.peak" 2>/dev/null >> "$MEMSNAP"
     done
     sleep 3
   done ) >> "$CGSNAP" 2>/dev/null &
 CGPID=$!
-UNIT="fb-${RUN//[^a-zA-Z0-9_-]/_}-$$"
 (
   cd "$WT" || exit 1
   P="$(cat .fb-task.md)"

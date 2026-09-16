@@ -21,6 +21,7 @@ pub mod experiment;
 pub mod grade;
 pub mod ids;
 pub mod lease;
+pub mod limit_signal;
 pub mod lease_manager;
 pub mod prior;
 pub mod proto;

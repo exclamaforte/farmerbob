@@ -1,0 +1,5 @@
+promote	farmerbob-core	or-muse-spark,or-hy3
+liveness	farmerbob-core	codex-luna,or-hy4-preview
+store-mig	farmerbob-store	or-deepseek-v4-flash,glm-53-flash
+adjudicate	farmerbob-core	or-qwen38-flash,ifm-k2-think
+defect-sens	farmerbob-core	or-luna-pro,or-qwen38-max

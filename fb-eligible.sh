@@ -55,3 +55,8 @@ if free and (v.get('price_in') or 0) > 0:
 raise SystemExit(0)
 PY
 }
+
+# Sourced for the function; executed for a one-shot check. Without this, running
+# `bash fb-eligible.sh <arm>` defined the function, called nothing, and exited 0 --
+# a smoke test that reported nine arms eligible while measuring none.  (farmerbob-vgn)
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then fb_eligible "${1:?arm}"; fi
