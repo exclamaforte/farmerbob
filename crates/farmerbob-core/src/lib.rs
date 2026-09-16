@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod adapter;
 pub mod agent;
 pub mod error;
 pub mod experiment;
