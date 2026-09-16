@@ -16,15 +16,18 @@ LOG="$HOME/.local/share/farmerbob/logs/autopilot.log"
 mkdir -p "$Q" "$DONE"
 
 say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >> "$LOG"; }
-say "autopilot up (pid $$)"
+BEAT="$HOME/.local/share/farmerbob/logs/autopilot.heartbeat"
+beat() { printf '%s pid=%s %s\n' "$(date -Is)" "$$" "$*" > "$BEAT"; }
+say "autopilot up (pid $$)"; beat "starting"
 
 while :; do
   live=$(systemctl --user list-units --type=scope --no-legend 2>/dev/null \
          | grep -c 'fb-[a-z0-9-]*--.*\.scope' || true)
   waves=$(pgrep -f 'fb-admit\.sh' 2>/dev/null | wc -l)
 
+  beat "live=$live waves=$waves queued=$(ls -1 "$Q"/*.tsv 2>/dev/null | wc -l)"
   if [ "${live:-0}" -eq 0 ] && [ "${waves:-0}" -eq 0 ]; then
-    next=$(ls -1 "$Q"/*.tsv 2>/dev/null | head -1)
+    next=$(ls -1v "$Q"/*.tsv 2>/dev/null | head -1)   # -v: wave9 before wave10, not after
     if [ -n "$next" ]; then
       # Claim the file BEFORE launching. fb-wave.sh detaches and returns immediately, so
       # moving it afterwards yanks the matrix out from under fb-admit.sh, which then reports
@@ -41,8 +44,10 @@ while :; do
         fi
       fi
     else
-      say "idle, queue empty -- waiting for the orchestrator to stock .fb/queue/"
+      say "IDLE, queue empty -- nothing to launch; orchestrator must stock .fb/queue/"
     fi
+  else
+    say "busy: $live agents, $waves dispatcher(s)"
   fi
   sleep 120
 done

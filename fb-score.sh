@@ -11,6 +11,11 @@ LOG_ROOT="$HOME/.local/share/farmerbob/logs"
 OUT="$LOG_ROOT/$BEAD.score.json"
 
 echo "[" > "$OUT"; first=1
+# Baseline the crate on the repo HEAD, once, so each arm is measured on what it ADDED
+# rather than on what it inherited.  (bead farmerbob-0fx)
+BASE_CLIPPY=$( (cd /home/gabe/Documents/farmerbob && cargo clippy -p "$CRATE" --all-targets 2>&1) | grep -cE '^warning|^error' )
+echo "clippy baseline: $CRATE on HEAD = $BASE_CLIPPY"
+
 for WT in "$WT_ROOT/$BEAD--"*; do
   [ -d "$WT" ] || continue
   SRC="${WT##*/$BEAD--}"
@@ -48,7 +53,14 @@ for WT in "$WT_ROOT/$BEAD--"*; do
   if [ "$B" = "pass" ]; then
     (cd "$WT" && cargo test -p "$CRATE" >"$TL" 2>&1) && T="pass"
     N=$(grep -oE '^test result: ok\. [0-9]+ passed' "$TL" | awk '{s+=$4} END{print s+0}')
-    CLIPPY=$( (cd "$WT" && cargo clippy -p "$CRATE" 2>&1) | grep -cE '^warning|^error' )
+    # DELTA, not absolute. Counting the crate's total warnings charges every candidate for
+    # lint debt it inherited: on cli-tree, master's fb crate already had 6 and both arms had
+    # exactly 6, yet both were scored clippy=5. It failed quietly -- all candidates got the
+    # same wrong number, so criterion 3 read as a tie rather than as a broken metric.
+    # A negative delta is kept: cleaning up inherited warnings deserves the credit.
+    # (bead farmerbob-0fx)
+    CAND=$( (cd "$WT" && cargo clippy -p "$CRATE" --all-targets 2>&1) | grep -cE '^warning|^error' )
+    CLIPPY=$(( CAND - BASE_CLIPPY ))
   else
     ERR=$(grep -m1 -oE '^error(\[E[0-9]+\])?: .*' "$TL" | cut -c1-70)
   fi
