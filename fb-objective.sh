@@ -49,6 +49,30 @@ def permission_killed(rec):
     return ("permission requested: external_directory" in body
             and "rejected permission to use this specific tool call" in body)
 
+
+# A credential the harness got wrong, or an endpoint rejecting the HARNESS's request shape,
+# says nothing about the model. IFM rejects opencode's replayed `reasoning_content` field
+# with wrong_api_format, which killed runs before shims/ifm-proxy.py existed; a stale API
+# key killed another. Both were scored as the arm producing nothing.
+INFRA_PATTERNS = (
+    "incorrect api key provided",
+    "wrong_api_format",
+    "is unsupported\",",              # reasoning_content property rejection
+    "invalid_request_error",
+    "401 unauthorized",
+)
+
+def harness_failed(rec):
+    path = rec.get("log")
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        with open(path, errors="replace") as fh:
+            head = "".join(fh.readline() for _ in range(12)).lower()
+    except OSError:
+        return False
+    return any(p in head for p in INFRA_PATTERNS)
+
 def quota_blocked(rec):
     """True when the run's own log opens with a provider refusal."""
     path = rec.get("log")
@@ -109,9 +133,23 @@ for task, entries in sorted(score.items()):
                        ("task_invalid" if e.get("verdict") == "TASK-INVALID" else
                         "orchestrator_cancelled" if rec.get("rc") in (143, 137) else
                         "quota_limited" if quota_blocked(rec) else
-                        "infrastructure" if permission_killed(rec) else
+                        "infrastructure" if permission_killed(rec) or harness_failed(rec) else
                         "unknown" if rec.get("verdict") is None else "arm_result"),
         })
+
+# UNANIMITY INDICTS THE TASK, NOT THE FIELD. When every arm on a task wrote zero lines,
+# the overwhelmingly likely cause is that the deliverable already existed at the base commit
+# (farmerbob-m71) or the spec was unreachable -- not that four independent models each chose
+# to do nothing. gpu-lease: all four arms, 0 lines, identical test counts.
+from collections import defaultdict as _dd
+_by_task = _dd(list)
+for _r in rows:
+    _by_task[_r["task"]].append(_r)
+for _t, _rs in _by_task.items():
+    _arm = [x for x in _rs if x["outcome"] == "arm_result"]
+    if len(_arm) >= 2 and all((x.get("lines") or 0) == 0 for x in _arm):
+        for x in _arm:
+            x["outcome"] = "task_invalid"
 
 hdr = f"{'TASK':<14}{'ARM':<22}{'VERDICT':<11}{'TESTS':>6}{'CLIPPY':>7}{'LINES':>7}{'PORT':>7}{'DEFECT':>8}{'SECS':>6}{'MEM':>6}{'$/1M':>7}  OUTCOME"
 print(hdr); print("-" * len(hdr))
