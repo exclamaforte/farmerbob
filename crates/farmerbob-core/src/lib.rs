@@ -15,6 +15,7 @@ pub mod adjudicate;
 pub mod agent;
 pub mod slots;
 pub mod attempt_log;
+pub mod compare;
 pub mod corpus;
 pub mod cost;
 pub mod crossx;

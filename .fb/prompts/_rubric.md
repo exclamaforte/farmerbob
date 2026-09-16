@@ -37,6 +37,11 @@ states its own status, and you should read it literally:
 
 If a list carries no such marker, treat it as the second form, and say so in your handoff.
 
+**And to the composition of anything aggregate you return.** If a function returns a
+table, a tuple, or a collection whose membership is not forced by its type, the spec states
+exactly what is in it and in what order. Where it does not, say so in your handoff and do
+not let your tests assert on it.
+
 **The same applies to every numeric boundary.** Where a clause says "after N has elapsed",
 "at least N", or "below N", the behaviour AT N and at the degenerate value (N = 0, an empty
 collection, a timestamp that runs backwards) is part of the contract. If the spec does not
