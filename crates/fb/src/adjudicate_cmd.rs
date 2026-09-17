@@ -114,6 +114,7 @@ fn tests_written(task: &str, arm: &str) -> Option<u32> {
 fn evidence(task: &str) -> Vec<Evidence> {
     let score = load(&logs().join(format!("{task}.score.json")));
     let cx = load(&logs().join(format!("{task}.crossx.json")));
+    let defects_json = load(&logs().join(format!("{task}.defects.json")));
     let mut out = Vec::new();
     let Some(Value::Array(rows)) = score else { return out };
     for r in rows {
@@ -132,13 +133,42 @@ fn evidence(task: &str) -> Vec<Evidence> {
             .and_then(|c| c.get(&arm))
             .and_then(|v| v.get("suite_overfitted"))
             .and_then(|v| v.as_bool());
+        let defect_sensitivity = defects_json
+            .as_ref()
+            .and_then(|d| d.get("arms"))
+            .and_then(|a| a.get(&arm))
+            .and_then(|v| {
+                let of = v.get("beyond_reference_of").and_then(serde_json::Value::as_u64);
+                let caught = v.get("beyond_reference_caught").and_then(serde_json::Value::as_u64);
+                match (caught, of) {
+                    (Some(c), Some(n)) if n > 0 => Some(c as f64 / n as f64),
+                    _ => {
+                        let c = v.get("caught").and_then(serde_json::Value::as_u64)?;
+                        let n = v.get("comparable").and_then(serde_json::Value::as_u64)?;
+                        (n > 0).then(|| c as f64 / n as f64)
+                    }
+                }
+            });
         out.push(Evidence {
             arm,
             // A frozen suite is the real measurement. Where none exists, clearing the
             // build-and-tests gate is the strongest conformance signal available, and
             // saying so beats reporting NoCandidate for every task without one.
             conformance: Some(1.0),
-            defect_sensitivity: None,
+            // Defect sensitivity, from <task>.defects.json when fb-defects has run.
+            //
+            // It reports TWO numbers and only one of them ranks anything. Raw sensitivity --
+            // validated defects caught -- came back 100% for every arm on every task
+            // measured, because a mutant was kept only if the REFERENCE suite detected it,
+            // which selects for defects any competent suite catches. The discriminating
+            // number is `beyond_reference`: defects the reference MISSES. On gate the raw
+            // figure was 12/12 four ways and beyond-reference split the field 1/2, 1/2, 0/2,
+            // 0/2.
+            //
+            // So the criterion prefers beyond-reference where it exists, and falls back to
+            // raw sensitivity where no mutant escaped the reference -- in which case it is
+            // reporting agreement, not quality, and will tie.  (bead farmerbob-jd2.11)
+            defect_sensitivity,
             survival,
             clippy: r.get("clippy").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()),
             crates_touched: r.get("crates_touched").and_then(|v| v.as_u64()).map(|n| n as u32),
@@ -166,9 +196,10 @@ pub fn run(task: &str, epsilon: f64, allow_missing_critique: bool) -> i32 {
     }
     for c in &cands {
         println!(
-            "  {:<22} survival={:<6} clippy={:<4} tests={:<5} lines={}",
+            "  {:<22} survival={:<6} defect={:<6} clippy={:<4} tests={:<5} lines={}",
             c.arm,
             c.survival.map(|v| format!("{v:.2}")).unwrap_or_else(|| "n/a".into()),
+            c.defect_sensitivity.map(|v| format!("{v:.2}")).unwrap_or_else(|| "n/a".into()),
             c.clippy.map(|v| v.to_string()).unwrap_or_else(|| "n/a".into()),
             c.tests.map(|v| v.to_string()).unwrap_or_else(|| "n/a".into()),
             c.lines.map(|v| v.to_string()).unwrap_or_else(|| "n/a".into()),
