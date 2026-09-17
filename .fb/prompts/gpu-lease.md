@@ -29,7 +29,34 @@ pub struct HolderId(pub String);   // the run holding or wanting the lease
 
 API:
 
-- `LeaseManager::new()` and `register_resource(name, ResourceName)`.
+- `LeaseManager::new() -> LeaseManager`
+- `register_resource(&mut self, name: ResourceName, max_hold: Duration)` — the max hold is
+  **per resource and supplied here**. There is no crate-level default and no global constant.
+
+**Use these exact parameter types. Do NOT make them generic** — no `impl Into<ResourceName>`,
+no `impl AsRef<str>`, no custom clock trait. Time is `chrono::DateTime<Utc>` and durations are
+`chrono::Duration`, everywhere, concretely.
+
+**These three types are fixed, field for field, in this order:**
+
+```rust
+pub enum RequestOutcome { Granted(LeaseToken), Queued { position: usize } }
+
+pub struct Grant {
+    pub resource: ResourceName,
+    pub holder:   HolderId,
+    pub token:    LeaseToken,
+    pub acquired_at: DateTime<Utc>,
+}
+
+pub struct LeaseStatus {
+    pub resource:  ResourceName,
+    pub holder:    Option<HolderId>,
+    pub held_for:  Option<Duration>,
+    pub queue_depth: usize,
+    pub waiting:   Vec<HolderId>,   // FIFO order, front of queue first
+}
+```
 - `request(resource, holder, now) -> RequestOutcome` where `RequestOutcome` is either
   `Granted(LeaseToken)` or `Queued { position: usize }`.
 - `release(token, now) -> Option<Grant>` — releases, then grants to the next waiter in
