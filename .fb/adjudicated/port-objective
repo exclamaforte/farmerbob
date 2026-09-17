@@ -1,12 +1,15 @@
-VOID -- the one candidate failed the differential
-Adjudicated 2026-09-17. Three of four arms produced nothing; the fourth, or-luna-pro, built
-clean, was scope clean, and passed its 2 tests -- then failed the differential on two counts.
-It emits 220 rows where the shell emits 137, and it renames the `crates` field to
-`crates_touched`. The rename is a real defect: fb-objective.sh:123 renames deliberately on the
-way out (`"crates": e.get("crates_touched")`) and the port passed the raw name through, into
-the file `fb pareto`, `fb select` and the bandit's posteriors all read.
-Not merged. The row-count divergence alone would have changed every downstream metric.
-The run also overwrote logs/objective.json before it was known to be correct; restored from a
-copy taken beforehand, and filed as farmerbob-jd2.14 -- the differential must run against a
-redirected output path, which is the FB_LOGS override a critic asked for on port-critique and
-I did not act on.
+MERGED or-hy3
+Adjudicated 2026-09-17, second attempt. 17 tests to or-inkling's 4 and or-luna-pro's 2, all
+three PASS and scope clean. Its output is FIELD-FOR-FIELD IDENTICAL to fb-objective.sh run
+fresh: 225 rows, same run set, no differing field on any row.
+CORRECTION TO THE FIRST ADJUDICATION. That attempt was voided for emitting "220 rows where the
+shell emits 137". It was never compared against the shell. It was compared against a STALE
+objective.json that had not been regenerated since several tasks ran. The shell, run now,
+emits 225. The arm was right and I was wrong, and I wrote that false defect into the spec
+where it sat until this run reproduced it identically from two independent arms -- N-of-N,
+which is the signal that the fault is not in the field.
+The `crates`/`crates_touched` rename WAS real, verified against fb-objective.sh:123, and both
+surviving ports honour it now that the spec pins it.
+Credited: or-inkling for a run_cmd(logs, wtroot, repo, only) signature that takes its paths as
+arguments -- the injection a critic asked for on port-critique, and the only one of the three
+that is testable against a fake tree without environment variables.

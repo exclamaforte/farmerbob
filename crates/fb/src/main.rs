@@ -9,6 +9,7 @@ mod import;
 mod prove;
 mod pareto;
 mod mutants;
+mod objective;
 mod paths;
 mod score;
 mod select;
@@ -67,6 +68,8 @@ enum Command {
         /// the port matched it rather than inventing parameters it does not use.
         task: String,
     },
+    /// Rebuild logs/objective.json.
+    Objective { #[arg(default_value = "")] only: String },
     /// Generate a defect set mechanically, so suite sensitivity can be measured.
     ///
     /// DefectSensitivity is the adjudicator's only direct measure of suite quality and has
@@ -418,6 +421,7 @@ fn main() {
             if v.is_pass() { exit::OK } else { exit::ERROR }
         }
         Some(Command::Promote { task }) => promote::run_cmd(&task),
+        Some(Command::Objective { only }) => objective::run_cmd(if only.is_empty() { None } else { Some(only) }),
         Some(Command::Mutants { file, task, max }) => mutants::run_cmd(&file, &task, max),
         Some(Command::Prove { task, krate, target, prover }) =>
             prove::run_cmd(&task, &krate, &target, &prover),
