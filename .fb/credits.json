@@ -191,6 +191,18 @@
    "critic": "or-luna-pro",
    "found_on": "codex-luna",
    "tests": 1
+  },
+  {
+   "task": "port-crossx",
+   "critic": "or-hy3",
+   "found_on": "or-luna-pro",
+   "tests": 1
+  },
+  {
+   "task": "port-crossx",
+   "critic": "or-luna-pro",
+   "found_on": "codex-luna",
+   "tests": 1
   }
  ]
 }

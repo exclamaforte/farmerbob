@@ -52,6 +52,18 @@ expected strings.
 
 - Public entry point: `pub fn run_cmd(...) -> i32`, returning the process exit code, with
   arguments matching the script's positional parameters in order.
+- **Wire it as an `fb` SUBCOMMAND in `main.rs`** -- a `Command` variant with the script's
+  parameters as arguments, and a dispatch arm calling `run_cmd`. A module that only declares
+  `mod x;` compiles, passes its own tests, and is unreachable from the binary, which is the
+  exact condition this whole migration exists to end.
+
+  This requirement is here because two critics found its absence independently, reviewing
+  different subjects: "the module is shipped as `#[allow(dead_code)] mod crossx;` with no
+  subcommand wired -- the feature is unreachable except by calling `run_cmd` directly, a merge
+  hazard", and "the implementation can compile and have unit coverage while remaining
+  inaccessible to users of the public `fb` interface". An earlier version of this spec asked
+  only for the module declaration, so every candidate complied and every candidate was
+  unreachable. The defect was mine.
 - No `unwrap()`, `expect()`, `panic!`, `todo!` or `unimplemented!` on any path reachable from
   input, outside `#[cfg(test)]`.
 - Available deps in `crates/fb`: farmerbob-core, clap, anyhow, serde, serde_json, toml,

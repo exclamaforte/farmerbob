@@ -1,0 +1,15 @@
+MERGED or-hy3
+Adjudicated 2026-09-17. 21 tests to the others' 2 and 2, scope CLEAN where codex-luna had 9
+departures, clippy -1. Verified by merging each: all three build, and or-hy3 runs 18 tests on
+merge against 2 and 2.
+Cross-examination came back VOID -- or-hy3's suite would not compile when grafted -- but its
+tests pass cleanly once actually merged, so that is the grafter failing rather than the arm,
+and the diagonal invariant correctly refused to report any cell rather than scoring three
+rows off a broken instrument.
+TWO CRITICS, reviewing DIFFERENT subjects, independently found that the port was unreachable
+from the CLI: declared with `mod crossx;` and no subcommand. My port spec asked for the module
+declaration and never asked for the subcommand, so all three complied and all three were
+unreachable -- a spec for porting code out of bash that forgot to require the thing that
+replaces the bash. Now required in all three port specs.
+`fb crossx` is wired; clippy returned to the baseline 6 once the module had a caller.
+Credited: or-hy3, or-luna-pro.

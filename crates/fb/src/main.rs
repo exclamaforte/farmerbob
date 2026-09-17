@@ -1,6 +1,7 @@
 mod adjudicate_cmd;
 mod cmd;
 mod critique;
+mod crossx;
 mod doctor;
 mod import;
 mod pareto;
@@ -48,6 +49,20 @@ enum Command {
     },
     /// Run environment preflight checks and print an actionable report.
     Doctor,
+    /// Cross-examine: run every candidate's suite against every candidate's implementation.
+    ///
+    /// Ported from fb-crossx.sh. Keeps the diagonal invariant -- a suite that cannot run
+    /// against the code it shipped with VOIDs the whole matrix rather than reporting three
+    /// usable rows -- and the spec-ambiguous partition, which outranks a demonstrated defect.
+    Crossx {
+        /// The bead / task whose candidates cross-examine each other.
+        task: String,
+        /// The crate under examination.
+        #[arg(long = "crate", default_value = score::DEFAULT_CRATE)]
+        krate: String,
+        /// The declared deliverable, repo-relative.
+        target: String,
+    },
     /// Cross-review: each implementer critiques ANOTHER implementer's patch.
     ///
     /// Ported from fb-critique.sh, which the shell now delegates to. The derangement, the
@@ -339,6 +354,8 @@ fn main() {
             }
             if v.is_pass() { exit::OK } else { exit::ERROR }
         }
+        Some(Command::Crossx { task, krate, target }) =>
+            crossx::run_cmd(&task, &krate, &target),
         Some(Command::Critique { task, krate, target }) =>
             critique::run_cmd(&task, &krate, &target),
         Some(Command::Select { n, seed, needs }) => select::run_cmd(
