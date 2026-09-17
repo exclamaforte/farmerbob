@@ -227,6 +227,12 @@
    "critic": "or-muse-spark",
    "found_on": "codex-luna",
    "tests": 1
+  },
+  {
+   "task": "port-prove",
+   "critic": "or-hy3",
+   "found_on": "or-luna-pro",
+   "tests": 2
   }
  ]
 }

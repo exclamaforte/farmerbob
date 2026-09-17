@@ -6,6 +6,7 @@ mod promote;
 mod escalate;
 mod doctor;
 mod import;
+mod prove;
 mod pareto;
 mod paths;
 mod score;
@@ -64,6 +65,22 @@ enum Command {
         /// The bead / task whose claims to promote. The shell script takes only this, and
         /// the port matched it rather than inventing parameters it does not use.
         task: String,
+    },
+    /// Execute each promoted CLAIM as a test, and veto the ones the reference also fails.
+    ///
+    /// Ported from fb-prove.sh. A test that also fails the merged reference is testing a
+    /// misreading of the spec, not a defect, so it is vetoed rather than counted.
+    Prove {
+        /// The bead / task whose claims to prove.
+        task: String,
+        /// The crate under test.
+        #[arg(long = "crate", default_value = score::DEFAULT_CRATE)]
+        krate: String,
+        /// The declared deliverable, repo-relative.
+        target: String,
+        /// The arm that writes and runs the proofs, matching the script's fourth argument.
+        #[arg(default_value = "")]
+        prover: String,
     },
     /// Promote a confirmed finding into the permanent suite, and credit the critic.
     ///
@@ -387,6 +404,8 @@ fn main() {
             if v.is_pass() { exit::OK } else { exit::ERROR }
         }
         Some(Command::Promote { task }) => promote::run_cmd(&task),
+        Some(Command::Prove { task, krate, target, prover }) =>
+            prove::run_cmd(&task, &krate, &target, &prover),
         Some(Command::Escalate { command, task, critic, subject, n }) =>
             escalate::run_cmd(&command, &task, &critic, &subject, &n),
         Some(Command::Crossx { task, krate, target }) =>

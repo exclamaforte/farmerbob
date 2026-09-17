@@ -9,7 +9,25 @@
 #   fb-prove.sh <bead> <crate> <target-rel> [prover-arm]
 set -uo pipefail
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
-BEAD="${1:?bead}"; CRATE="${2:?crate}"; TARGET="${3:?target}"; PROVER="${4:-or-mercury-25}"
+BEAD="${1:?bead}"; CRATE="${2:?crate}"; TARGET="${3:?target}"
+# The default prover was or-mercury-25, which has been DISABLED in the registry since the
+# user's instruction "I don't trust mercury; there are free models better". The disable was
+# recorded where router::eligibility reads it, so every arm SELECTION honours it -- but this
+# default is not a selection, it is a hardcoded name, and it kept pointing at the disabled
+# arm. A rule enforced in one place and hardcoded past in another is this project's most
+# frequent shape of bug.
+#
+# Ask the router instead, so the prover obeys the same eligibility filter as every other
+# dispatch: parked arms, missing capabilities, paid duplicates of free routes, and disabled
+# arms are all excluded, and the choice is recorded rather than assumed.
+FB_BIN=/home/gabe/Documents/farmerbob/target/debug/fb
+if [ -n "${4:-}" ]; then
+  PROVER="$4"
+elif [ -x "$FB_BIN" ]; then
+  PROVER=$("$FB_BIN" select --n 1 2>/dev/null | tail -1 | sed 's/tsv: //')
+fi
+PROVER="${PROVER:-or-ling-30-flash}"   # free, healthy, 100% over five runs
+echo "prover: $PROVER"
 REPO=/home/gabe/Documents/farmerbob
 . /home/gabe/Documents/farmerbob/fb-launch.sh
 WT="$HOME/.local/share/farmerbob/worktrees"

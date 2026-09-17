@@ -1,0 +1,18 @@
+MERGED or-hy3
+Adjudicated 2026-09-17. 11 tests to or-luna-pro's 3 (12 and 4 respectively once merged), both
+build clean and both scope clean, clippy -1 and -4.
+or-hy3's critique decided it: or-luna-pro's port has TWO silent data-corruption defects --
+"the stage succeeds (exit 0) and emits plausible-looking JSON that always reports zero
+confirmations", from `candidate.failures()` written where `result.confirmed` was meant, and a
+cargo-output parser never exercised against real output. A prove stage that can never confirm
+anything while exiting 0 is this project's signature failure, in the stage whose entire job is
+confirming things. or-hy3 also separated certainty properly, leaving two further risks for the
+author rather than asserting them.
+or-luna-pro's only counter-critique -- that or-hy3's main.rs wiring was outside the declared
+deliverable -- is WRONG: port-prove.md line 55 requires the subcommand. It criticised
+compliance, and that is recorded against its precision.
+SEPARATE FINDING: fb-prove.sh defaulted its prover to or-mercury-25, disabled in the registry
+since the user's instruction. The disable is enforced wherever arms are SELECTED, and this
+default walked straight past it -- a rule enforced in one place and hardcoded past in another.
+It now asks the router, so the prover obeys the same eligibility filter as every dispatch.
+Credited: or-hy3 (2).
