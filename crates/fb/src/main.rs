@@ -3,6 +3,7 @@ mod cmd;
 mod critique;
 mod crossx;
 mod promote;
+mod escalate;
 mod doctor;
 mod import;
 mod pareto;
@@ -62,6 +63,22 @@ enum Command {
         /// The bead / task whose claims to promote. The shell script takes only this, and
         /// the port matched it rather than inventing parameters it does not use.
         task: String,
+    },
+    /// Promote a confirmed finding into the permanent suite, and credit the critic.
+    ///
+    /// Ported from fb-escalate.sh. Subcommands: crossx, auto, verify, credit, ledger.
+    Escalate {
+        /// One of: crossx, auto, verify, credit, ledger.
+        command: String,
+        /// The task, where the subcommand takes one.
+        #[arg(default_value = "")]
+        task: String,
+        #[arg(default_value = "")]
+        critic: String,
+        #[arg(default_value = "")]
+        subject: String,
+        #[arg(default_value = "")]
+        n: String,
     },
     /// Cross-examine: run every candidate's suite against every candidate's implementation.
     ///
@@ -369,6 +386,8 @@ fn main() {
             if v.is_pass() { exit::OK } else { exit::ERROR }
         }
         Some(Command::Promote { task }) => promote::run_cmd(&task),
+        Some(Command::Escalate { command, task, critic, subject, n }) =>
+            escalate::run_cmd(&command, &task, &critic, &subject, &n),
         Some(Command::Crossx { task, krate, target }) =>
             crossx::run_cmd(&task, &krate, &target),
         Some(Command::Critique { task, krate, target }) =>

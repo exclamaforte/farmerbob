@@ -1,0 +1,15 @@
+MERGED or-luna-pro (deliverable only), shell NOT delegated
+Adjudicated 2026-09-17. Three of four arms produced nothing -- genuine failures, not a harness
+gap: fb:reads restored both fb-escalate.sh and fb-escalate-graft.py into all four worktrees
+and the wave log confirms it. One candidate, so no derangement and no critiques.
+or-luna-pro's deliverable builds standalone, passes its 3 tests, and reproduces the ledger's
+content exactly. But the arm also rewrote 45 OTHER files across 4 crates, 2590 lines, when
+asked for one new file -- the largest scope violation recorded. Verified real, not a stale
+base: the worktree base IS master, and only 2 of 46 diffs are trivial whitespace, the rest
+substantial (151, 142, 140, 133 lines). Only crates/fb/src/escalate.rs was taken; the other
+45 were discarded unread, which is the only defensible way to accept work like that.
+The shell is NOT switched over. The ledger differs from it in tie ORDER: the shell's Python
+sorted() leaves ties in JSON insertion order, the port breaks them by critic name. The port is
+the better behaviour -- deterministic where the shell's is incidental -- so it is kept, but
+the divergence is deliberate and recorded rather than waved through, and delegation waits
+until the remaining subcommands (crossx, auto, verify, credit) have their own differential.
