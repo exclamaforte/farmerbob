@@ -33,6 +33,7 @@ pub mod lease;
 pub mod limit_signal;
 pub mod lease_manager;
 pub mod liveness;
+pub mod matrix;
 pub mod measurement;
 pub mod outcome;
 pub mod prior;

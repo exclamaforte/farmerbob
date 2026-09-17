@@ -1,0 +1,7 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-16. Test depth 36 vs 20/8/8 in the candidate's own file, survival 1.00,
+clippy 0, discriminating suite. codex-luna DISQUALIFIED for a 36-file scope violation
+(farmerbob-jxp); or-inkling eliminated on survival 0.00 plus a verified test-generality
+defect. Three of four critiques were invalid because critics were shown a one-line diff
+(farmerbob-4ur); glm-53-flash's was the only real one, and it earned that by reading the
+code the prompt failed to show it.
