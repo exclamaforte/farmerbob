@@ -14,7 +14,7 @@
 //! objective tier already enforces everywhere else: a check that did not run must say so
 //! rather than be silently skipped.
 
-use farmerbob_core::adjudicate::{adjudicate, missing_evidence, Evidence, Ruling};
+use farmerbob_core::adjudicate::{adjudicate, evidence_gaps, Evidence, Gap, Ruling};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
@@ -172,7 +172,21 @@ pub fn run(task: &str, epsilon: f64, allow_missing_critique: bool) -> i32 {
         }
     }
 
-    let missing = missing_evidence(&cands);
+    // Report BOTH kinds of gap. A criterion measured for nobody is the more important of the
+    // two -- it usually means the instrument was never run -- and the old call silently
+    // dropped exactly those.  (bead farmerbob-jd2.11)
+    let gaps = evidence_gaps(&cands);
+    let absent: Vec<String> = gaps.iter()
+        .filter_map(|g| match g { Gap::Absent(c) => Some(format!("{c:?}")), _ => None })
+        .collect();
+    if !absent.is_empty() {
+        println!("\nNEVER MEASURED for any candidate: {}", absent.join(", "));
+        println!("  These criteria cannot rank this field. If an instrument for one exists but");
+        println!("  is not in the pipeline, that is a harness gap, not a property of the field.");
+    }
+    let missing: Vec<_> = gaps.iter()
+        .filter_map(|g| match g { Gap::Partial(c) => Some(*c), _ => None })
+        .collect();
     if !missing.is_empty() {
         println!("\n== not measured: {missing:?}");
     }

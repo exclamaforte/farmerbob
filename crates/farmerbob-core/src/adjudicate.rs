@@ -92,6 +92,18 @@ pub enum Ruling {
     NoCandidate,
 }
 
+/// The criteria, in the order they are consulted. Defined once: two copies of this list
+/// drifted apart when Cost was removed from one of them.
+const ORDERED_CRITERIA: [Criterion; 7] = [
+    Criterion::Conformance,
+    Criterion::ScopeDiscipline,
+    Criterion::DefectSensitivity,
+    Criterion::Survival,
+    Criterion::Clippy,
+    Criterion::TestDepth,
+    Criterion::Simplicity,
+];
+
 /// Apply the criteria in order, stopping at the first criterion that produces
 /// a unique leader among the candidates still in contention.
 pub fn adjudicate(candidates: &[Evidence], epsilon: f64) -> Ruling {
@@ -114,15 +126,7 @@ pub fn adjudicate(candidates: &[Evidence], epsilon: f64) -> Ruling {
         };
     }
 
-    let criteria = [
-        Criterion::Conformance,
-        Criterion::ScopeDiscipline,
-        Criterion::DefectSensitivity,
-        Criterion::Survival,
-        Criterion::Clippy,
-        Criterion::TestDepth,
-        Criterion::Simplicity,
-    ];
+    let criteria = ORDERED_CRITERIA;
     let mut next = Vec::new();
 
     // TestDepth is a fallback, not a peer. It is consulted only when neither direct measure
@@ -222,16 +226,64 @@ pub fn eligible(candidates: &[Evidence]) -> Vec<&Evidence> {
 }
 
 /// Return criteria measured for some, but not all, input candidates.
+/// A criterion the field cannot currently be ranked on, and WHY.
+///
+/// The distinction is the point. `Partial` means the instrument ran and some candidates have
+/// a value: gather the rest. `Absent` means NO candidate has one, which usually means the
+/// instrument was never run at all — and that is a fact about the harness, not about this
+/// field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gap {
+    /// Some candidates are measured, some are not.
+    Partial(Criterion),
+    /// No candidate is measured. The instrument may never have run.
+    Absent(Criterion),
+}
+
+impl Gap {
+    /// The criterion this gap concerns.
+    pub fn criterion(self) -> Criterion {
+        match self {
+            Gap::Partial(c) | Gap::Absent(c) => c,
+        }
+    }
+}
+
+/// Criteria on which the field cannot be separated, classified by why.
+///
+/// This used to filter with `measured > 0 && measured < len`, which silently dropped every
+/// criterion measured for NOBODY — so the report of what evidence was missing omitted the
+/// evidence that was most missing. DefectSensitivity is the direct measure of suite quality
+/// and sits third in the ordering, above Survival; it has never been measured for any task in
+/// this project, and this function never once said so. "No candidate was measured" read
+/// exactly like "this criterion does not apply here".
+///   (bead farmerbob-jd2.11)
+pub fn evidence_gaps(candidates: &[Evidence]) -> Vec<Gap> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    ORDERED_CRITERIA
+        .into_iter()
+        .filter_map(|criterion| {
+            let measured = candidates
+                .iter()
+                .filter(|candidate| value(candidate, criterion).is_some())
+                .count();
+            if measured == 0 {
+                Some(Gap::Absent(criterion))
+            } else if measured < candidates.len() {
+                Some(Gap::Partial(criterion))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Criteria only partially measured. Kept for callers that want the old, narrower question;
+/// prefer [`evidence_gaps`], which also reports what was never measured at all.
 pub fn missing_evidence(candidates: &[Evidence]) -> Vec<Criterion> {
-    [
-        Criterion::Conformance,
-        Criterion::ScopeDiscipline,
-        Criterion::DefectSensitivity,
-        Criterion::Survival,
-        Criterion::Clippy,
-        Criterion::TestDepth,
-        Criterion::Simplicity,
-    ]
+    ORDERED_CRITERIA
     .into_iter()
     .filter(|criterion| {
         let measured = candidates
@@ -547,5 +599,68 @@ mod cost_never_decides {
             !format!("{next:?}").contains("Cost"),
             "cost must not be suggested as evidence to gather: {next:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod never_measured_is_visible {
+    use super::*;
+
+    fn ev(arm: &str) -> Evidence {
+        Evidence {
+            arm: arm.to_string(),
+            conformance: Some(1.0),
+            defect_sensitivity: None, // as it is for EVERY task in this project today
+            survival: Some(0.5),
+            clippy: Some(0),
+            crates_touched: Some(1),
+            tests: Some(1),
+            lines: Some(10),
+            cost_usd: None,
+            suite_overfitted: None,
+        }
+    }
+
+    /// Instance thirteen: a criterion measured for NOBODY was filtered out of the missing
+    /// report, so "the instrument never ran" read exactly like "this does not apply here".
+    #[test]
+    fn a_criterion_measured_for_nobody_is_reported_as_absent() {
+        let field = [ev("a"), ev("b")];
+        let gaps = evidence_gaps(&field);
+        assert!(
+            gaps.contains(&Gap::Absent(Criterion::DefectSensitivity)),
+            "defect sensitivity is unmeasured for the whole field and must say so: {gaps:?}"
+        );
+    }
+
+    /// And the two kinds of gap stay distinguishable: partial means gather the rest.
+    #[test]
+    fn partial_and_absent_are_different_facts() {
+        let mut half = ev("half");
+        half.clippy = None;
+        let field = [ev("whole"), half];
+        let gaps = evidence_gaps(&field);
+        assert!(gaps.contains(&Gap::Partial(Criterion::Clippy)), "{gaps:?}");
+        assert!(gaps.contains(&Gap::Absent(Criterion::DefectSensitivity)), "{gaps:?}");
+        assert!(
+            !gaps.contains(&Gap::Absent(Criterion::Clippy)),
+            "a partially measured criterion is not absent: {gaps:?}"
+        );
+    }
+
+    /// The narrower legacy question still answers as it did, so nothing silently changed.
+    #[test]
+    fn missing_evidence_keeps_its_old_meaning() {
+        let field = [ev("a"), ev("b")];
+        assert!(
+            !missing_evidence(&field).contains(&Criterion::DefectSensitivity),
+            "the old function deliberately still omits the wholly unmeasured"
+        );
+    }
+
+    /// An empty field has no gaps to report, rather than every criterion absent.
+    #[test]
+    fn an_empty_field_reports_no_gaps() {
+        assert!(evidence_gaps(&[]).is_empty());
     }
 }
