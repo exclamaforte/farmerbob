@@ -1,3 +1,3 @@
-port-promote	fb	or-muse-spark,or-qwen38-flash,glm-53-flash,or-hy3
-port-critique	fb	or-muse-spark,or-qwen38-flash,glm-53-flash,or-ling-30-flash
-port-crossx	fb	or-muse-spark,or-qwen38-flash,glm-53-flash,or-hy3
+port-promote	fb	or-muse-spark,or-nemotron-ultra,or-ling-30-flash,glm-53-flash
+port-critique	fb	or-muse-spark,or-nemotron-ultra,or-ling-30-flash,glm-53-flash
+port-crossx	fb	or-muse-spark,or-nemotron-ultra,or-ling-30-flash,glm-53-flash
