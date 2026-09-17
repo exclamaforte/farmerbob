@@ -7,6 +7,8 @@
 //! when a prior has actually been overruled by evidence instead of still
 //! trusting a belief. Pure logic: no I/O.
 
+use serde::{Deserialize, Serialize};
+
 /// A prior belief about one arm, from a source outside this project.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PriorBelief {
@@ -25,7 +27,7 @@ pub struct PriorBelief {
 }
 
 /// Beta posterior for one arm.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Posterior {
     pub alpha: f64,
     pub beta: f64,
@@ -48,6 +50,15 @@ impl Posterior {
     /// Total evidence behind this posterior, prior included.
     pub fn observations(&self) -> f64 {
         self.alpha + self.beta
+    }
+
+    /// Effective sample size: the evidence EXCLUDING the uniform `Beta(1, 1)` prior.
+    ///
+    /// Distinct from [`Posterior::observations`], which includes it. An arm that has never
+    /// run has `observations() == 2.0` and `n() == 0.0`, and the second is the one to print
+    /// when asking how much is actually known about an arm.
+    pub fn n(&self) -> f64 {
+        (self.alpha + self.beta - 2.0).max(0.0)
     }
 }
 

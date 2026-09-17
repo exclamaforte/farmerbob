@@ -12,31 +12,16 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use farmerbob_core::cost::{aggregate, frontier, totals, ArmCost, RunCost};
-use farmerbob_core::pricing::{canonical_model, Billing};
-
-/// How an arm is billed, from the source registry. An arm whose launcher writes no cost
-/// store is NOT free — it is unmeasured, and the two must not reach the same number.
-fn billing_of(arm: &str, has_store: bool) -> Billing {
-    if has_store {
-        // opencode records a real figure per session; the store IS the measurement.
-        Billing::Metered { input_per_mtok: 0.0, output_per_mtok: 0.0 }
-    } else if arm.starts_with("codex-") || arm.starts_with("glm-") || arm.starts_with("gemini-") {
-        // Plan-based launchers. Marginal cost per run is genuinely zero, but the
-        // subscription is real and is not attributable to this run.
-        Billing::Subscription
-    } else {
-        Billing::Unknown
-    }
-}
+use farmerbob_core::pricing::canonical_model;
 
 /// One run's measured spend, read from that run's own isolated opencode store.
 ///
 /// Returns `None` when there is no store — which is a different fact from a store that says
 /// zero, and is the whole reason this function does not return `f64`.
-fn measured(base: &PathBuf, run: &str) -> Option<(f64, u64)> {
+fn measured(base: &Path, run: &str) -> Option<(f64, u64)> {
     let db = base.join(format!("state/{run}/data/opencode/opencode.db"));
     if !db.exists() {
         return None;
@@ -75,7 +60,7 @@ fn measured(base: &PathBuf, run: &str) -> Option<(f64, u64)> {
 }
 
 /// Rows of `logs/objective.json`, the per-run record the scoring pipeline writes.
-fn load_runs(base: &PathBuf) -> Result<Vec<RunCost>, String> {
+fn load_runs(base: &Path) -> Result<Vec<RunCost>, String> {
     let path = base.join("logs/objective.json");
     let body = fs::read_to_string(&path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -184,7 +169,7 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
         "{:<24}{:>10}{:>5}{:>11}{:>12}{:>11}{:>10}  FRONTIER",
         "ARM", "COMPLETE", "N", "TOTAL $", "$/SUCCESS", "TOKENS", "UNPRICED"
     );
-    println!("{}", "-".to_string().repeat(94));
+    println!("{}", "-".repeat(94));
     let mut sorted = arms.clone();
     sorted.sort_by(|a, b| {
         b.completion_rate()

@@ -52,33 +52,17 @@ pub struct Attempt {
     pub suite_version: u32,
 }
 
-/// Beta distribution posterior parameters.
-///
-/// Starts from Beta(1, 1) (uniform prior). Each accepted `ArmResult` with
-/// `attempt_number == 1` and matching `suite_version` adds 1 to alpha;
-/// each rejected such attempt adds 1 to beta.
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Posterior {
-    pub alpha: f64,
-    pub beta: f64,
-}
-
-impl Posterior {
-    /// Mean of the Beta distribution: alpha / (alpha + beta).
-    pub fn mean(&self) -> f64 {
-        let denom = self.alpha + self.beta;
-        if denom == 0.0 {
-            0.5
-        } else {
-            self.alpha / denom
-        }
-    }
-
-    /// Effective sample size: alpha + beta - 2 (given Beta(1,1) prior).
-    pub fn n(&self) -> f64 {
-        (self.alpha + self.beta - 2.0).max(0.0)
-    }
-}
+// The posterior is NOT defined here. It is [`crate::prior::Posterior`], re-exported.
+//
+// This module carried its own `alpha`/`beta` copy, structurally identical and behaviourally
+// worse: its `mean()` guarded only a zero denominator, so a non-finite one returned NaN,
+// while prior's guards both. `router::ArmInfo` used this copy and `prior::update` operated on
+// the other, so the router literally could not consume the update function -- the two models
+// of one concept made the module pair unusable together.
+//
+// Nobody noticed because neither had a caller. Writing `fb select` forced it out in the first
+// compile.  (bead farmerbob-jd2.1)
+pub use crate::prior::Posterior;
 
 /// Append-only log of attempts.
 ///

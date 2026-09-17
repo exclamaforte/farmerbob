@@ -24,7 +24,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::attempt_log::Posterior;
+use crate::prior::Posterior;
 
 /// Identity of an implementer arm, e.g. `ArmName("claude-sonnet".to_string())`.
 ///

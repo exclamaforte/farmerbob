@@ -4,6 +4,7 @@ mod doctor;
 mod import;
 mod pareto;
 mod score;
+mod select;
 mod sources;
 mod trial;
 
@@ -47,6 +48,25 @@ enum Command {
     /// Run environment preflight checks and print an actionable report.
     Doctor,
     /// Run a full bakeoff: dispatch, score, cross-review, prove claims, report.
+    /// Choose which arms attempt a task, by Thompson sampling over their posteriors.
+    ///
+    /// Gives farmerbob_core::router its first caller. Arms were hand-picked before this, and
+    /// the same four rotated through seven consecutive waves while three free routes went
+    /// untried. Eligibility is a filter and never evidence: a parked or redundant arm is
+    /// skipped without its posterior being touched.
+    Select {
+        /// How many arms to field.
+        #[arg(long, default_value_t = 4)]
+        n: usize,
+        /// Seed the draws, so a selection can be replayed. Defaults to the clock.
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Capabilities the task requires, comma separated, e.g. "multiturn". Empty by
+        /// default: the registry records capabilities for 2 of 24 arms, so requiring one
+        /// benches every arm nobody has got round to describing.
+        #[arg(long, default_value = "")]
+        needs: String,
+    },
     /// Cost against ability to complete, via farmerbob_core::cost and ::pricing.
     ///
     /// An arm whose launcher writes no cost store is UNMEASURED, not free. The shell
@@ -303,6 +323,12 @@ fn main() {
             }
             if v.is_pass() { exit::OK } else { exit::ERROR }
         }
+        Some(Command::Select { n, seed, needs }) => select::run_cmd(
+            n,
+            seed,
+            &needs.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect::<Vec<_>>(),
+            cli.json,
+        ),
         Some(Command::Pareto { epsilon }) => pareto::run_cmd(epsilon, cli.json),
         Some(Command::Score { task, krate }) => score::run_cmd(&task, &krate, cli.json),
         Some(Command::Brief { task, epsilon, allow_missing_critique }) =>
