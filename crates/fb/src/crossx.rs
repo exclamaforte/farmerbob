@@ -933,8 +933,26 @@ fn run_cargo_test(dir: &Path, krate: &str, timeout: Duration) -> std::io::Result
     let child = cmd.spawn()?;
     let pid = child.id();
 
+    // The killer must be CANCELLABLE. It used to `sleep(timeout)` unconditionally and then
+    // be `join()`ed, so every cell blocked for the whole timeout no matter how fast the child
+    // actually was -- 300 seconds each, sixteen cells, eighty minutes to do work that takes
+    // two. It also fired `kill -9` on a process group after the child had exited, which is a
+    // signal aimed at whatever now owns that group.
+    //
+    // The symptom was a process at zero CPU with nine threads parked in futex_do_wait and no
+    // cargo running: not a deadlock, a scheduled wait nobody could cancel. Neither the
+    // worktree score, nor building it on merge, nor its eighteen passing unit tests caught
+    // it. Running it on real input did, in the first minute.
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = std::sync::Arc::clone(&finished);
     let killer = std::thread::spawn(move || {
-        std::thread::sleep(timeout);
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                return; // the child is already reaped; do not signal anything
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         #[cfg(unix)]
         {
             let _ = Command::new("kill")
@@ -948,6 +966,7 @@ fn run_cargo_test(dir: &Path, krate: &str, timeout: Duration) -> std::io::Result
     });
 
     let output = child.wait_with_output()?;
+    finished.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = killer.join();
     let combined = {
         let mut s = String::from_utf8_lossy(&output.stdout).into_owned();
