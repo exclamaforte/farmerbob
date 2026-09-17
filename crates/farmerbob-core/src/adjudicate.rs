@@ -21,6 +21,9 @@ pub struct Evidence {
     /// Number of changed lines.
     pub lines: Option<u32>,
     /// Measured USD. `Some(0.0)` for a plan-based arm is a real zero.
+    /// Measured dollar cost. RECORDED, never RANKED: no [`Criterion`] reads this, and the
+    /// adjudicator sees it as context rather than as a tiebreak. See the note on
+    /// [`Criterion`] for why cost must not decide which patch is merged.
     pub cost_usd: Option<f64>,
     /// True when cross-examination labelled this candidate's suite OVER-FITTED: it fails
     /// nearly every rival, so its failures carry no evidence about anyone. A count of tests
@@ -42,8 +45,21 @@ pub enum Criterion {
     Survival,
     /// Clippy diagnostic count.
     Clippy,
-    /// Measured dollar cost.
-    Cost,
+    // NO `Cost` CRITERION. Dollar cost was the sixth of eight criteria here, and it is a
+    // category error: cost is a property of the ARM that produced a patch, never of the
+    // patch. Two implementations that tie on conformance, scope, defect sensitivity,
+    // survival and lint are equally good artefacts, and which one burned fewer tokens says
+    // nothing about which file belongs in the crate.
+    //
+    // Worse than merely irrelevant, it closed a loop. Cost already lives on the Pareto board
+    // and in the bandit's posterior, which answer a different question -- which arm to
+    // dispatch next time. Letting it also decide merges means a cheap arm's work is merged
+    // more often, which then feeds back as evidence that the cheap arm succeeds more often.
+    // That manufactures the very result this project exists to measure honestly.
+    //
+    // A tie on quality is not a reason to reach for a different KIND of fact. The honest
+    // outcomes are Simplicity, which is at least a property of the patch, or Undecided.
+    //   (bead farmerbob-tcv5)
     /// Number of tests the candidate wrote. A PROXY for DefectSensitivity, consulted ONLY
     /// when both direct measures of suite quality -- DefectSensitivity and Survival -- are
     /// unmeasured for the whole field. A proxy must never outrank the thing it proxies for,
@@ -104,7 +120,6 @@ pub fn adjudicate(candidates: &[Evidence], epsilon: f64) -> Ruling {
         Criterion::DefectSensitivity,
         Criterion::Survival,
         Criterion::Clippy,
-        Criterion::Cost,
         Criterion::TestDepth,
         Criterion::Simplicity,
     ];
@@ -214,7 +229,6 @@ pub fn missing_evidence(candidates: &[Evidence]) -> Vec<Criterion> {
         Criterion::DefectSensitivity,
         Criterion::Survival,
         Criterion::Clippy,
-        Criterion::Cost,
         Criterion::TestDepth,
         Criterion::Simplicity,
     ]
@@ -236,7 +250,6 @@ fn value(candidate: &Evidence, criterion: Criterion) -> Option<f64> {
         Criterion::DefectSensitivity => candidate.defect_sensitivity,
         Criterion::Survival => candidate.survival,
         Criterion::Clippy => candidate.clippy.map(f64::from),
-        Criterion::Cost => candidate.cost_usd,
         // An over-fitted suite scores ZERO depth, not "unmeasured". Returning None made the
         // whole criterion skip, so a single over-fitted candidate removed depth-ranking for
         // the entire field and handed the decision to Simplicity -- which is how resume
@@ -486,5 +499,53 @@ mod overfitted_suites {
             }
             other => panic!("expected deepest on TestDepth, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod cost_never_decides {
+    use super::*;
+
+    fn tied(arm: &str, cost: Option<f64>) -> Evidence {
+        Evidence {
+            arm: arm.to_string(),
+            conformance: Some(1.0),
+            defect_sensitivity: Some(0.5),
+            survival: Some(0.5),
+            clippy: Some(0),
+            crates_touched: Some(1),
+            tests: Some(1),
+            lines: Some(10),
+            cost_usd: cost,
+            suite_overfitted: None,
+        }
+    }
+
+    /// Two candidates identical on every quality axis and differing only in what they cost
+    /// to produce must NOT yield a winner. Cost is a fact about the arm, not the patch.
+    #[test]
+    fn a_field_separated_only_by_cost_is_undecided() {
+        let field = [tied("cheap", Some(0.01)), tied("dear", Some(9.99))];
+        match adjudicate(&field, 0.0) {
+            Ruling::Winner { arm, on, .. } => {
+                panic!("cost decided the merge: {arm} won on {on:?}")
+            }
+            Ruling::Undecided { tied, .. } => {
+                assert_eq!(tied.len(), 2, "both candidates remain in contention");
+            }
+            Ruling::NoCandidate => panic!("both candidates are eligible"),
+        }
+    }
+
+    /// And the criterion is gone from the ordering entirely, so it cannot return by way of
+    /// `missing_evidence` suggesting it as a next measurement to gather.
+    #[test]
+    fn cost_is_not_a_criterion_anywhere() {
+        let field = [tied("a", Some(1.0)), tied("b", None)];
+        let next = missing_evidence(&field);
+        assert!(
+            !format!("{next:?}").contains("Cost"),
+            "cost must not be suggested as evidence to gather: {next:?}"
+        );
     }
 }
