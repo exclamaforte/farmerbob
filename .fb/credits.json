@@ -53,6 +53,30 @@
    "critic": "or-glm-53",
    "found_on": "or-hy3",
    "tests": 1
+  },
+  {
+   "task": "gpu-lease",
+   "critic": "glm-53-flash",
+   "found_on": "ifm-k2-horizon",
+   "tests": 1
+  },
+  {
+   "task": "gpu-lease",
+   "critic": "ifm-k2-horizon",
+   "found_on": "or-inkling",
+   "tests": 1
+  },
+  {
+   "task": "gpu-lease",
+   "critic": "or-inkling",
+   "found_on": "or-laguna-s-21",
+   "tests": 1
+  },
+  {
+   "task": "gpu-lease",
+   "critic": "or-mercury-25",
+   "found_on": "ifm-k2-horizon",
+   "tests": 1
   }
  ]
 }

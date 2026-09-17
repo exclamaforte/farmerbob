@@ -32,14 +32,32 @@ API:
 - `LeaseManager::new()` and `register_resource(name, ResourceName)`.
 - `request(resource, holder, now) -> RequestOutcome` where `RequestOutcome` is either
   `Granted(LeaseToken)` or `Queued { position: usize }`.
-- `release(token) -> Option<Grant>` — releases, then grants to the next waiter in FIFO
-  order if there is one. Returns who just got it, so the caller can wake them.
+- `release(token, now) -> Option<Grant>` — releases, then grants to the next waiter in
+  FIFO order if there is one. Returns who just got it, so the caller can wake them.
 - `expire(now) -> Vec<LeaseToken>` — revokes leases held past their max hold duration
   and advances the queue. Returns what was revoked.
-- `holder_died(holder) -> Option<Grant>` — a holder's process vanished: force-release
+- `holder_died(holder, now) -> Vec<Grant>` — a holder's process vanished: force-release
   whatever it held, drop any queued requests from it, advance the queue.
-- `status(resource) -> LeaseStatus` — current holder, how long held, queue depth,
+- `status(resource, now) -> LeaseStatus` — current holder, how long held, queue depth,
   and the ordered list of waiting holders.
+
+**Time provenance — pinned, because the first version of this spec did not pin it and three
+independent critics found the consequence in three different implementations.** Every method
+that can create a grant takes `now`, and **a grant always stamps `acquired_at = now`**. A
+lease handed to a waiter by `release`, `expire` or `holder_died` starts its full TTL at the
+moment of handover; it NEVER inherits the predecessor's `acquired_at`. No method may call
+`Utc::now()` internally — the clock is always the caller's.
+
+**`holder_died` returns EVERY grant it produces, in the order the resources were granted,
+and an empty `Vec` when it produced none.** A holder may hold several resources at once.
+The previous `Option<Grant>` could report at most one, which made invariant 3 below
+unreportable for the second and subsequent resource, and every implementation either
+dropped the extra grants or silently skipped advancing those queues.
+
+**`status(resource, now).held_for` is `now - acquired_at` for the current holder, and is
+absent when there is no holder.** Without a `now` it was not computable at all, and several
+implementations correctly-by-necessity returned `Duration::zero()` for a field the spec
+described as "how long the current holder has held the lease".
 
 ## Required invariants — test each one
 
@@ -49,6 +67,10 @@ API:
    if a waiter exists it is granted, otherwise the resource is free.
 4. The same holder requesting twice does not get two leases.
 5. `release` with an unknown or already-released token is a harmless no-op, not a panic.
+6. After `holder_died(h, now)` no resource `h` held is left holder-less with a non-empty
+   queue, and the returned `Vec<Grant>` names every waiter that was promoted. A resource
+   with no holder and a waiting queue is the specific failure this invariant exists to
+   forbid: the next requester is granted ahead of the queue, breaking invariant 2.
 
 ## Rules
 

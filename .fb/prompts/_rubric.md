@@ -57,6 +57,23 @@ about anything either of them got wrong.
 Three earlier tasks were decided by candidates disagreeing about exactly this, every time
 because a test asserted a case the specification never fixed.
 
+## A signature that cannot compute what the spec promises
+
+If a clause in this spec describes a value that the API it also fixes makes **uncomputable**,
+say so in your handoff and implement the closest honest thing. Do not silently return a
+placeholder.
+
+This is not hypothetical. A previous task's spec asked `status(resource)` to report "how long
+the current holder has held the lease" while fixing a signature that takes no clock. Several
+implementations returned `Duration::zero()` -- correct by necessity, indistinguishable from a
+bug -- and the same spec's `holder_died(holder) -> Option<Grant>` could report only one grant
+for a holder that may hold many, so its own "never left locked" invariant was unreportable.
+Three critics found all of it, in three different implementations, which is how the fault was
+traced to the spec rather than to any arm.
+
+A defect that appears in nearly every implementation is evidence about the specification, not
+about the field. Naming it in your handoff routes it where the fix belongs.
+
 ## Reuse the crate's existing types
 
 If this spec names a type that already exists in `farmerbob-core` -- `Verdict`, `Grade`,
