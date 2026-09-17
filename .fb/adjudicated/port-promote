@@ -1,0 +1,17 @@
+MERGED or-muse-spark
+Adjudicated 2026-09-17. 19 tests to 8/3/3/2, clippy 0, scope CLEAN, 1094 lines. Verified by
+merge: 19 of 19 tests pass once merged, while or-hy3's port FAILS TO BUILD on merge with 11
+errors despite scoring PASS in its own worktree -- the second time this week a worktree score
+has said nothing about whether a module integrates.
+The arm the user asked to do the conversion, winning the one task it produced for. Its first
+two attempts came back empty, in the wave where fb-dispatch had deleted the very script it was
+told to port (farmerbob-l2yw).
+or-inkling eliminated on or-hy3's detailed critique: the test "never calls the real parser",
+the gate verdict is discarded with `let _v = verdict;`, the parser is dead code and unwired --
+"the suite passes while the tool is non-functional, false confidence rather than coverage".
+codex-luna eliminated on 43 out-of-scope files.
+TWO REAL BUGS IN MY OWN ADJUDICATOR, found by or-inkling while reviewing a different arm:
+trim_start_matches('S') stripped EVERY leading S, so a judgement opening "SPEC ambiguity"
+was read as "PEC ambiguity"; and two hardcoded absolute paths made `fb brief` work on this
+machine only. Both fixed.
+Credited: or-hy3, or-inkling, or-luna-pro, or-muse-spark.

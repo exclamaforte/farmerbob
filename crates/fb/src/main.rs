@@ -2,6 +2,7 @@ mod adjudicate_cmd;
 mod cmd;
 mod critique;
 mod crossx;
+mod promote;
 mod doctor;
 mod import;
 mod pareto;
@@ -49,6 +50,19 @@ enum Command {
     },
     /// Run environment preflight checks and print an actionable report.
     Doctor,
+    /// Turn critics' CLAIMs into executed evidence: classify, then test each allegation.
+    ///
+    /// Ported from fb-promote.sh and its embedded Python. Keeps the three classifications --
+    /// CONTRADICTED routes to the task author because the SPEC is underdetermined, and
+    /// outranks a demonstrated defect; CONFIRMATORY is a claim that documented correct
+    /// behaviour; TESTABLE is a genuine single-sided allegation. Refuses to write an empty
+    /// claims file when no critique exists, because "no defect found" and "no review written"
+    /// are different facts.
+    Promote {
+        /// The bead / task whose claims to promote. The shell script takes only this, and
+        /// the port matched it rather than inventing parameters it does not use.
+        task: String,
+    },
     /// Cross-examine: run every candidate's suite against every candidate's implementation.
     ///
     /// Ported from fb-crossx.sh. Keeps the diagonal invariant -- a suite that cannot run
@@ -354,6 +368,7 @@ fn main() {
             }
             if v.is_pass() { exit::OK } else { exit::ERROR }
         }
+        Some(Command::Promote { task }) => promote::run_cmd(&task),
         Some(Command::Crossx { task, krate, target }) =>
             crossx::run_cmd(&task, &krate, &target),
         Some(Command::Critique { task, krate, target }) =>

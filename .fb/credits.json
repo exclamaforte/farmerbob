@@ -203,6 +203,30 @@
    "critic": "or-luna-pro",
    "found_on": "codex-luna",
    "tests": 1
+  },
+  {
+   "task": "port-promote",
+   "critic": "or-hy3",
+   "found_on": "or-inkling",
+   "tests": 1
+  },
+  {
+   "task": "port-promote",
+   "critic": "or-inkling",
+   "found_on": "or-luna-pro",
+   "tests": 1
+  },
+  {
+   "task": "port-promote",
+   "critic": "or-luna-pro",
+   "found_on": "or-muse-spark",
+   "tests": 1
+  },
+  {
+   "task": "port-promote",
+   "critic": "or-muse-spark",
+   "found_on": "codex-luna",
+   "tests": 1
   }
  ]
 }

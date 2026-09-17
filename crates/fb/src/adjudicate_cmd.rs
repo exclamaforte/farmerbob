@@ -15,6 +15,16 @@
 //! rather than be silently skipped.
 
 use farmerbob_core::adjudicate::{adjudicate, evidence_gaps, Evidence, Gap, Ruling};
+
+/// The repository root. Was hardcoded to one absolute path in two places, so `fb brief` only
+/// worked on this machine -- found by or-inkling reviewing a different arm's port.
+fn repo_root() -> String {
+    std::env::var("FB_REPO").unwrap_or_else(|_| {
+        std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| ".".to_string())
+    })
+}
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
@@ -50,7 +60,15 @@ fn judgements(task: &str) -> Vec<Judgement> {
         let text = body
             .split("## JUDGEMENT")
             .nth(1)
-            .map(|s| s.trim_start_matches('S').split("\n## ").next().unwrap_or(s).trim().to_string())
+            // `strip_prefix`, not `trim_start_matches`. The heading may be JUDGEMENT or
+            // JUDGEMENTS, so exactly one trailing S is optional -- but trim_start_matches
+            // removes EVERY leading S, so a judgement opening "SPEC ambiguity ..." was
+            // silently rendered as "PEC ambiguity ...". Found by or-inkling while reviewing
+            // a different arm's port, in the tool this project adjudicates with.
+            .map(|s| {
+                let s = s.strip_prefix('S').unwrap_or(s);
+                s.split("\n## ").next().unwrap_or(s).trim().to_string()
+            })
             .unwrap_or_default();
         out.push(Judgement { critic: critic.into(), subject: subject.into(), text });
     }
@@ -63,7 +81,8 @@ fn judgements(task: &str) -> Vec<Judgement> {
 /// the spec says and useless in practice.
 fn has_frozen_suite(task: &str) -> bool {
     std::path::Path::new(&format!(
-        "/home/gabe/Documents/farmerbob/.fb/conformance/{task}.rs"
+        "{}/.fb/conformance/{task}.rs",
+        repo_root()
     ))
     .exists()
 }
@@ -76,7 +95,8 @@ fn has_frozen_suite(task: &str) -> bool {
 /// command first disagreed with every adjudication made by hand.
 fn tests_written(task: &str, arm: &str) -> Option<u32> {
     let spec = fs::read_to_string(format!(
-        "/home/gabe/Documents/farmerbob/.fb/prompts/{task}.md"
+        "{}/.fb/prompts/{task}.md",
+        repo_root()
     ))
     .ok()?;
     let rel = spec
