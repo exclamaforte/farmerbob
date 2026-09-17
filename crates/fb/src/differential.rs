@@ -274,7 +274,9 @@ pub fn measure(
         .collect();
 
     let mut report = Report::new();
+    let mut arms_ran = false;
     for (name, wt) in arms {
+        arms_ran = true;
         let bin = match build_arm(wt) {
             Measurement::Observed(b) => b,
             Measurement::Missing(a) => {
@@ -310,6 +312,46 @@ pub fn measure(
         }
         report.insert(name.clone(), verdict);
     }
+
+    // RUN THE ORACLE AGAIN, and require it to agree with itself.
+    //
+    // Some scripts are not functions of their arguments. fb-status reads the beads database
+    // and the live worktree set; a port of it can be perfectly correct and still "diverge"
+    // because something changed between the reference run and the candidate's. Blaming the
+    // arm for that would be the cross-examination mistake -- charging an arm for the
+    // instrument's own fault -- in a new place.
+    //
+    // So the reference is run a second time, after the candidates. If the two disagree, the
+    // oracle was not stable across the window and NOTHING measured against it can be trusted:
+    // every arm becomes Untrusted, which is neither a pass nor a divergence. An unstable
+    // oracle must not be able to produce a confident verdict about anybody.
+    if arms_ran {
+        let after: Vec<Measurement<Outcome>> = cases
+            .iter()
+            .map(|c| {
+                let mut cmd = Command::new("bash");
+                cmd.current_dir(repo).arg(repo.join(script)).args(&c.args);
+                run(&mut cmd, timeout)
+            })
+            .collect();
+        for (i, (before, after)) in reference.iter().zip(after.iter()).enumerate() {
+            let drifted = match (before, after) {
+                (Measurement::Observed(a), Measurement::Observed(b)) => a != b,
+                _ => false,
+            };
+            if drifted {
+                let reason = format!(
+                    "the script disagreed with ITSELF on case {i} across this run -- its output \
+                     is not a function of its arguments, so no candidate can be compared to it here"
+                );
+                for v in report.values_mut() {
+                    *v = Measurement::untrusted(&reason);
+                }
+                break;
+            }
+        }
+    }
+
     (report, reference)
 }
 
@@ -683,5 +725,67 @@ mod exit_code_tests {
         assert_eq!(code(&none), 3, "a task that is not a port has nothing to check");
         assert_eq!(code(&broken), 2, "a declared oracle that cannot run is a gap");
         assert_ne!(code(&none), code(&broken));
+    }
+}
+
+#[cfg(test)]
+mod stability_tests {
+    use super::*;
+
+    /// An unstable oracle must not yield a verdict about anybody -- not a pass, not a
+    /// divergence. This is the cross-examination rule (never charge an arm for the
+    /// instrument's fault) applied to the differential.
+    #[test]
+    fn an_oracle_that_disagrees_with_itself_makes_every_arm_untrusted() {
+        let before = Measurement::observed(Outcome {
+            code: 0,
+            stdout: "3 ready\n".to_string(),
+            stderr: String::new(),
+        });
+        let after = Measurement::observed(Outcome {
+            code: 0,
+            stdout: "4 ready\n".to_string(),
+            stderr: String::new(),
+        });
+        let drifted = match (&before, &after) {
+            (Measurement::Observed(a), Measurement::Observed(b)) => a != b,
+            _ => false,
+        };
+        assert!(drifted, "differing stdout must count as drift");
+
+        let mut report: Report = [
+            ("agreed".to_string(), Measurement::observed(ArmVerdict::Agrees)),
+            (
+                "diverged".to_string(),
+                Measurement::observed(ArmVerdict::Diverges {
+                    case: 0,
+                    detail: "x".to_string(),
+                }),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        for v in report.values_mut() {
+            *v = Measurement::untrusted("unstable oracle");
+        }
+        // Crucially the arm that APPEARED to agree is also voided. A pass obtained against an
+        // oracle that was moving is not a weaker pass, it is not a pass.
+        assert!(report.values().all(|v| !v.is_observed()));
+        let t = render_report(&report);
+        assert!(t.contains("NOT MEASURED"), "{t}");
+        assert!(!t.contains("agrees"), "{t}");
+    }
+
+    /// Drift is only drift when BOTH runs produced a value. A reference that failed twice is
+    /// already handled as an instrument failure and must not be relabelled as instability.
+    #[test]
+    fn two_failed_reference_runs_are_not_drift() {
+        let a: Measurement<Outcome> = Measurement::instrument_failed("timed out");
+        let b: Measurement<Outcome> = Measurement::instrument_failed("timed out");
+        let drifted = match (&a, &b) {
+            (Measurement::Observed(x), Measurement::Observed(y)) => x != y,
+            _ => false,
+        };
+        assert!(!drifted);
     }
 }
