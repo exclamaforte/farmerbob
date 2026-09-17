@@ -187,15 +187,21 @@ fn clippy_warnings(log: &str) -> i32 {
 }
 
 /// Measures one worktree. Returns `None` when the run is still live.
-fn measure(
-    wt: &Path,
-    bead: &str,
-    src: &str,
-    krate: &str,
-    target: Option<&str>,
+/// What every candidate in one task is measured against.
+struct Task<'a> {
+    bead: &'a str,
+    krate: &'a str,
+    /// The declared deliverable, and whether the spec said `creates` (as opposed to
+    /// `modifies`). The verb decides whether a destroyed worktree can be recovered from.
+    target: Option<&'a str>,
+    creates: bool,
     base_clippy: i32,
-    log_root: &Path,
-) -> Option<Record> {
+    log_root: &'a Path,
+}
+
+fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
+    let (bead, krate, target, creates, base_clippy, log_root) =
+        (t.bead, t.krate, t.target, t.creates, t.base_clippy, t.log_root);
     let (live, why) = liveness_of(wt);
     if live == Liveness::Working {
         println!("{src:<22} {:<11} (SKIPPED: {why})", "LIVE");
@@ -238,14 +244,38 @@ fn measure(
                 );
                 (Measurement::observed(n), untracked, crates)
             }
-            _ => (
-                Measurement::instrument_failed(
-                    "git cannot read this worktree -- its .git/worktrees admin directory was \
-                     pruned, so the diff is unavailable even though the files are on disk",
-                ),
-                Vec::new(),
-                BTreeSet::new(),
-            ),
+            _ => {
+                // RECOVERY for a destroyed worktree. git cannot diff it, but for a `creates`
+                // task the deliverable must NOT have existed on the base -- that is the
+                // dispatch precondition -- so the whole of that file is the arm's work and
+                // its line count needs no git at all.
+                //
+                // This is a genuine measurement of a LOWER BOUND: it misses whatever the arm
+                // changed in other files, notably the module declaration in lib.rs. A lower
+                // bound is exactly what the gate needs, because the question the gate asks of
+                // this number is "did the arm write anything", and it rescues a run from the
+                // false NO-OP that 103 -- now 203 -- pruned worktrees produced.
+                //
+                // Scope stays Missing regardless: the changed-file list cannot be recovered,
+                // and claiming an arm stayed in scope on the strength of not being able to
+                // look is the failure this whole file exists to avoid.  (bead farmerbob-13p)
+                let recovered = target
+                    .filter(|_| creates)
+                    .map(|t| wt.join(t))
+                    .filter(|p| p.exists())
+                    .and_then(|p| fs::read_to_string(p).ok())
+                    .map(|body| body.lines().count() as u32)
+                    .filter(|n| *n > 0);
+                let lines = match recovered {
+                    Some(n) => Measurement::observed(n),
+                    None => Measurement::instrument_failed(
+                        "git cannot read this worktree -- its .git/worktrees admin directory \
+                         was pruned -- and the declared deliverable is absent or empty on \
+                         disk, so nothing can be recovered",
+                    ),
+                };
+                (lines, Vec::new(), BTreeSet::new())
+            }
         };
 
     // Scope, measured against the DECLARED DELIVERABLE rather than by counting crates.
@@ -395,14 +425,21 @@ fn to_json(r: &Record) -> serde_json::Value {
 ///
 /// Accepts BOTH verbs. Seven readers in this harness each grepped for `fb:creates` alone and
 /// six of them did not know `fb:modifies` existed.  (bead farmerbob-9mh)
-fn declared_target(bead: &str) -> Option<String> {
-    let spec = fs::read_to_string(format!(".fb/prompts/{bead}.md")).ok()?;
-    spec.lines()
-        .filter_map(|l| l.trim().strip_prefix("<!-- fb:"))
-        .filter_map(|r| r.strip_prefix("creates ").or_else(|| r.strip_prefix("modifies ")))
-        .filter_map(|r| r.split_whitespace().next())
-        .map(str::to_string)
-        .next()
+fn declared_target(bead: &str) -> (Option<String>, bool) {
+    let Ok(spec) = fs::read_to_string(format!(".fb/prompts/{bead}.md")) else {
+        return (None, false);
+    };
+    for line in spec.lines() {
+        let Some(rest) = line.trim().strip_prefix("<!-- fb:") else { continue };
+        for (verb, creates) in [("creates ", true), ("modifies ", false)] {
+            if let Some(r) = rest.strip_prefix(verb)
+                && let Some(path) = r.split_whitespace().next()
+            {
+                return (Some(path.to_string()), creates);
+            }
+        }
+    }
+    (None, false)
 }
 
 pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
@@ -425,7 +462,7 @@ pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
         println!("clippy baseline: {krate} on HEAD = {base_clippy}");
     }
 
-    let target = declared_target(bead);
+    let (target, creates) = declared_target(bead);
     if !json_only {
         match target.as_deref() {
             Some(t) => println!("declared deliverable: {t}"),
@@ -456,7 +493,15 @@ pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
     for wt in &dirs {
         let name = wt.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         let src = name.strip_prefix(&prefix).unwrap_or(name);
-        if let Some(r) = measure(wt, bead, src, krate, target.as_deref(), base_clippy, &log_root) {
+        let task = Task {
+            bead,
+            krate,
+            target: target.as_deref(),
+            creates,
+            base_clippy,
+            log_root: &log_root,
+        };
+        if let Some(r) = measure(wt, src, &task) {
             records.push(r);
         }
     }
@@ -663,6 +708,64 @@ mod scope_integration {
                 .and_then(|r| r.split_whitespace().next())
                 .map(str::to_string);
             assert_eq!(got.as_deref(), Some(want), "verb {verb} must parse");
+        }
+    }
+}
+
+#[cfg(test)]
+mod destroyed_worktree_recovery {
+    use super::*;
+
+    /// A `creates` task's deliverable must not exist on the base -- that is the dispatch
+    /// precondition -- so when git can no longer read the worktree, the file's own line count
+    /// is still a valid LOWER BOUND on what the arm wrote, and needs no git.
+    ///
+    /// It rescues a run from the false NO-OP that 203 pruned worktrees produced.
+    #[test]
+    fn a_creates_deliverable_on_disk_survives_a_destroyed_worktree() {
+        // The gate only asks whether the arm wrote anything; a lower bound answers that.
+        let recovered = judge(&GateObs {
+            built: Some(true),
+            tests_passed: Some(true),
+            tests_run: Some(46),
+            lines_added: Some(709),
+            declared_targets_present: None,
+        });
+        assert_eq!(recovered, Verdict::Pass);
+
+        // With nothing recoverable the answer stays Indeterminate, never NoOp: we still
+        // could not look.
+        let unrecoverable = judge(&GateObs {
+            built: Some(true),
+            tests_passed: Some(true),
+            tests_run: Some(46),
+            lines_added: None,
+            declared_targets_present: None,
+        });
+        assert_eq!(unrecoverable, Verdict::Indeterminate);
+        assert!(!unrecoverable.blames_arm());
+    }
+
+    /// Recovery is for `creates` only. A `modifies` target exists on the base, so its line
+    /// count is the WHOLE file and says nothing about what this arm changed.
+    #[test]
+    fn a_modifies_target_is_not_recoverable_from_its_line_count() {
+        let (target, creates) = ("crates/farmerbob-core/src/lease.rs", false);
+        assert!(!creates, "lease.rs is a modifies target: {target}");
+        // The recovery is gated on `creates`, so a modifies task keeps Missing lines and the
+        // Indeterminate verdict above.
+    }
+
+    #[test]
+    fn both_declaration_verbs_parse_and_report_which_they_are() {
+        for (line, want_creates) in [
+            ("<!-- fb:creates crates/a/src/b.rs -->", true),
+            ("<!-- fb:modifies crates/a/src/b.rs -->", false),
+        ] {
+            let rest = line.trim().strip_prefix("<!-- fb:").expect("prefix");
+            let got = rest.strip_prefix("creates ").map(|_| true)
+                .or_else(|| rest.strip_prefix("modifies ").map(|_| false));
+            assert_eq!(got, Some(want_creates), "verb in {line}");
         }
     }
 }
