@@ -27,43 +27,13 @@ while :; do
 
   beat "live=$live waves=$waves queued=$(ls -1 "$Q"/*.tsv 2>/dev/null | wc -l)"
   if [ "${live:-0}" -eq 0 ] && [ "${waves:-0}" -eq 0 ]; then
-    # Before launching more work, finish the tail of what is already done. The subjective
-    # tier (critique -> promote -> prove) has no other driver: the wave path only dispatches,
-    # and for fifteen tasks those stages simply stopped happening with nothing reporting it.
-    # (bead farmerbob-k9f)
-    pending=$(for sc in "$HOME/.local/share/farmerbob/logs"/*.score.json; do
-                [ -f "$sc" ] || continue
-                t=$(basename "$sc" .score.json)
-                [ -f .fb/prompts/"$t".md ] || continue
-                f=$(grep -ohE '<!-- fb:creates [^ ]+ -->' .fb/prompts/"$t".md 2>/dev/null | awk '{print $3}' | head -1)
-                # No fb:creates means the pipeline cannot infer a target and exits nonzero.
-                # Without this the loop retries the same task every 5s forever and NEVER
-                # reaches the launch branch -- an idle machine plus a spin. (fnd-cli did this.)
-                [ -n "$f" ] || continue
-                [ -f "$f" ] && continue                           # already merged
-                [ -s "$HOME/.local/share/farmerbob/logs/$t.claims.json" ] && continue
-                [ -f "$DONE/.skip.$t" ] && continue
-                echo "$t"
-              done | head -1)
-    if [ -n "$pending" ]; then
-      crate=$(awk -F'\t' -v t="$pending" '$1==t{print $2}' .fb/queue/dispatched/*.tsv .fb/wave*.tsv 2>/dev/null | head -1)
-      say "no wave needed yet; running missing pipeline stages for $pending"
-      if ! ./fb-pipeline.sh "$pending" "${crate:-farmerbob-core}" >> "$LOG" 2>&1; then
-        # Never retry a failing stage immediately: record it and fall through to dispatch,
-        # so one unpipelineable task cannot starve the whole loop.
-        say "pipeline FAILED for $pending -- skipping it this cycle"
-        touch "$DONE/.skip.$pending"
-      fi
-      sleep 30
-      continue
-    fi
-
-    next=$(ls -1v "$Q"/*.tsv 2>/dev/null | head -1)   # -v: wave9 before wave10, not after
+    # Queued waves first. A pipeline call blocks this loop for as long as a critique takes
+    # -- ten minutes or more -- so running it ahead of dispatch starves the thing the daemon
+    # exists to do. Observed: heartbeat 638s stale with wave21 sitting queued.
+    next=$(ls -1v "$Q"/*.tsv 2>/dev/null | head -1)
     if [ -n "$next" ]; then
-      # Claim the file BEFORE launching. fb-wave.sh detaches and returns immediately, so
-      # moving it afterwards yanks the matrix out from under fb-admit.sh, which then reports
-      # "no eligible runs" against a path that no longer exists. Claim, then launch from the
-      # claimed path; a refused launch is moved back.
+      # Claim the file BEFORE launching: fb-wave.sh detaches and returns immediately, so
+      # moving it afterwards yanks the matrix out from under fb-admit.sh.
       base=$(basename "$next")
       if mv "$next" "$DONE/$base" 2>/dev/null; then
         say "idle; launching $base"
@@ -74,9 +44,36 @@ while :; do
           say "launch REFUSED for $base -- requeued"
         fi
       fi
-    else
-      say "IDLE, queue empty -- nothing to launch; orchestrator must stock .fb/queue/"
+      sleep 10
+      continue
     fi
+
+    # Nothing queued: finish the tail of what is already dispatched. The subjective tier
+    # (critique -> promote -> prove) has no other driver.  (bead farmerbob-k9f)
+    pending=$(for sc in "$HOME/.local/share/farmerbob/logs"/*.score.json; do
+                [ -f "$sc" ] || continue
+                t=$(basename "$sc" .score.json)
+                [ -f .fb/prompts/"$t".md ] || continue
+                f=$(grep -ohE '<!-- fb:creates [^ ]+ -->' .fb/prompts/"$t".md 2>/dev/null | awk '{print $3}' | head -1)
+                [ -n "$f" ] || continue
+                [ -f "$f" ] && continue
+                [ -s "$HOME/.local/share/farmerbob/logs/$t.claims.json" ] && continue
+                [ -f "$DONE/.skip.$t" ] && continue
+                echo "$t"
+              done | head -1)
+    if [ -n "$pending" ]; then
+      crate=$(awk -F'\t' -v t="$pending" '$1==t{print $2}' "$DONE"/*.tsv .fb/wave*.tsv 2>/dev/null | head -1)
+      beat "pipeline $pending (blocks this loop until it finishes)"
+      say "running missing pipeline stages for $pending"
+      if ! ./fb-pipeline.sh "$pending" "${crate:-farmerbob-core}" >> "$LOG" 2>&1; then
+        say "pipeline FAILED for $pending -- skipping"
+        touch "$DONE/.skip.$pending"
+      fi
+      sleep 10
+      continue
+    fi
+
+    say "IDLE, queue empty -- nothing to launch; orchestrator must stock .fb/queue/"
   else
     say "busy: $live agents, $waves dispatcher(s)"
   fi
