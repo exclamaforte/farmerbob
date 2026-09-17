@@ -1,9 +1,12 @@
 <!-- fb:modifies crates/farmerbob-core/src/limit_signal.rs -->
-<!-- fb:reads crates/fb/src/objective.rs -->
 # Task: make provider-refusal detection survive colour and casing
 
 Rust workspace, already builds. Work only inside `crates/farmerbob-core`.
 Modify `crates/farmerbob-core/src/limit_signal.rs`. Do not change any other file.
+
+`crates/fb/src/objective.rs` holds a second, independent copy of this classification, already
+repaired for the same defect. It is present in your worktree -- read it for reference, do not
+edit it. This task is the version that belongs in core, where every future caller inherits it.
 
 ## The incident this comes from
 

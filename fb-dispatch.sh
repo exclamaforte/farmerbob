@@ -102,10 +102,24 @@ rm -f "$WT"/fb-*.sh
 # for every ordinary task, and a port cannot quietly grant itself the whole harness.
 for extra in $(grep -ohE '<!-- fb:reads [^>]+ -->' "$PROMPT_FILE" 2>/dev/null \
                | sed 's/<!-- fb:reads //; s/ -->//'); do
+  # The guard is against ESCAPING the repo, not against subdirectories. It used to be
+  #   case "$extra" in */*|.*) refuse
+  # which rejected every path containing a slash, so `fb:reads crates/fb/src/objective.rs` --
+  # a file plainly inside the repo -- was refused with the message "outside the repo root".
+  # That took out all four arms of wave38 before any of them started, and the message named a
+  # rule that was not the rule being applied: the check was "no slashes", and it said "outside
+  # the repo root". A guard whose error message misdescribes it costs more than the guard saves.
+  #
+  # What actually has to be forbidden is leaving $REPO: an absolute path, or any `..`
+  # component. A relative path made only of ordinary components cannot escape.
   case "$extra" in
-    */*|.*) echo "$SRC: refusing fb:reads path outside the repo root: $extra"; exit 1 ;;
+    /*)        echo "$SRC: refusing fb:reads absolute path: $extra"; exit 1 ;;
+    ..|../*|*/..|*/../*)
+               echo "$SRC: refusing fb:reads path that escapes the repo: $extra"; exit 1 ;;
+    .*)        echo "$SRC: refusing fb:reads dotfile path: $extra"; exit 1 ;;
   esac
   if [ -f "$REPO/$extra" ]; then
+    mkdir -p "$(dirname "$WT/$extra")"
     cp "$REPO/$extra" "$WT/$extra"
     echo "$SRC: restored $extra for a task that is about it"
   else
