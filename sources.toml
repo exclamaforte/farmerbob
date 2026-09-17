@@ -7,12 +7,27 @@
 
 # ---------------------------------------------------------------- native CLIs
 [source.claude-sonnet]
-status      = "disabled"
-disabled_reason = "the orchestrator runs on the same plan; dispatching sonnet competes with it for tokens (user instruction, 2026-09-16). Kept in the registry as the reference adapter -- set FB_ALLOW_PAID_DUPES=1 only to re-validate another adapter against it."
+status      = "verified"
 kind        = "cli"
 cmd         = "claude"
 args        = ["-p", "{prompt}", "--permission-mode", "bypassPermissions",
-               "--model", "sonnet", "--output-format", "json"]
+               "--model", "sonnet", "--effort", "xhigh", "--output-format", "json"]
+reasoning   = "xhigh"   # user instruction 2026-09-17
+notes       = """RE-ENABLED 2026-09-17 by user instruction, reversing the 2026-09-16 instruction
+that disabled it. The original reason was real and is worth keeping written down: the
+orchestrator runs on the same Anthropic plan, so dispatching sonnet competes with it for the
+same token budget. It was re-enabled knowing that, with a weekly plan reset about 18 hours out,
+so the competition is bounded and the spare capacity is worth more than the headroom.
+This is a DECISION, not a fix. If the plan tightens, change this line and not the router:
+router::eligibility reads status from here on every selection, so the constraint lives in the
+registry rather than in whatever the orchestrator happens to remember.
+Effort raised to xhigh at the same time. Unlike codex this could NOT be verified from here.
+The claude CLI reported thinking_tokens: 0 at both --effort low and --effort xhigh on a problem
+both solved, so no behavioural difference was demonstrable. Worse, an unrecognised --effort is
+NOT an error: it prints "Warning: Unknown --effort value ... using the default effort" and
+proceeds, so a typo here yields a full confident run at default effort while the registry claims
+xhigh. Valid set, from --help: low, medium, high, xhigh, max. That warning goes to stderr and
+nothing here reads it."""
 cwd_honored = true
 model       = "claude-sonnet-5"
 provider    = "anthropic"
@@ -27,13 +42,29 @@ reference   = true          # adapter all others are validated against
 status      = "verified"
 kind        = "cli"
 cmd         = "codex"
-args        = ["exec", "--dangerously-bypass-approvals-and-sandbox", "-m", "gpt-5.6-luna", "{prompt}"]
+args        = ["exec", "--dangerously-bypass-approvals-and-sandbox", "--strict-config",
+               "-c", "model_reasoning_effort=\"xhigh\"",
+               "-m", "gpt-5.6-luna", "{prompt}"]
+reasoning   = "xhigh"   # user instruction 2026-09-17; see notes
+
 cwd_honored = true
 model       = "gpt-5.6-luna"
 provider    = "openai-chatgpt-plan"
 quota       = "plan"
 accounting  = "tokens-only"  # emits "tokens used", no dollar cost
-notes       = "auth_mode=chatgpt, OPENAI_API_KEY null -> plan limit, not billing"
+notes       = """auth_mode=chatgpt, OPENAI_API_KEY null -> plan limit, not billing.
+Reasoning effort raised to xhigh on 2026-09-17 by user instruction. Passed PER INVOCATION via
+-c rather than by editing ~/.codex/config.toml, so the user's own interactive codex sessions
+keep their own setting (medium) and farmerbob cannot silently change them.
+--strict-config is part of the same change and is the load-bearing half: without it an
+unrecognised config key is accepted and ignored, so a typo here would run every arm at the
+default effort while the registry claimed xhigh, and nothing would say so. Verified that the
+value is really validated -- model_reasoning_effort="banana" is refused with HTTP 400, so
+"xhigh" being accepted and completing is evidence rather than silence.
+PRO IS NOT AVAILABLE HERE. gpt-5.6-luna-pro returns "not supported when using Codex with a
+ChatGPT account" (400). The only pro route is or-luna-pro over OpenRouter, which is parked as
+redundant and whose key is at its cap. xhigh on the base model is the most thinking this arm
+can be given."""
 
 [source.gemini-38-flash]
 status      = "verified"
