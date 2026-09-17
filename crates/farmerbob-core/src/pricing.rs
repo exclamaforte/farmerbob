@@ -529,3 +529,5 @@ mod escalated_pricing_case {
         assert_eq!(canonical_model("vendor/:FREE-tier-model"), "vendor/:free-tier-model");
     }
 }
+
+

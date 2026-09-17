@@ -65,12 +65,24 @@ if os.path.exists(sp):
         pass
 
 rows = json.load(open(f"{base}/logs/objective.json"))
-agg = defaultdict(lambda: {"n": 0, "ok": 0, "cost": 0.0, "tok": 0, "secs": 0, "excl": 0})
+agg = defaultdict(lambda: {"n": 0, "ok": 0, "cost": 0.0, "tok": 0, "secs": 0, "excl": 0,
+                           "priced": 0, "unpriced": 0})
 for r in rows:
     a = agg[r["arm"]]
     run = f"{r['task']}--{r['arm']}"
-    a["cost"] += cost.get(run, 0.0)
-    a["tok"] += toks.get(run, 0)
+    # A run with NO cost store is UNMEASURED, not free. `cost.get(run, 0.0)` made the two
+    # identical, and three arms -- codex-luna (26 runs), glm-53-flash (14), gemini-38-flash
+    # (5) -- run under launchers that write no opencode store at all. All three therefore
+    # reported $0.0000 with 0 tokens, and gemini-38-flash was CROWNED ON THE PARETO FRONTIER
+    # for being unmeasurable. That is the project's recurring failure applied to the headline
+    # deliverable: the cheapest-looking arm on the board was the one nothing could price.
+    #   (bead farmerbob-b52)
+    if run in cost:
+        a["cost"] += cost[run]
+        a["tok"] += toks.get(run, 0)
+        a["priced"] += 1
+    else:
+        a["unpriced"] += 1
     if r["outcome"] != "arm_result":
         a["excl"] += 1
         continue
@@ -92,12 +104,18 @@ for arm, a in agg.items():
     if a["n"] == 0:
         continue
     rate = a["ok"] / a["n"]
-    per_ok = (a["cost"] / a["ok"]) if a["ok"] else None
+    # $/success is only defined when every run was priced. A partial figure divided by ALL
+    # successes understates cost by exactly the fraction that went unmeasured, and there is
+    # no honest way to scale it up without knowing what the missing runs cost.
+    per_ok = (a["cost"] / a["ok"]) if (a["ok"] and a["unpriced"] == 0) else None
     table.append((rate, a["cost"], arm, a, per_ok))
 
 # Pareto frontier: no other arm is both cheaper-per-success AND at least as capable
 def dominated(x, others):
     rate, c, arm, a, per = x
+    # An arm nothing could price cannot be on a cost frontier. It was, and it won.
+    if a["priced"] == 0:
+        return True
     for r2, c2, arm2, a2, per2 in others:
         if arm2 == arm or a2["ok"] == 0:
             continue
@@ -120,14 +138,26 @@ try:
 except Exception:
     pass
 
-print(f"{'ARM':<24}{'COMPLETE':>10}{'N':>4}{'TOTAL $':>10}{'$/SUCCESS':>11}{'TOKENS':>10}{'EXCL':>6}{'ESC':>5}  FRONTIER")
-print("-" * 97)
+print(f"{'ARM':<24}{'COMPLETE':>10}{'N':>4}{'TOTAL $':>10}{'$/SUCCESS':>11}{'TOKENS':>10}"
+      f"{'EXCL':>6}{'ESC':>5}{'UNPRICED':>9}  FRONTIER")
+print("-" * 106)
 for rate, c, arm, a, per in sorted(table, key=lambda t: (-t[0], t[1])):
     mark = "  <= pareto" if arm in front else ""
-    p = f"{per:.4f}" if per is not None else "  n/a"
+    if a["priced"] == 0:
+        # Never print a dollar figure for an arm nothing measured. "$0.0000" is a claim.
+        cs, p = "       n/a", "  n/a"
+    else:
+        cs = f"{c:>10.4f}"
+        p = f"{per:.4f}" if per is not None else "  n/a"
+    unp = f"{a['unpriced']}/{a['unpriced'] + a['priced']}" if a["unpriced"] else "-"
     esc = credits.get(arm, 0)
-    print(f"{arm:<24}{rate:>9.0%}{a['n']:>4}{c:>10.4f}{p:>11}{a['tok']:>10}{a['excl']:>6}"
-          f"{(str(esc) if esc else '-'):>5}{mark}")
+    print(f"{arm:<24}{rate:>9.0%}{a['n']:>4}{cs}{p:>11}{a['tok']:>10}{a['excl']:>6}"
+          f"{(str(esc) if esc else '-'):>5}{unp:>9}{mark}")
+
+unmeasured = sorted(arm for arm, a in agg.items() if a["n"] and a["priced"] == 0)
+if unmeasured:
+    print(f"\n  NOT PRICED AT ALL, and therefore NOT on the frontier: {', '.join(unmeasured)}")
+    print("  Their launchers write no cost store. Absence of a bill is not a bill of zero.")
 
 tot = sum(a["cost"] for a in agg.values())
 ok = sum(a["ok"] for a in agg.values())
