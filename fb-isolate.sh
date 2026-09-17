@@ -14,43 +14,20 @@
 #   (bead farmerbob-bdv)
 #
 #   fb_isolated <worktree> <cmd...>
-REPO_GIT_WORKTREES="${REPO_GIT_WORKTREES:-/home/gabe/Documents/farmerbob/.git/worktrees}"
+REPO_FB_ISOLATED="${REPO_FB_ISOLATED:-/home/gabe/Documents/farmerbob/fb-isolated}"
 
+# THE FUNCTION DELEGATES TO THE EXECUTABLE. It used to carry its own copy of the bwrap
+# invocation, and when the admin-directory guard was added it was added HERE only -- while
+# every implementer dispatch goes through the `fb-isolated` executable, because systemd-run
+# execs its argument directly and cannot exec a shell function. I then verified the fix by
+# calling this function, the copy I had just fixed, and reported it as holding. It held
+# nowhere that mattered: healthy worktrees went from 78 to 11 over the following waves.
+#
+# Same failure as the verdict function reimplemented four times and the spec-target reader
+# reimplemented seven. One rule, one implementation -- and when a rule must exist in two
+# forms because of an exec boundary, the second form CALLS the first rather than copying it.
+#   (beads farmerbob-13p, farmerbob-9m7)
 fb_isolated() {
   local wt="$1"; shift
-  local root="$HOME/.local/share/farmerbob/worktrees"
-  if [ "${FB_NO_ISOLATE:-0}" = 1 ] || ! command -v bwrap >/dev/null 2>&1; then
-    "$@"; return $?
-  fi
-  # The tmpfs hides every sibling worktree -- which is the point -- but it also hides them
-  # from GIT, whose admin directories live in the SHARED .git and stay fully writable under
-  # --dev-bind. Inside this namespace `git worktree prune` sees ~180 worktrees whose "gitdir
-  # file points to non-existent location" and deletes all of their admin directories. The
-  # files survive; the repository forgets they are worktrees, so `git diff` answers "fatal:
-  # not a git repository" forever after.
-  #
-  # That is what destroyed 103 of 181 candidate worktrees. It is unrecoverable: the base
-  # commit each candidate branched from is gone, so no diff can ever be reconstructed, and
-  # the scorer read the resulting git failure as "the arm wrote nothing" -- 16 arms were
-  # falsely recorded as having done nothing at all.  (beads farmerbob-13p, farmerbob-bdv)
-  #
-  # Verified by dry-run: `git worktree prune --dry-run` inside this sandbox reports 77
-  # removals; outside it reports none.
-  #
-  # Fix: the worktree admin directory is read-only in here, with THIS run's own entry bound
-  # back writable so its own git still works. A prune then fails on every sibling instead of
-  # succeeding on all of them. Two mounts, constant cost, and it cannot miss a sibling the
-  # way an explicit per-sibling exclusion list could.
-  local admin="$REPO_GIT_WORKTREES" own
-  own="$admin/$(basename "$wt")"
-  local -a guard=()
-  if [ -d "$admin" ]; then
-    guard+=(--ro-bind "$admin" "$admin")
-    [ -d "$own" ] && guard+=(--bind "$own" "$own")
-  fi
-  bwrap --dev-bind / / \
-        --tmpfs "$root" \
-        --bind "$wt" "$wt" \
-        "${guard[@]}" \
-        -- "$@"
+  "$REPO_FB_ISOLATED" "$wt" "$@"
 }

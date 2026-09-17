@@ -4,11 +4,42 @@
 # Must be a real executable, not a shell function: systemd-run execs its argument directly and
 # reports "Failed to find executable fb_isolated" for a function. Two runs died at 0s that way.
 #
+# THIS IS THE ONE IMPLEMENTATION. fb-isolate.sh's `fb_isolated` function delegates here.
+# There were two copies of the bwrap invocation -- this executable on the dispatch path and a
+# shell function on the critique path -- and the admin-directory guard below was added to the
+# FUNCTION only. I then verified the fix by calling the function, which is the copy I had
+# fixed, and reported it as holding. It was not holding anywhere that mattered: every wave
+# dispatched afterwards went through this file and destroyed worktrees exactly as before,
+# taking the healthy count from 78 to 11.
+#
 #   fb-isolated <worktree> <cmd...>
 set -uo pipefail
 wt="${1:?worktree}"; shift
 root="$HOME/.local/share/farmerbob/worktrees"
+admin="${FB_GIT_WORKTREES:-/home/gabe/Documents/farmerbob/.git/worktrees}"
+
 if [ "${FB_NO_ISOLATE:-0}" = 1 ] || ! command -v bwrap >/dev/null 2>&1; then
   exec "$@"
 fi
-exec bwrap --dev-bind / / --tmpfs "$root" --bind "$wt" "$wt" -- "$@"
+
+# The tmpfs hides every sibling worktree, which is the point -- but it also hides them from
+# GIT, whose admin directories live in the shared .git and stay writable under --dev-bind.
+# Inside this namespace `git worktree prune` sees ~200 worktrees whose "gitdir file points to
+# non-existent location" and deletes every one of their admin directories. The files survive;
+# the repository forgets they are worktrees, so `git diff` answers "fatal: not a git
+# repository" forever after and the scorer reads that as the arm having written nothing.
+#
+# Fix: the admin directory is read-only in here, with THIS run's own entry bound back
+# writable so its own git still works.  (bead farmerbob-13p)
+guard=()
+if [ -d "$admin" ]; then
+  guard+=(--ro-bind "$admin" "$admin")
+  own="$admin/$(basename "$wt")"
+  [ -d "$own" ] && guard+=(--bind "$own" "$own")
+fi
+
+exec bwrap --dev-bind / / \
+           --tmpfs "$root" \
+           --bind "$wt" "$wt" \
+           "${guard[@]}" \
+           -- "$@"
