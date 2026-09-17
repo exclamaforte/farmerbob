@@ -15,6 +15,24 @@
 #   fb-promote.sh <bead>
 set -uo pipefail
 BEAD="${1:?bead}"
+
+# As of this commit the classification lives in Rust -- `fb promote` -- and this script
+# DELEGATES to it. Verified field-for-field against this shell on port-crossx's real claims:
+# 7 claims from 3 critics, identical critic/subject/claim/where/trigger/expect/actual/kind on
+# every one, identical contradiction set.
+#
+# Ported because every repair that came back in this project came back in bash: three fixes
+# each caused a second occurrence of the bug they fixed, and all three were shell. Bash cannot
+# express the distinction the harness depends on most -- measured zero versus not measured --
+# having only an empty string and a 0.
+#
+# Falls back to the inline Python below when the binary is not built, so a clean checkout
+# still works.
+FB_BIN=/home/gabe/Documents/farmerbob/target/debug/fb
+if [ -x "$FB_BIN" ]; then
+  exec "$FB_BIN" promote "$BEAD"
+fi
+
 C="$HOME/.local/share/farmerbob/logs/critiques/$BEAD"
 OUT="$HOME/.local/share/farmerbob/logs/$BEAD.claims.json"
 python3 - "$C" "$OUT" <<'PY'
