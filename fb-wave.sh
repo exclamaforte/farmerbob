@@ -25,7 +25,12 @@ fi
 
 # The lock is held by THIS shell; hand it to the background job by keeping fd 9 open there.
 setsid bash -c '
-  exec 9>"'"$LOCK"'"; flock 9
+  exec 9>"'"$LOCK"'"
+  # -n: REFUSE rather than queue. A blocking flock made a duplicate launch invisible --
+  # the second dispatcher simply waited, then ran, removing and recreating worktrees the
+  # first had already handed to agents. Observed on wave20 when a manual launch raced the
+  # autopilot over a matrix still sitting in the queue. Failing loudly is the point.
+  flock -n 9 || { echo "REFUSED: another wave holds the lock" >&2; exit 1; }
   exec bash ./fb-admit.sh "'"$M"'"
 ' >"$LOG" 2>&1 &
 PID=$!
