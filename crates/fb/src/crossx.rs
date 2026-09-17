@@ -31,11 +31,6 @@ const CX_SLOTS_DEFAULT: usize = 4;
 /// Per-cell timeout for a single `cargo test` run, in seconds.
 const CARGO_TIMEOUT_SECS: u64 = 300;
 
-/// `$HOME`, required for every path the script builds from it.
-fn home() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| String::from("/home/gabe")))
-}
-
 /// The worktree root: `$HOME/.local/share/farmerbob/worktrees`.
 fn wt_root() -> PathBuf {
     crate::paths::worktrees()
@@ -918,6 +913,200 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 
 /// Remove every `#[cfg(test)]` module from `.rs` files under `dir`: keep only
 /// lines before the first `#[cfg(test)]`.
+/// Remove `#[cfg(test)]` items from one file, keeping everything else.
+///
+/// This used to be `take_while(|l| !l.contains("#[cfg(test)]"))` -- truncate the file at the
+/// FIRST test attribute and discard the remainder. That is correct only for files whose test
+/// module is last, and one file in this workspace is not like that: `mutate.rs` declares
+/// `pub fn apply` at line 296, after a `#[cfg(test)]` at line 230. Truncating deleted a public
+/// function that `crates/fb/src/mutants.rs` imports, so the copied crate failed with "this file
+/// contains an unclosed delimiter", every cell read `nocompile`, the diagonal invariant fired,
+/// and the whole matrix VOIDed.
+///
+/// That is why cross-examination contributed nothing to four consecutive adjudications. It was
+/// never the grafting; it was this function deleting live code from the copy it was preparing.
+///
+/// Now it skips exactly the attributed item: from the `#[cfg(test)]` line, find the first `{`
+/// and skip to its matching `}`, tracking depth and ignoring braces inside strings, character
+/// literals and comments. An attribute on an item with no braces -- `#[cfg(test)] use x;` --
+/// ends at the first `;`. Anything the scanner cannot resolve is KEPT: deleting code we failed
+/// to parse is how this bug did its damage, so the failure mode is now a file that still
+/// compiles rather than one that cannot.
+fn strip_test_modules_text(src: &str) -> String {
+    let chars: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0usize;
+    // Start of the current line in `out`, so a removed item can also take the doc comments
+    // and attributes written immediately above it.
+    let mut line_start_in_out = 0usize;
+    while i < chars.len() {
+        // The outer scan must skip strings and comments too. mutate.rs contains the LITERAL
+        // "#[cfg(test)]" -- it strips test modules itself -- and matching inside that string
+        // cut the file mid-literal, leaving `if trimmed == "` and an unterminated string. The
+        // function that removes test modules was broken by a string holding the marker it
+        // looks for, in the one file that does the same job.
+        match chars[i] {
+            '"' => {
+                let end = skip_string(&chars, i).unwrap_or(chars.len());
+                out.extend(&chars[i..end]);
+                i = end;
+                continue;
+            }
+            // Char literals, which the outer scan missed. mutate.rs writes `b'"'` -- a byte
+            // literal holding a double quote -- and reading that quote as the start of a
+            // string swallowed everything up to the next one, cutting find_comment_start in
+            // half. skip_char_literal returns None for a lifetime (`&'a str`), which is then
+            // just an ordinary character.
+            '\'' => {
+                if let Some(end) = skip_char_literal(&chars, i) {
+                    out.extend(&chars[i..end]);
+                    i = end;
+                    continue;
+                }
+            }
+            '/' if chars.get(i + 1) == Some(&'/') => {
+                let mut j = i;
+                while j < chars.len() && chars[j] != '\n' {
+                    j += 1;
+                }
+                out.extend(&chars[i..j]);
+                i = j;
+                continue;
+            }
+            '/' if chars.get(i + 1) == Some(&'*') => {
+                let mut j = i + 2;
+                while j + 1 < chars.len() && !(chars[j] == '*' && chars[j + 1] == '/') {
+                    j += 1;
+                }
+                let end = (j + 2).min(chars.len());
+                out.extend(&chars[i..end]);
+                i = end;
+                continue;
+            }
+            '\n' => {
+                out.push('\n');
+                i += 1;
+                line_start_in_out = out.len();
+                continue;
+            }
+            _ => {}
+        }
+        if src[byte_index(&chars, i)..].starts_with("#[cfg(test)]") {
+            if let Some(end) = end_of_attributed_item(&chars, i) {
+                // Drop the partial line already emitted, then any doc comments and
+                // attributes directly above: leaving them orphans the doc and yields
+                // "expected item after doc comment", which is what broke lease.rs.
+                out.truncate(line_start_in_out);
+                trim_trailing_doc_block(&mut out);
+                i = end;
+                // Swallow the rest of that line, which is only whitespace in practice.
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            // Unparseable: keep it. A file that still compiles beats one silently gutted.
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Remove trailing `///`, `//!` and `#[..]` lines from `out`, plus the blank line they sit on.
+///
+/// A `#[cfg(test)] mod tests` is normally introduced by a doc comment. Removing the module and
+/// leaving the comment produces `error: expected item after doc comment`.
+fn trim_trailing_doc_block(out: &mut String) {
+    loop {
+        let trimmed_end = out.trim_end_matches('\n');
+        let last_line_start = trimmed_end.rfind('\n').map_or(0, |i| i + 1);
+        let last = trimmed_end[last_line_start..].trim();
+        if last.starts_with("///") || last.starts_with("//!") || last.starts_with("#[") {
+            out.truncate(last_line_start);
+        } else {
+            return;
+        }
+    }
+}
+
+/// Byte offset of character `i`, so `starts_with` can be used on the original slice.
+fn byte_index(chars: &[char], i: usize) -> usize {
+    chars[..i].iter().map(|c| c.len_utf8()).sum()
+}
+
+/// Index just past the item the `#[cfg(test)]` at `start` attributes, or `None` when the
+/// scanner cannot tell.
+fn end_of_attributed_item(chars: &[char], start: usize) -> Option<usize> {
+    let mut i = start;
+    // Find the first `{` or `;` that is not inside a string, char literal or comment.
+    let mut depth = 0i32;
+    let mut seen_brace = false;
+    while i < chars.len() {
+        match chars[i] {
+            '"' => i = skip_string(chars, i)?,
+            '\'' => i = skip_char_literal(chars, i).unwrap_or(i + 1),
+            '/' if chars.get(i + 1) == Some(&'/') => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '/' if chars.get(i + 1) == Some(&'*') => {
+                i += 2;
+                while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                    i += 1;
+                }
+                i = (i + 2).min(chars.len());
+            }
+            ';' if !seen_brace => return Some(i + 1),
+            '{' => {
+                seen_brace = true;
+                depth += 1;
+                i += 1;
+            }
+            '}' => {
+                depth -= 1;
+                i += 1;
+                if seen_brace && depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Index just past a string literal beginning at `i`, handling escapes and raw strings.
+fn skip_string(chars: &[char], i: usize) -> Option<usize> {
+    let mut j = i + 1;
+    while j < chars.len() {
+        match chars[j] {
+            '\\' => j += 2,
+            '"' => return Some(j + 1),
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// Index just past a character literal, or `None` when this quote was a lifetime.
+fn skip_char_literal(chars: &[char], i: usize) -> Option<usize> {
+    let mut j = i + 1;
+    let mut seen = 0;
+    while j < chars.len() && seen < 4 {
+        match chars[j] {
+            '\\' => j += 2,
+            '\'' => return Some(j + 1),
+            _ => {
+                j += 1;
+                seen += 1;
+            }
+        }
+    }
+    None
+}
+
 fn strip_test_modules(dir: &Path) -> std::io::Result<()> {
     if !dir.is_dir() {
         return Ok(());
@@ -929,14 +1118,7 @@ fn strip_test_modules(dir: &Path) -> std::io::Result<()> {
             strip_test_modules(&path)?;
         } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
             let src = std::fs::read_to_string(&path)?;
-            let kept: String = src
-                .lines()
-                .take_while(|l| !l.contains("#[cfg(test)]"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let mut out = kept;
-            out.push('\n');
-            std::fs::write(&path, out)?;
+            std::fs::write(&path, strip_test_modules_text(&src))?;
         }
     }
     Ok(())
@@ -1035,11 +1217,45 @@ fn top_level_uses(src: &str) -> Vec<String> {
     out
 }
 
-/// The `#[cfg(test)]` section of `src`, with each `mod tests` renamed to
-/// `mod xtests_<n>` so it does not collide with any existing module.
+/// The `#[cfg(test)]` section of `src`, with every module declared at the
+/// section's top level renamed to `xtests_<idx>_<module>` — `tests` becomes
+/// `xtests_<idx>_tests` — so no grafted declaration can collide with a module
+/// already present in the host file. The `xtests_<idx>` prefix keeps each
+/// rename traceable to its arm index; other code greps `mod xtests_`.
+///
+/// A declaration is recognised structurally, never by name: every name is
+/// renamed by the same rule. The bug this replaces was a renamer that handled
+/// `mod tests` and passed every other declaration through untouched, so each
+/// escalated finding made the next cross-examination of the file more certain
+/// to void.
+///
+/// Decided here in writing, because unstated behaviour is what produced the bug:
+///
+/// - Only TOP-LEVEL declarations are renamed. A `mod` nested inside another
+///   module is left as written: it cannot collide with a host top-level
+///   module, and renaming it would break the section's own `helper::` paths.
+/// - `mod x;` — a declaration with a semicolon rather than a body — is renamed
+///   like any other. The scan is textual and cannot tell the forms apart, and
+///   after renaming neither form can collide.
+/// - Text inside string literals or comments is never renamed. A line is a
+///   candidate only at brace depth zero, outside any literal or comment; the
+///   scanner tracks `"…"`, `/* … */` including nesting, line comments, and
+///   character literals versus lifetimes.
+/// - Visibility is not the renamer's business: `pub mod x` (or `pub(…) mod x`)
+///   is renamed and keeps its `pub` exactly as written.
+/// - A raw name (`mod r#type`) is renamed to `xtests_<idx>_type` without the
+///   `r#`: the prefixed name is never a keyword, so the raw form is redundant.
+/// - A declaration sharing its line with `#[cfg(test)]` is renamed like any
+///   other; leading `#[…]` attributes are skipped while recognising.
+///
+/// Like the rest of this file, this is a line scan. Pathological Rust — a
+/// brace inside a raw string, say — can desync the scanner; the consequence is
+/// a missed or extra rename on that line, never a mangled one: only the name
+/// of a recognised declaration is ever rewritten.
 fn test_body(src: &str, idx: usize) -> String {
     let mut in_test = false;
     let mut out = String::new();
+    let mut st = ScanState::default();
     for line in src.lines() {
         if line.contains("#[cfg(test)]") {
             in_test = true;
@@ -1047,20 +1263,220 @@ fn test_body(src: &str, idx: usize) -> String {
         if !in_test {
             continue;
         }
-        if let Some(rest) = line.trim_start().strip_prefix("mod tests") {
-            let indent_len = line.len() - line.trim_start().len();
-            let indent = &line[..indent_len];
-            out.push_str(indent);
-            out.push_str("mod xtests_");
-            out.push_str(&idx.to_string());
-            out.push_str(rest);
-            out.push('\n');
+        let renamed = if st.depth == 0 && !st.in_string && st.block_comment == 0 {
+            rename_module_decl(line, idx)
         } else {
-            out.push_str(line);
-            out.push('\n');
+            None
+        };
+        match renamed {
+            Some(r) => out.push_str(&r),
+            None => out.push_str(line),
         }
+        out.push('\n');
+        scan_line(line, &mut st);
     }
     out
+}
+
+/// Lexical state carried across the lines of a test section: brace depth
+/// relative to the section's top level, whether a string literal is open, and
+/// block-comment nesting.
+#[derive(Default)]
+struct ScanState {
+    depth: i32,
+    in_string: bool,
+    block_comment: usize,
+}
+
+/// Advance `st` over one line of Rust text: count braces outside string
+/// literals and comments, and carry open literals and comment nesting to the
+/// next line. Character literals are told from lifetimes by their shape, so
+/// `'{'` does not move the brace count and `&'a str` does not open a string.
+/// Depth is clamped at zero: an extra `}` cannot push the scan negative.
+fn scan_line(line: &str, st: &mut ScanState) {
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if st.in_string {
+            match c {
+                '\\' => {
+                    i += 2;
+                    continue;
+                }
+                '"' => st.in_string = false,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        if st.block_comment > 0 {
+            if c == '/' && chars.get(i + 1) == Some(&'*') {
+                st.block_comment += 1;
+                i += 2;
+            } else if c == '*' && chars.get(i + 1) == Some(&'/') {
+                st.block_comment -= 1;
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        match c {
+            '/' if chars.get(i + 1) == Some(&'/') => return, // line comment
+            '/' if chars.get(i + 1) == Some(&'*') => {
+                st.block_comment += 1;
+                i += 2;
+            }
+            '"' => {
+                st.in_string = true;
+                i += 1;
+            }
+            '\'' => match char_literal_len(&chars[i + 1..]) {
+                Some(len) => i += 1 + len,
+                None => i += 1, // a lifetime or label: no closing quote to skip
+            },
+            '{' => {
+                st.depth += 1;
+                i += 1;
+            }
+            '}' => {
+                st.depth = (st.depth - 1).max(0);
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+}
+
+/// Given the text after a `'`, the number of chars up to and including its
+/// closing quote when it opens a character literal (`'x'`, `'\n'`, `'\''`), or
+/// `None` when it opens a lifetime or label (`'a`, `'static`), which has no
+/// closing quote to skip to.
+fn char_literal_len(after_quote: &[char]) -> Option<usize> {
+    match after_quote.first()? {
+        '\\' => after_quote[1..]
+            .iter()
+            .position(|c| *c == '\'')
+            .map(|p| p + 2),
+        _ => {
+            if after_quote.get(1) == Some(&'\'') {
+                Some(2)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Recognise a module declaration structurally and rewrite its name to
+/// `xtests_<idx>_<name>`, returning `None` for any other line. Everything
+/// before the name (indent, attributes, visibility) and everything after it
+/// (`{`, `;`, a comment) is preserved byte-for-byte.
+///
+/// A declaration is: leading `#[…]` attributes, an optional `pub` (optionally
+/// `pub(…)`, kept as written), the `mod` keyword, and a non-empty name. The
+/// name scan walks chars, not bytes, so a non-ASCII name cannot be split.
+fn rename_module_decl(line: &str, idx: usize) -> Option<String> {
+    let b = line.as_bytes();
+    let mut i = 0usize;
+
+    // Leading `#[…]` attributes, each bracket-balanced and string-aware.
+    loop {
+        i = skip_ascii_ws(b, i);
+        if b.get(i) == Some(&b'#') && b.get(i + 1) == Some(&b'[') {
+            i = skip_balanced(b, i + 1, b'[', b']')?;
+        } else {
+            break;
+        }
+    }
+
+    // Optional visibility, kept as written: `pub`, `pub(…)`, or the spaced
+    // `pub (…)`, each followed by whitespace before what must still be `mod`.
+    if b[i..].starts_with(b"pub") {
+        match b.get(i + 3) {
+            Some(c) if c.is_ascii_whitespace() || c == &b'(' => {}
+            _ => return None, // `publish`, or a bare `pub`: not a declaration
+        }
+        i = skip_ascii_ws(b, i + 3);
+        if b.get(i) == Some(&b'(') {
+            i = skip_ascii_ws(b, skip_balanced(b, i, b'(', b')')?);
+        }
+    }
+
+    i = skip_ascii_ws(b, i);
+
+    // The `mod` keyword, whitespace-separated from its name.
+    if !(b[i..].starts_with(b"mod") && b.get(i + 3).is_some_and(|c| c.is_ascii_whitespace())) {
+        return None;
+    }
+    i = skip_ascii_ws(b, i + 3);
+
+    // The name: an optional raw prefix (`r#`, dropped — `xtests_<idx>_…` is
+    // never a keyword), then identifier characters.
+    let splice_at = i;
+    if b.get(i) == Some(&b'r') && b.get(i + 1) == Some(&b'#') {
+        i += 2;
+    }
+    let rest = &line[i..];
+    let mut name_len = 0usize;
+    for (off, ch) in rest.char_indices() {
+        if ch.is_alphanumeric() || ch == '_' {
+            name_len = off + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if name_len == 0 {
+        return None;
+    }
+    let name = &line[i..i + name_len];
+    Some(format!(
+        "{}xtests_{}_{}{}",
+        &line[..splice_at],
+        idx,
+        name,
+        &line[i + name_len..]
+    ))
+}
+
+/// The next index at or after `i` whose byte is not ASCII whitespace.
+fn skip_ascii_ws(b: &[u8], mut i: usize) -> usize {
+    while b.get(i).is_some_and(|c| c.is_ascii_whitespace()) {
+        i += 1;
+    }
+    i
+}
+
+/// The index just past the bracket matching the one at `open`, honouring
+/// nesting and string literals, or `None` when the group never closes.
+fn skip_balanced(b: &[u8], open: usize, open_ch: u8, close_ch: u8) -> Option<usize> {
+    let mut depth = 1usize; // the bracket at `open` is already consumed
+    let mut in_string = false;
+    let mut i = open + 1;
+    while i < b.len() {
+        let c = b[i];
+        if in_string {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_string = false;
+            }
+        } else if c == b'"' {
+            in_string = true;
+        } else if c == open_ch {
+            depth += 1;
+        } else if c == close_ch {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i + 1);
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Drop a carried `use` when the body already declares it (a duplicate explicit
@@ -1471,6 +1887,155 @@ mod tests {
         );
     }
 
+    // The regression that voided four tasks: modules escalated into the
+    // permanent suite are declared in the section alongside `mod tests`, and
+    // every one of them used to pass through unrenamed (E0428, whole matrix
+    // discarded).
+    const ESCALATED_SECTION: &str = "\
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {}
+}
+
+#[cfg(test)]
+mod conformance_limit_detect {
+    #[test]
+    fn c() {}
+}
+
+mod escalated_limit_detect_glm_53_flash {
+    #[test]
+    fn e() {}
+}
+";
+
+    #[test]
+    fn test_body_renames_every_top_level_module_not_only_mod_tests() {
+        let body = test_body(ESCALATED_SECTION, 3);
+        assert!(body.contains("mod xtests_3_tests {"), "{body}");
+        assert!(
+            body.contains("mod xtests_3_conformance_limit_detect {"),
+            "{body}"
+        );
+        assert!(
+            body.contains("mod xtests_3_escalated_limit_detect_glm_53_flash {"),
+            "{body}"
+        );
+        assert!(!body.contains("mod conformance_limit_detect"));
+        assert!(!body.contains("mod escalated_limit_detect_glm_53_flash"));
+    }
+
+    #[test]
+    fn test_body_pub_mod_is_renamed_keeps_pub_and_indent() {
+        let src = "#[cfg(test)]\n    pub mod x {\n        #[test]\n        fn t() {}\n    }\n";
+        let body = test_body(src, 7);
+        assert!(
+            body.contains("    pub mod xtests_7_x {"),
+            "visibility is not the renamer's business: {body}"
+        );
+        assert!(!body.contains("mod x {"));
+    }
+
+    #[test]
+    fn test_body_two_modules_get_two_distinct_names() {
+        let src = "#[cfg(test)]\nmod alpha {}\nmod beta {}\n";
+        let body = test_body(src, 1);
+        assert!(body.contains("mod xtests_1_alpha {"), "{body}");
+        assert!(body.contains("mod xtests_1_beta {"), "{body}");
+        assert!(!body.contains("mod alpha {"));
+        assert!(!body.contains("mod beta {"));
+    }
+
+    #[test]
+    fn test_body_does_not_redeclare_a_module_the_host_already_declares() {
+        // The host (the reference, stripped of its own test section) declares
+        // `mod a`; the section about to be grafted onto it declares it too.
+        let src = "mod a {}\n#[cfg(test)]\nmod a {\n    #[test]\n    fn t() {}\n}\n";
+        let body = test_body(src, 0);
+        assert!(!body.contains("mod a {"), "would be E0428: {body}");
+        assert!(body.contains("mod xtests_0_a {"), "{body}");
+    }
+
+    #[test]
+    fn test_body_mod_in_a_string_or_comment_is_not_renamed() {
+        let src = "\
+#[cfg(test)]
+mod tests {
+    let s = \"mod tests\";
+    // mod hidden_in_a_comment {}
+    /* mod hidden_in_a_block {} */
+    #[test]
+    fn t() {}
+}
+";
+        let body = test_body(src, 2);
+        assert!(
+            body.contains("let s = \"mod tests\";"),
+            "must survive byte-for-byte: {body}"
+        );
+        assert!(body.contains("// mod hidden_in_a_comment {}"), "{body}");
+        assert!(body.contains("/* mod hidden_in_a_block {} */"), "{body}");
+        assert!(body.contains("mod xtests_2_tests {"), "{body}");
+        assert!(!body.contains("mod tests {"));
+    }
+
+    #[test]
+    fn test_body_excludes_text_before_the_first_cfg_test() {
+        let src = "fn public_surface() {}\n#[cfg(test)]\nmod tests {}\n";
+        let body = test_body(src, 0);
+        assert!(!body.contains("public_surface"));
+        assert!(body.starts_with("#[cfg(test)]"), "{body}");
+    }
+
+    #[test]
+    fn test_body_section_without_modules_is_returned_unchanged() {
+        let section = "#[cfg(test)]\nstatic N: u32 = 1;\n// no modules here\n";
+        assert_eq!(test_body(section, 0), section);
+    }
+
+    #[test]
+    fn test_body_without_any_cfg_test_is_empty() {
+        assert_eq!(test_body("fn main() {}\nstruct S;\n", 9), "");
+    }
+
+    #[test]
+    fn test_body_nested_module_is_left_as_written() {
+        // Documented choice: only the section's top-level declarations are
+        // renamed. A nested `mod` cannot collide with a host top-level module,
+        // and renaming it would break the section's own `helper::` paths.
+        let src = "\
+#[cfg(test)]
+mod tests {
+    mod helper {
+        #[test]
+        fn h() {}
+    }
+}
+";
+        let body = test_body(src, 5);
+        assert!(body.contains("mod xtests_5_tests {"), "{body}");
+        assert!(body.contains("    mod helper {"), "{body}");
+        assert!(!body.contains("xtests_5_helper"));
+    }
+
+    #[test]
+    fn test_body_declaration_with_semicolon_is_renamed_like_any_other() {
+        // `mod x;` cannot compile inside an inline section, but the renamer is
+        // textual: the declaration form is renamed the same as the definition
+        // form, as documented on `test_body`.
+        let src = "#[cfg(test)]\nmod orphan;\n";
+        assert_eq!(test_body(src, 6), "#[cfg(test)]\nmod xtests_6_orphan;\n");
+    }
+
+    #[test]
+    fn test_body_module_declared_on_the_cfg_test_line_is_renamed() {
+        let src = "#[cfg(test)] mod tests {\n    #[test]\n    fn t() {}\n}\n";
+        let body = test_body(src, 8);
+        assert!(body.contains("mod xtests_8_tests {"), "{body}");
+        assert!(!body.contains("mod tests {"));
+    }
+
     #[test]
     fn slugify_matches_tr_script() {
         assert_eq!(slugify("crates/foo/src/bar.rs"), "crates_foo_src_bar_rs");
@@ -1505,5 +2070,66 @@ text
                 "crates/foo/src/b.rs".to_string()
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod strip_regression {
+    use super::*;
+
+    /// The exact shape of mutate.rs: a public item AFTER the first `#[cfg(test)]`.
+    /// Truncating here deleted `pub fn apply`, which crates/fb imports, so every copied
+    /// crate failed to compile and four consecutive matrices VOIDed.
+    #[test]
+    fn code_after_a_test_module_survives() {
+        let src = "pub fn before() {}\n\
+                   #[cfg(test)]\n\
+                   mod tests {\n    #[test]\n    fn t() { assert!(true); }\n}\n\
+                   pub fn apply() -> u8 { 7 }\n";
+        let out = strip_test_modules_text(src);
+        assert!(out.contains("pub fn before"), "{out}");
+        assert!(out.contains("pub fn apply"), "the regression: {out}");
+        assert!(
+            !out.contains("#[test]"),
+            "the test module must still go: {out}"
+        );
+    }
+
+    /// Braces inside a string must not close the module early.
+    #[test]
+    fn a_brace_in_a_string_does_not_end_the_module() {
+        let src = "#[cfg(test)]\nmod t {\n    fn f() { let s = \"}\"; }\n}\npub fn after() {}\n";
+        let out = strip_test_modules_text(src);
+        assert!(out.contains("pub fn after"), "{out}");
+        assert!(!out.contains("mod t"), "{out}");
+    }
+
+    /// An attribute on a braceless item ends at its semicolon.
+    #[test]
+    fn a_braceless_attributed_item_ends_at_the_semicolon() {
+        let src = "#[cfg(test)]\nuse std::fmt;\npub fn after() {}\n";
+        let out = strip_test_modules_text(src);
+        assert!(out.contains("pub fn after"), "{out}");
+        assert!(!out.contains("use std::fmt"), "{out}");
+    }
+
+    /// Unparseable input is KEPT. Deleting what we could not parse is how the original bug
+    /// destroyed live code; a file that still compiles beats one silently gutted.
+    #[test]
+    fn an_unterminated_item_is_kept_rather_than_deleted() {
+        let src = "pub fn before() {}\n#[cfg(test)]\nmod t {\n    fn f() {\n";
+        let out = strip_test_modules_text(src);
+        assert!(out.contains("pub fn before"), "{out}");
+        assert!(
+            out.contains("#[cfg(test)]"),
+            "kept verbatim when unresolvable: {out}"
+        );
+    }
+
+    /// A file with no test module is returned byte for byte.
+    #[test]
+    fn a_file_without_tests_is_unchanged() {
+        let src = "pub fn only() -> u8 { 1 }\n";
+        assert_eq!(strip_test_modules_text(src), src);
     }
 }

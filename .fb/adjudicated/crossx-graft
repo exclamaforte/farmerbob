@@ -1,0 +1,66 @@
+MERGED glm-53-flash -- but the task did not fix what it was written to fix.
+Adjudicated 2026-09-17. Four arms, three PASS, all scope clean (the first wave since the repo
+was made rustfmt-clean, and codex-luna's departures went 51/52/51 -> 0, as predicted).
+
+  claude-sonnet  +322 lines  38 tests
+  codex-luna     +377 lines  24 tests
+  glm-53-flash   +395 lines  40 tests
+  ifm-k2-think   refused, 8s -- OpenRouter daily token cap
+
+ALL THREE DID WHAT I ASKED, AND CROSS-EXAMINATION STILL VOIDED. I built each arm's binary and
+ran the real instrument against refusal-norm, which had voided every previous time. All three:
+VOID, all-nocompile diagonal. Identical outcome, three independent implementations.
+
+That is the N-of-N rule and it points at the specification. Mine named the wrong function.
+
+I had diagnosed the fault by hand-grafting a candidate's suite into another candidate's file and
+watching it collide on duplicate modules. The real instrument does something else: it copies the
+implementation, calls strip_test_modules on the copy, and grafts into that. The grafting was
+never the problem.
+
+    fn strip_test_modules(dir) { ... lines().take_while(|l| !l.contains("#[cfg(test)]")) ... }
+
+Truncate every file at its first test attribute. Correct only when the test module is last, and
+one file is not: mutate.rs declares `pub fn apply` at line 296, after a `#[cfg(test)]` at line
+230. Truncating deleted a public function that crates/fb/src/mutants.rs imports, so the copied
+crate failed with "this file contains an unclosed delimiter" -- every cell nocompile, diagonal
+invariant fires, matrix VOID, on every task in farmerbob-core. Proven by truncating mutate.rs by
+hand and watching the build fail with that exact error.
+
+So cross-examination contributed nothing to five consecutive adjudications because of a function
+none of the three arms was pointed at.
+
+I WROTE THE FIX AND IT TOOK THREE ATTEMPTS, each found by running the instrument rather than
+reading the code:
+
+  1. Skip the attributed item by brace matching instead of truncating. Broke lease.rs: removing
+     `#[cfg(test)] mod tests` left its doc comment orphaned -- "expected item after doc comment".
+  2. Also drop the doc block above a removed item. Broke mutate.rs: the outer scan matched
+     `#[cfg(test)]` INSIDE A STRING LITERAL. mutate.rs contains the literal "#[cfg(test)]"
+     because it strips test modules itself, so the function that removes test modules was cut in
+     half by a string holding the marker it looks for, in the one other file doing the same job.
+  3. Skip strings and comments in the outer scan. Still broke: `b'"'` in mutate.rs -- a byte
+     literal holding a double quote -- read as the start of a string, swallowing everything to
+     the next quote and cutting find_comment_start in half.
+
+Now handles strings, char literals, line and block comments in both scans, and KEEPS anything it
+cannot parse: deleting what the scanner failed to understand is precisely how the original did
+its damage, so the failure mode is a file that still compiles rather than one silently gutted.
+
+VERIFIED: `fb crossx refusal-norm` now produces a full 3x3 matrix with every cell populated and
+no VOID. First non-void matrix in five tasks. All cells pass and no discovery, which is the right
+answer there -- I established during that adjudication, with a ten-clause probe, that all three
+implementations were behaviourally identical.
+
+WHY glm-53-flash. All three renamers work; I confirmed from a real generated suite file that
+every module is renamed (xtests_0_tests, xtests_0_conformance_limit_detect,
+xtests_0_escalated_...) with no collision. glm-53-flash carries the most tests (40) and a
+structured ScanState tracking depth, strings and comments rather than line prefixes, and it
+pinned nested modules, semicolon declarations and mod-in-a-string separately. claude-sonnet was
+close: 38 tests and brace-depth tracking. codex-luna's 24 had no semicolon case.
+
+The renaming is still worth having -- once strip works, duplicate modules WOULD collide -- so
+the work is not wasted. But this task's stated purpose was to make cross-examination run again,
+and it was my fix to strip_test_modules that did that, not theirs.
+
+1187 tests, clippy 9, repo rustfmt-clean.
