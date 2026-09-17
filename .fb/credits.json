@@ -29,6 +29,12 @@
    "critic": "codex-luna",
    "found_on": "crossx",
    "tests": 8
+  },
+  {
+   "task": "budget",
+   "critic": "codex-luna",
+   "found_on": "crossx",
+   "tests": 9
   }
  ]
 }
