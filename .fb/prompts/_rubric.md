@@ -87,6 +87,13 @@ times. That happened one reasonable-looking local decision at a time. If you bel
 existing type genuinely cannot express what this task needs, say so in your handoff, name the
 type and the clause it cannot express, and extend it rather than shadowing it.
 
+## Run the tests quietly
+
+Use `cargo test -q` and `cargo build -q`. This workspace has over nine hundred tests and a
+plain `cargo test` prints a line for every one of them; three arms on a recent task spent
+their whole run reading their own test output and produced nothing at all. `-q` prints the
+summary and any failures, which is the entire signal.
+
 **Not scored:** wallclock. Taking longer to produce better work is the preferred trade.
 There is a generous resource budget; a run is cut early only if it stops making progress or
 regresses past its own best error count.
