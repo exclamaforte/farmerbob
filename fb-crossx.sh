@@ -85,8 +85,23 @@ for a in "${ARMS[@]}"; do
     # marks the instrument, not the candidate.  Carry the file's real imports instead of
     # predicting them.  (bead farmerbob-74l)
     USES=$(awk '/#\[cfg\(test\)\]/{exit} /^use /{print}' "$f")
-    awk '/#\[cfg\(test\)\]/{f=1} f' "$f" \
-      | sed -e "s/^\( *\)mod tests/\1mod xtests_${n}/" \
+    BODY=$(awk '/#\[cfg\(test\)\]/{f=1} f' "$f" | sed -e "s/^\( *\)mod tests/\1mod xtests_${n}/")
+    # Do NOT inject a `use` the suite already declares for itself. Carrying the file's real
+    # imports (above) fixed one impossible result and created another: a test module that
+    # explicitly imports the same item as its parent file ends up with the import twice, and
+    # a duplicate EXPLICIT import is E0252, a hard error. A glob is only shadowed, which is
+    # why `use super::*` alongside an explicit import compiles fine and this does not.
+    #
+    # or-ling-30-flash's pricing suite compiled perfectly in its own worktree and failed
+    # against its own implementation once grafted. The diagonal invariant caught it and
+    # VOIDed the matrix, which is the invariant doing its job -- but the fault was the
+    # instrument's, and one arm's whole cross-examination was lost to it.
+    #   (bead farmerbob-74l, second occurrence)
+    USES=$(printf '%s\n' "$USES" | while IFS= read -r u; do
+             [ -n "$u" ] || continue
+             printf '%s\n' "$BODY" | grep -qF "$(printf '%s' "$u" | sed 's/^ *//')" || printf '%s\n' "$u"
+           done)
+    printf '%s\n' "$BODY" \
       | awk -v uses="$USES" '{print} /^ *mod xtests_[0-9]+ *\{/ && !done {print uses; done=1}' \
       >> "$TMP/suite.$a.$(slug "$rel").rs"
     echo >> "$TMP/suite.$a.$(slug "$rel").rs"
