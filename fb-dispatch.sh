@@ -16,6 +16,24 @@ RUN="${BEAD}--${SRC}"; WT="$WT_ROOT/$RUN"; LOG="$LOG_ROOT/$RUN.log"
 META="$LOG_ROOT/$RUN.json"; BRANCH="fb/$BEAD/$SRC"
 
 git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
+# `worktree remove` REFUSES a worktree whose admin directory is gone -- "is not a working
+# tree" -- and leaves the directory sitting there, at which point `worktree add` refuses too
+# because the path exists and is not empty. 103 worktrees were left in exactly that state
+# (farmerbob-13p), so every one of their tasks was permanently un-redispatchable and the
+# only symptom was the one-line "worktree failed" below.
+#
+# Clear the leftover by hand, but only a path this script itself just constructed: it must
+# live under WT_ROOT and be named exactly "$BEAD--$SRC". A bare rm -rf on an interpolated
+# path is how a harness deletes something it did not mean to.
+if [ -e "$WT" ] && ! git -C "$REPO" worktree list --porcelain | grep -qxF "worktree $WT"; then
+  case "$WT" in
+    "$WT_ROOT/$BEAD--$SRC")
+      echo "$SRC: clearing an orphaned worktree directory (no git admin entry)"
+      rm -rf -- "$WT" ;;
+    *) echo "$SRC: refusing to remove unexpected path $WT"; exit 1 ;;
+  esac
+fi
+git -C "$REPO" worktree prune >/dev/null 2>&1
 git -C "$REPO" branch -D "$BRANCH" >/dev/null 2>&1
 git -C "$REPO" worktree add -q -b "$BRANCH" "$WT" "$BASE" || { echo "$SRC: worktree failed"; exit 1; }
 
