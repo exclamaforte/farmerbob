@@ -4,6 +4,7 @@ mod critique;
 mod crossx;
 mod promote;
 mod defects;
+mod differential;
 mod escalate;
 mod doctor;
 mod import;
@@ -82,6 +83,14 @@ enum Command {
         #[arg(long = "crate", default_value = score::DEFAULT_CRATE)]
         krate: String,
         target: String,
+    },
+    /// Run a ported candidate against the script it replaces, and diff.
+    ///
+    /// The only gate in this harness that is not a gate on form. A candidate that computes
+    /// nothing -- and one such was submitted, passing build, scope, lint and its own tests --
+    /// satisfies every other check we own. This one it cannot satisfy.
+    Differential {
+        task: String,
     },
     /// Generate a defect set mechanically, so suite sensitivity can be measured.
     ///
@@ -436,6 +445,7 @@ fn main() {
         Some(Command::Promote { task }) => promote::run_cmd(&task),
         Some(Command::Objective { only }) => objective::run_cmd(if only.is_empty() { None } else { Some(only) }),
         Some(Command::Defects { task, krate, target }) => defects::run_cmd(&task, &krate, &target),
+        Some(Command::Differential { task }) => differential::run_cmd(&task),
         Some(Command::Mutants { file, task, max }) => mutants::run_cmd(&file, &task, max),
         Some(Command::Prove { task, krate, target, prover }) =>
             prove::run_cmd(&task, &krate, &target, &prover),

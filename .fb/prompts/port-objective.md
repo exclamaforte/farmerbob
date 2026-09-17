@@ -1,5 +1,8 @@
 <!-- fb:creates crates/fb/src/objective.rs -->
 <!-- fb:reads fb-objective.sh -->
+<!-- fb:differential fb-objective.sh objective -->
+<!-- fb:case port-defects -->
+<!-- fb:case no-such-task-at-all -->
 # Task: port fb-objective.sh to Rust, behaviour-for-behaviour
 
 Rust workspace, already builds. Work only inside `crates/fb`.
