@@ -38,7 +38,7 @@ fn home() -> PathBuf {
 
 /// The worktree root: `$HOME/.local/share/farmerbob/worktrees`.
 fn wt_root() -> PathBuf {
-    home().join(".local/share/farmerbob/worktrees")
+    crate::paths::worktrees()
 }
 
 /// The repo root: hardcoded to match the script's `$REPO`.
@@ -48,7 +48,7 @@ fn repo_root() -> PathBuf {
 
 /// `$HOME/.local/share/farmerbob/logs`.
 fn logs_dir() -> PathBuf {
-    home().join(".local/share/farmerbob/logs")
+    crate::paths::logs()
 }
 
 /// Public entry point, mirroring the script's positional parameters in order:

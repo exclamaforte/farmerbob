@@ -65,11 +65,7 @@ fn arm_name(path: &Path, prefix: &str) -> Measurement<String> {
 }
 
 fn candidates(bead: &str, target: &str) -> Measurement<Vec<String>> {
-    let h = match home() {
-        Measurement::Observed(path) => path,
-        Measurement::Missing(reason) => return Measurement::Missing(reason),
-    };
-    let root = h.join(".local/share/farmerbob/worktrees");
+    let root = crate::paths::worktrees();
     let prefix = format!("{bead}--");
     let registry =
         match crate::sources::Registry::load(Path::new(REPO).join("sources.toml").as_path()) {
@@ -265,15 +261,8 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
         println!("need >= 2 to cross-review");
         return 1;
     }
-    let h = match home() {
-        Measurement::Observed(path) => path,
-        Measurement::Missing(reason) => {
-            eprintln!("cannot measure HOME: {reason:?}");
-            return 1;
-        }
-    };
-    let wt = h.join(".local/share/farmerbob/worktrees");
-    let log_dir = h.join(".local/share/farmerbob/logs/critiques").join(bead);
+    let wt = crate::paths::worktrees();
+    let log_dir = crate::paths::logs().join("critiques").join(bead);
     if let Err(error) = fs::create_dir_all(&log_dir) {
         eprintln!("cannot create {}: {error}", log_dir.display());
         return 1;

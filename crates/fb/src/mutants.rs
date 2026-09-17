@@ -16,7 +16,6 @@
 //!   (bead farmerbob-jd2.11)
 
 use std::fs;
-use std::path::Path;
 
 use farmerbob_core::mutate::{apply, mutants, Mutant};
 

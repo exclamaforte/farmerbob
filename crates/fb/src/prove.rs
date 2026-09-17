@@ -41,12 +41,12 @@ fn repo_root() -> PathBuf {
 
 /// The worktree root: `$HOME/.local/share/farmerbob/worktrees`.
 fn wt_root() -> PathBuf {
-    home().join(".local/share/farmerbob/worktrees")
+    crate::paths::worktrees()
 }
 
 /// `$HOME/.local/share/farmerbob/logs`.
 fn logs_dir() -> PathBuf {
-    home().join(".local/share/farmerbob/logs")
+    crate::paths::logs()
 }
 
 /// Whether the reference veto could be performed against the merged implementation.

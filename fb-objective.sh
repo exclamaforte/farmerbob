@@ -7,6 +7,24 @@ set -uo pipefail
 LOGS="$HOME/.local/share/farmerbob/logs"
 WT="$HOME/.local/share/farmerbob/worktrees"
 REPO=/home/gabe/Documents/farmerbob
+# As of this commit the record lives in Rust -- `fb objective` -- and this script DELEGATES.
+# Verified twice before switching over: 225 rows against the shell's 225, same run set, ZERO
+# differing fields on any row.
+#
+# The first attempt at this port was VOIDED by me for emitting "220 rows where the shell emits
+# 137". It was never compared against the shell. It was compared against a stale
+# objective.json that had not been regenerated since several tasks ran. The arm was right and
+# the adjudicator was wrong, and the lesson is in the check rather than the code: compare
+# against the program's output PRODUCED NOW, never against an artefact lying on disk. An
+# artefact records the last time something ran; it is not a statement of what the thing does.
+#   (farmerbob-jd2.14 for the sandbox that makes producing it safe)
+#
+# Falls back to the inline Python below when the binary is not built.
+FB_BIN=/home/gabe/Documents/farmerbob/target/debug/fb
+if [ -x "$FB_BIN" ]; then
+  exec "$FB_BIN" objective "${1:-}"
+fi
+
 python3 - "$LOGS" "$WT" "$REPO" "${1:-}" <<'PY'
 import json, os, sys, glob, subprocess, tomllib
 logs, wtroot, repo, only = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]

@@ -30,7 +30,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn logs() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share/farmerbob/logs")
+    crate::paths::logs()
 }
 
 fn load(path: &PathBuf) -> Option<Value> {
@@ -110,9 +110,8 @@ fn tests_written(task: &str, arm: &str) -> Option<u32> {
         .lines()
         .find(|l| l.contains("fb:creates"))
         .and_then(|l| l.split_whitespace().nth(2))?;
-    let home = std::env::var("HOME").ok()?;
     let src = fs::read_to_string(format!(
-        "{home}/.local/share/farmerbob/worktrees/{task}--{arm}/{rel}"
+        "{}/{task}--{arm}/{rel}", crate::paths::worktrees().display()
     ))
     .ok()?;
     Some(src.matches("#[test]").count() as u32)

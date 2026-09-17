@@ -63,10 +63,7 @@ pub struct Trial {
 
 impl Trial {
     fn logs() -> PathBuf {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default()
-            .join(".local/share/farmerbob/logs")
+        crate::paths::logs()
     }
 
     fn sh(&self, script: &str, args: &[&str]) -> bool {

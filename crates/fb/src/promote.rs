@@ -592,14 +592,7 @@ pub fn run_cmd(bead: &str) -> i32 {
         eprintln!("fb-promote: bead is required");
         return exit::USAGE;
     }
-    let home = match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() => home,
-        _ => {
-            eprintln!("fb-promote: HOME is not set");
-            return exit::ERROR;
-        }
-    };
-    let base = PathBuf::from(home).join(".local/share/farmerbob/logs");
+    let base = crate::paths::logs();
     let dir = base.join("critiques").join(bead);
     let out = base.join(format!("{bead}.claims.json"));
 

@@ -101,9 +101,7 @@ fn crossx(task: &str) -> i32 {
         }
     };
     let cx = match home() {
-        Measurement::Observed(h) => h
-            .join(".local/share/farmerbob/logs")
-            .join(format!("{task}.crossx.json")),
+        Measurement::Observed(_) => crate::paths::logs().join(format!("{task}.crossx.json")),
         Measurement::Missing(reason) => {
             eprintln!("cannot locate crossx log: {reason:?}");
             return 1;
@@ -122,7 +120,7 @@ fn crossx(task: &str) -> i32 {
 
 fn auto(task: &str) -> i32 {
     let proofs = match home() {
-        Measurement::Observed(h) => h.join(".local/share/farmerbob/logs/proofs").join(task),
+        Measurement::Observed(_) => crate::paths::logs().join("proofs").join(task),
         Measurement::Missing(reason) => {
             eprintln!("cannot locate proofs: {reason:?}");
             return 1;
