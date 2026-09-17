@@ -16,6 +16,7 @@ mod promote;
 mod prove;
 mod score;
 mod select;
+mod slots_cmd;
 mod sources;
 mod status;
 mod trial;
@@ -99,6 +100,21 @@ enum Command {
         #[arg(long = "crate", default_value = score::DEFAULT_CRATE)]
         krate: String,
         target: String,
+    },
+    /// How many concurrent runs fit, and why -- the caller SlotTable::admit never had.
+    ///
+    /// fb-admit.sh counts slots against MEASURED usage and then grants every run a larger
+    /// hard cap, so the sum of what the machine may be asked for was never bounded
+    /// (farmerbob-89j). Here the hard cap IS the slot budget.
+    Slots {
+        #[arg(long)]
+        available_mb: u64,
+        #[arg(long)]
+        headroom_mb: u64,
+        #[arg(long)]
+        memory_mb: u64,
+        #[arg(long)]
+        plan: bool,
     },
     /// Everything the orchestrator needs to decide what to do next, in one call.
     ///
@@ -521,6 +537,12 @@ fn main() {
             krate,
             target,
         }) => defects::run_cmd(&task, &krate, &target),
+        Some(Command::Slots {
+            available_mb,
+            headroom_mb,
+            memory_mb,
+            plan,
+        }) => slots_cmd::run_cmd(available_mb, headroom_mb, memory_mb, plan),
         Some(Command::Status) => status::run_cmd(),
         Some(Command::Eligible { arm }) => eligible::run_cmd(&arm),
         Some(Command::Differential { task }) => differential::run_cmd(&task),

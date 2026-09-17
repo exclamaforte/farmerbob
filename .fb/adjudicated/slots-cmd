@@ -1,0 +1,53 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. Four arms, three PASS, all scope clean. Closes farmerbob-89j.
+
+  codex-luna     +175 lines   8 tests
+  claude-sonnet  +300 lines  15 tests   DISQUALIFIED
+  glm-53-flash   +368 lines  13 tests
+  ifm-k2-think   refused, 7s -- OpenRouter daily token cap
+
+WHAT IT FIXES, demonstrated on the same machine the shell sees:
+
+    fb-admit.sh     14000MB avail, 3000 headroom -> 7 slots   (counted at 1.5G MEASURED)
+    fb slots        14000MB avail, 3000 headroom -> 5 slots   (counted at the 2G HARD CAP)
+
+Seven slots each carrying a 2048MB permit is 14336MB of permission against an 11000MB ceiling.
+The sum of what the machine may actually be asked for was over-committed by 3.3GB and nothing
+bounded it. Charging the hard cap to SlotTable bounds it by construction.
+
+CLAUDE-SONNET IS DISQUALIFIED, on this project's signature failure. At available_mb = u64::MAX,
+memory_mb = 1:
+
+    codex-luna     18446744073709551615 slots
+    glm-53-flash   18446744073709551615 slots
+    claude-sonnet  10000 slots
+
+It caps its admission loop at 10000 and prints the cap as the answer. Not "at least 10000", not
+"capped for enumeration" -- just "10000 slots", a number that is not the measurement and is
+indistinguishable from one that is. Every other arm found a way to answer the question honestly.
+Its 15 tests are the most of the three and did not catch it, because the test asserts what the
+implementation does.
+
+The tension was MINE: clause 2 forbids dividing and requires admitting one at a time so the count
+and the table agree by construction; the boundary clause forbids hanging at u64::MAX. Both cannot
+hold by enumeration alone. Two arms resolved it the same principled way -- simulate up to a
+bound, then fall back to `SlotTable::capacity`, which is CORE's own function and not a
+reimplementation -- and documented why. One capped and said nothing.
+
+Between the two that resolved it, thin: both correct at every boundary, including the exact-fit
+pair at 13240 (5 slots) against 13239 (4). glm-53-flash bounds its simulation to `capacity + 1`,
+so it probes only as far as needed to confirm, and its tests compare the Queued reason against a
+reason produced by a REAL SlotTable rather than against a copied string -- testing the behaviour
+rather than the format, which is exactly what the rubric asks for and rarely gets. codex-luna's
+output also prints the slot size twice ("1MB/slot (hard cap), 1MB hard cap").
+
+Two of my own errors, both caught by running rather than reading. My first boundary probe used
+13288 and called 5 slots a failure; the five-slot boundary is 3000 + 5*2048 = 13240, and all
+three arms were right. And a grep for reimplemented division flagged glm twice -- both hits were
+in its module documentation explaining that it does NOT divide.
+
+No differential exists for this task and the spec says so plainly: fb-admit.sh takes a matrix TSV
+and DISPATCHES, so an oracle here would launch a wave. An earlier draft of the spec declared one
+anyway, which would have made the pipeline dispatch agents on every check.
+
+1316 tests, clippy 9.
