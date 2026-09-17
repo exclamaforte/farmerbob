@@ -10,8 +10,19 @@
 //! road: a second model of one concept, where the weaker model loses exactly
 //! the distinction the stronger one was built to preserve.
 //!   (bead farmerbob-jd2.1)
+//!
+//! The DECISION that produces an [`OutcomeClass`] from a finished run
+//! ([`RunFacts`] through [`classify`]) lives here too, beside the
+//! [`crate::limit_signal`] rules it consults. It spent the week in the binary
+//! instead and was wrong four times, each time scoring a launcher refusal as
+//! the model producing nothing -- four distinct strings, a missing lowercase,
+//! a colour escape, a quoted pattern. The rules and the signal now share a
+//! module, so the fifth string is a new value in `SignalRules` and nothing
+//! more.
 
 pub use crate::gate::Verdict;
+
+use crate::limit_signal::{Classification, SignalRules, classify as classify_signal, normalise};
 
 /// Why a run ended. Exactly these and no others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,6 +189,172 @@ fn class_index(class: OutcomeClass) -> usize {
         OutcomeClass::Cancelled => 4,
         OutcomeClass::Unknown => 5,
     }
+}
+
+/// What a finished run looked like, as facts rather than conclusions.
+///
+/// Every field is optional because every field is independently missable: a
+/// run can fail to be reaped, or be reaped without its line count ever being
+/// taken. An absent fact must stay absent — `None` here is "never known",
+/// never a dressed-up zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunFacts {
+    /// Process exit status. `None` when the run was never reaped.
+    pub exit_code: Option<i32>,
+    /// Lines added to the declared deliverable. `None` when never measured.
+    pub lines_added: Option<u32>,
+    /// The head of the run's own log, already ANSI-stripped by the caller.
+    ///
+    /// The text is normalised once more before matching (stripping is
+    /// idempotent, so a caller that forgot costs nothing). How much head to
+    /// supply is the caller's curation: every line supplied is eligible to
+    /// match, and nothing beyond it — there is no line window here.
+    pub log_head: Option<String>,
+    /// An explicit class the harness recorded, which is authoritative when present.
+    pub declared: Option<OutcomeClass>,
+}
+
+/// Classify one finished run.
+///
+/// The decision order, fixed here so it is not rediscovered:
+///
+/// 1. `declared` wins outright when present. The harness knows things this
+///    function does not.
+/// 2. A run never reaped (`exit_code: None`) is [`OutcomeClass::Unknown`].
+///    Every later rule conditions on the exit status, so without one no rule
+///    may speak for the run. `Unknown` is honest about that and routes the
+///    run to [`needs_triage`], instead of silently charging it to the arm
+///    (`ArmResult`) or silently excusing it (`Infrastructure`).
+/// 3. Exit 143 or 137 is [`OutcomeClass::Cancelled`]. The orchestrator killed
+///    it; that is not the arm.
+/// 4. Exit 127 is [`OutcomeClass::Infrastructure`]. "Command not found" is
+///    always the harness and never the model, which was never reached.
+/// 5. A refusal recognised by the [`SignalRules`] is
+///    [`OutcomeClass::QuotaLimited`], via `limit_signal::classify`. A
+///    configured limit exit code recognises by itself. A pattern recognises
+///    only where the text it matched sits at the START of a log-head line:
+///    an arm quoting a pattern mid-sentence is discussing quotas, not being
+///    refused (the 2026-09-17 incident). A line's leading whitespace is
+///    ignored before that check.
+/// 6. The shape rule: a non-zero exit, a MEASURED zero lines added, and a
+///    log-head line beginning `error:` mean the launcher failed before the
+///    agent ran. All three are required. The line alone is not enough — an
+///    agent may print an error while working — and the measured-zero
+///    condition is what stops a genuinely failing arm being excused. Its
+///    hits are [`OutcomeClass::Infrastructure`]: the launcher failing before
+///    the agent ran is a harness-side fault, and where no pattern knows the
+///    string, the run is excused from the arm without claiming a quota
+///    refusal nobody detected. The ways a provider says no are an open set,
+///    so a fifth string lands here — never charged to the arm — until a
+///    mis-scored run proves the gap and the string joins the
+///    [`SignalRules`], which is data, not code.
+/// 7. Otherwise [`OutcomeClass::ArmResult`].
+///
+/// Boundaries:
+///
+/// - 143, 137 and 127 are a **known subset** of the exit codes that mean the
+///   harness rather than the arm. A code outside the subset falls to the
+///   ordinary rules; it is never guessed at.
+/// - `log_head: None` or `Some("")`: classify on the exit code alone, and
+///   never `QuotaLimited` — nothing was read, and an absent log is not
+///   evidence of a clean run. Even a configured limit exit code goes
+///   unhonoured without text.
+/// - `lines_added: None` is not `Some(0)`: the shape rule requires a
+///   measured zero, so an unmeasured count leaves the shape rule silent.
+/// - Exit codes `i32::MIN` and `i32::MAX` are ordinary non-zero codes and
+///   fall through the ordinary rules; neither panics.
+/// - A [`SignalRules`] with no patterns and no exit codes makes rule 5
+///   inert; the shape rule still applies.
+///
+/// There is no clock here: `limit_signal::classify` is consulted with `now`
+/// fixed at 0, which affects only the reset instant it reports, and that
+/// instant is discarded — recognition, not recovery, is this function's job.
+pub fn classify(facts: &RunFacts, rules: &SignalRules) -> OutcomeClass {
+    if let Some(declared) = facts.declared {
+        return declared;
+    }
+    let Some(exit_code) = facts.exit_code else {
+        return OutcomeClass::Unknown;
+    };
+    if matches!(exit_code, 143 | 137) {
+        return OutcomeClass::Cancelled;
+    }
+    if exit_code == 127 {
+        return OutcomeClass::Infrastructure;
+    }
+    // Without a log nothing was read: no refusal may be declared, and the
+    // shape rule has no line to find. The exit code alone decides, and it
+    // has already had its say above.
+    let Some(head) = facts.log_head.as_deref().filter(|head| !head.is_empty()) else {
+        return OutcomeClass::ArmResult;
+    };
+    if refusal_recognised(rules, exit_code, head) {
+        return OutcomeClass::QuotaLimited;
+    }
+    if launcher_failed_before_the_agent_ran(facts.lines_added, exit_code, head) {
+        return OutcomeClass::Infrastructure;
+    }
+    OutcomeClass::ArmResult
+}
+
+/// Rule 5: a refusal recognised by the limit signal.
+///
+/// A configured limit exit code recognises by itself — an exit code cannot be
+/// quoted mid-sentence, so it needs no anchoring. A pattern recognises only
+/// line-anchored; see [`line_starts_with_a_limit_pattern`].
+fn refusal_recognised(rules: &SignalRules, exit_code: i32, head: &str) -> bool {
+    if rules.limit_exit_codes.contains(&exit_code) {
+        return true;
+    }
+    head.lines()
+        .any(|line| line_starts_with_a_limit_pattern(rules, exit_code, line))
+}
+
+/// Whether one log-head line evidences a refusal.
+///
+/// `limit_signal::classify` is fed the line alone, and its `Limited` evidence
+/// — the exact text that matched — must begin the line. Feeding the whole
+/// head at once would let a pattern quoted inside a sentence count as a
+/// refusal; the evidence names WHAT matched, so "does the line begin with
+/// it" is the positional test with actual force. Casing is folded here
+/// because the positional check happens outside `limit_signal`'s own
+/// case-insensitive matcher, and the launchers capitalise.
+fn line_starts_with_a_limit_pattern(rules: &SignalRules, exit_code: i32, line: &str) -> bool {
+    let flat = normalise(line);
+    let Classification::Limited { evidence, .. } = classify_signal(rules, exit_code, &flat, 0)
+    else {
+        return false;
+    };
+    let needle = evidence.to_lowercase();
+    flat.trim_start().to_lowercase().starts_with(&needle)
+}
+
+/// Rule 6: the shape rule. All three conditions are required.
+///
+/// A launcher that refuses says so in its banner region, on a line of its own
+/// beginning `error:`, and the agent never runs. An agent that is WORKING can
+/// also print an error, so the line alone proves nothing; the non-zero exit
+/// and the measured zero lines are what keep a genuinely failing arm from
+/// being excused.
+fn launcher_failed_before_the_agent_ran(
+    lines_added: Option<u32>,
+    exit_code: i32,
+    head: &str,
+) -> bool {
+    if exit_code == 0 {
+        return false;
+    }
+    // An unmeasured count is not a measured zero. Never measured is exactly
+    // the case where the shape rule's third condition cannot be checked.
+    if lines_added != Some(0) {
+        return false;
+    }
+    head.lines().any(|line| {
+        normalise(line)
+            .trim_start()
+            .to_lowercase()
+            .starts_with("error:")
+    })
 }
 
 #[cfg(test)]
@@ -471,5 +648,228 @@ mod cx_outcome_codex_luna {
         let triage = needs_triage(&records);
         assert_eq!(triage[0].task, "first");
         assert_eq!(triage[1].task, "last");
+    }
+}
+
+// Clause tests for `classify`, one per distinct behaviour the specification
+// pins. Where the specification deliberately leaves a bucket open (the shape
+// rule's hits), the tests assert only the promise it makes: not an arm
+// result.
+#[cfg(test)]
+mod classification {
+    use super::*;
+
+    fn rules() -> SignalRules {
+        SignalRules::new(60)
+            .with_pattern("error: rate limit exceeded")
+            .with_pattern("error: quota exceeded")
+    }
+
+    fn facts(exit_code: Option<i32>, lines_added: Option<u32>, log_head: &str) -> RunFacts {
+        RunFacts {
+            exit_code,
+            lines_added,
+            log_head: Some(log_head.to_string()),
+            declared: None,
+        }
+    }
+
+    #[test]
+    fn declared_wins_over_every_other_fact() {
+        for declared in [OutcomeClass::Infrastructure, OutcomeClass::ArmResult] {
+            let f = RunFacts {
+                declared: Some(declared),
+                ..facts(Some(143), Some(0), "error: rate limit exceeded")
+            };
+            assert_eq!(classify(&f, &rules()), declared, "declared={declared:?}");
+        }
+    }
+
+    #[test]
+    fn declared_beats_a_missing_exit_code() {
+        let f = RunFacts {
+            declared: Some(OutcomeClass::ArmResult),
+            ..facts(None, None, "")
+        };
+        assert_eq!(classify(&f, &rules()), OutcomeClass::ArmResult);
+    }
+
+    // A run never reaped has no exit status, and every later rule conditions
+    // on one. Pinned to Unknown: it routes to triage instead of charging or
+    // excusing the arm.
+    #[test]
+    fn a_run_never_reaped_is_unknown() {
+        let f = facts(None, Some(0), "error: rate limit exceeded");
+        assert_eq!(classify(&f, &rules()), OutcomeClass::Unknown);
+    }
+
+    #[test]
+    fn orchestrator_kills_are_cancelled() {
+        for code in [143, 137] {
+            let f = facts(Some(code), Some(0), "error: rate limit exceeded");
+            assert_eq!(classify(&f, &rules()), OutcomeClass::Cancelled, "rc={code}");
+        }
+    }
+
+    #[test]
+    fn command_not_found_is_infrastructure_even_with_lines() {
+        let f = facts(Some(127), Some(50), "unknown source claude-sonnet");
+        assert_eq!(classify(&f, &rules()), OutcomeClass::Infrastructure);
+    }
+
+    // Capitalised, because the launchers capitalise and the patterns are
+    // lowercase: the missing lowercase was the second repair of the week.
+    #[test]
+    fn a_capitalised_refusal_on_its_own_line_is_quota_limited() {
+        let f = facts(
+            Some(1),
+            Some(0),
+            "Error: Rate limit exceeded: free-models-per-day.",
+        );
+        assert_eq!(classify(&f, &rules()), OutcomeClass::QuotaLimited);
+    }
+
+    #[test]
+    fn a_refusal_on_a_later_line_still_anchors() {
+        let f = facts(
+            Some(1),
+            Some(0),
+            "Using the credential from the global store.\nError: Rate limit exceeded\n",
+        );
+        assert_eq!(classify(&f, &rules()), OutcomeClass::QuotaLimited);
+    }
+
+    // The caller was supposed to strip; stripping is idempotent, so a caller
+    // that forgot still classifies correctly.
+    #[test]
+    fn an_unstripped_head_is_normalised_again_before_matching() {
+        let f = facts(
+            Some(1),
+            Some(0),
+            "\u{1b}[91mError: \u{1b}[0mRate limit exceeded",
+        );
+        assert_eq!(classify(&f, &rules()), OutcomeClass::QuotaLimited);
+    }
+
+    // Verbatim shape of the 2026-09-17 incident: an arm REPORTING that it
+    // fixed refusal detection, quoting the pattern it fixed. Exit 0 and 396
+    // lines, recorded as quota_limited once and lost from the arm results.
+    const QUOTING_ARM: &str = "Done. Provider-refusal detection in `limit_signal.rs` now survives colour: the anchored pattern that missed the incident (`error: rate limit exceeded`) now matches.";
+
+    #[test]
+    fn an_arm_quoting_a_pattern_is_an_arm_result() {
+        let f = facts(Some(0), Some(396), QUOTING_ARM);
+        assert_eq!(classify(&f, &rules()), OutcomeClass::ArmResult);
+    }
+
+    // The anchoring clause with actual force: the same quotation on a failing
+    // exit. Unanchored substring matching would read the quote as a refusal.
+    #[test]
+    fn a_quoted_pattern_does_not_fire_on_a_failing_exit_either() {
+        let f = facts(Some(1), Some(396), QUOTING_ARM);
+        assert_eq!(classify(&f, &rules()), OutcomeClass::ArmResult);
+    }
+
+    // The fifth string will arrive and no list will contain it. The shape
+    // rule's promise is that it is not charged to the arm; the bucket beyond
+    // that is deliberately not asserted.
+    #[test]
+    fn an_unenumerated_refusal_is_not_charged_to_the_arm() {
+        let f = facts(Some(1), Some(0), "error: monthly ceiling reached");
+        assert_ne!(classify(&f, &rules()), OutcomeClass::ArmResult);
+    }
+
+    #[test]
+    fn an_arm_that_wrote_lines_and_errored_is_an_arm_result() {
+        let f = facts(
+            Some(1),
+            Some(240),
+            "error: something went wrong while I was working",
+        );
+        assert_eq!(classify(&f, &rules()), OutcomeClass::ArmResult);
+    }
+
+    #[test]
+    fn a_clean_no_op_counts_against_the_arm() {
+        let f = facts(Some(0), Some(0), "Error: nothing came of it");
+        assert_eq!(classify(&f, &rules()), OutcomeClass::ArmResult);
+    }
+
+    // The line must BEGIN a log-head line. Mid-line mentions are discussion.
+    #[test]
+    fn an_error_mention_that_does_not_begin_its_line_is_not_the_shape_rule() {
+        let f = facts(
+            Some(1),
+            Some(0),
+            "the launcher printed: error: no such thing",
+        );
+        assert_eq!(classify(&f, &rules()), OutcomeClass::ArmResult);
+    }
+
+    // An absent log is never a refusal -- not even for a configured limit
+    // exit code, because nothing was read. An empty head is the same.
+    #[test]
+    fn an_absent_or_empty_log_is_never_a_refusal() {
+        let r = rules().with_exit_code(429);
+        let absent = RunFacts {
+            log_head: None,
+            ..facts(Some(429), Some(0), "")
+        };
+        assert_eq!(classify(&absent, &r), OutcomeClass::ArmResult);
+        assert_eq!(
+            classify(&facts(Some(429), Some(0), ""), &r),
+            OutcomeClass::ArmResult
+        );
+    }
+
+    // Never measured is not zero: the shape rule needs a measured zero, so
+    // an unmeasured count leaves it silent.
+    #[test]
+    fn an_unmeasured_line_count_is_not_a_measured_zero() {
+        let f = facts(Some(1), None, "error: something inscrutable went wrong");
+        assert_eq!(classify(&f, &rules()), OutcomeClass::ArmResult);
+    }
+
+    #[test]
+    fn extreme_exit_codes_fall_through_the_ordinary_rules() {
+        for code in [i32::MIN, i32::MAX] {
+            let f = facts(Some(code), Some(5), "error: something went wrong");
+            assert_eq!(classify(&f, &rules()), OutcomeClass::ArmResult, "rc={code}");
+        }
+    }
+
+    // With no patterns nothing is quota_limited by recognition, and the
+    // shape rule still applies: neither an arm result nor a recognised
+    // refusal, but never charged to the model.
+    #[test]
+    fn empty_rules_leave_the_shape_rule_standing() {
+        let bare = SignalRules::new(60);
+        let f = facts(Some(1), Some(0), "error: rate limit exceeded");
+        let verdict = classify(&f, &bare);
+        assert_ne!(
+            verdict,
+            OutcomeClass::QuotaLimited,
+            "no patterns, so no rule-4 refusal"
+        );
+        assert_ne!(
+            verdict,
+            OutcomeClass::ArmResult,
+            "the shape rule still applies"
+        );
+    }
+
+    #[test]
+    fn a_configured_limit_exit_code_recognises_without_a_matching_line() {
+        let r = rules().with_exit_code(429);
+        let f = facts(Some(429), Some(0), "boom");
+        assert_eq!(classify(&f, &r), OutcomeClass::QuotaLimited);
+    }
+
+    // A new refusal is a new value, never a new match arm.
+    #[test]
+    fn a_new_refusal_string_is_data_not_code() {
+        let r = SignalRules::new(60).with_pattern("error: cosmic rays detected");
+        let f = facts(Some(1), Some(0), "error: cosmic rays detected");
+        assert_eq!(classify(&f, &r), OutcomeClass::QuotaLimited);
     }
 }

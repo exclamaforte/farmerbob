@@ -1,0 +1,46 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. Four arms, three PASS, all scope clean.
+
+  codex-luna     +245 lines  31 tests
+  claude-sonnet  +317 lines  37 tests
+  glm-53-flash   +380 lines  41 tests
+  ifm-k2-horizon NO-OP, rc=1 after 1264s -- ran twenty minutes and produced nothing
+
+All three scored 14 of 14 on the spec probe, including the clause taken verbatim from the real
+incident: an arm QUOTING `error: rate limit exceeded` in its summary, with exit 0 and 396 lines,
+must be arm_result. And all three converged on the two decisions the spec left to them: an
+unreaped run (`exit_code: None`) is Unknown, and an UNMEASURED line count falls through to
+arm_result rather than excusing the arm, because the shape rule requires a measured zero.
+
+THE FIRST REAL DISCOVERY FROM CROSS-EXAMINATION IN THIS SESSION, hours after the
+strip_test_modules fix made the instrument run at all:
+
+    glm-53-flash   discovery=1  broke=['claude-sonnet']
+    codex-luna     survived 1 of 1
+    claude-sonnet  survived 0 of 1
+
+AND IT IS NOT A DEFECT. The failing test is `an_unstripped_head_is_normalised_again_before_
+matching`: glm passes a log head still carrying `\x1b[91m` and asserts QuotaLimited. My spec
+says, in the field's own doc comment, "The head of the run's own log, already ANSI-stripped by
+the caller." claude-sonnet implements that contract exactly. glm implements a superset and tests
+the superset, which my rubric names precisely -- "your tests may not assert on cases outside the
+list, because another correct implementation may reasonably not handle them."
+
+So the matrix recorded a discovery where the specification was not violated, and crossx's own
+overfitted flag reads False for glm: its heuristic is breaking N-1 of N, and breaking 1 of 3 does
+not trip it. A suite CAN discriminate by testing outside the spec, and with a small field the
+existing check cannot tell that from a real finding. Worth knowing before the next time a
+discovery decides a task.
+
+MERGED glm ANYWAY, and on evidence rather than on the discovery. Its defensive re-normalisation
+is exactly the belt-and-braces this session paid for twice: the colour incident happened because
+text reached a matcher unstripped, and the OSC incident happened because a payload survived
+stripping. A classifier that normalises its own input cannot be broken by a caller that forgets.
+It also carries the most tests, 41 to 37 to 31, and is the only one of the three on a free route.
+
+I got the variant name wrong first and the probe would not compile: I wrote
+OutcomeClass::OrchestratorCancelled from the wire string `orchestrator_cancelled`. The variant is
+Cancelled. All three arms had correctly refused to add a variant, which the spec required, so the
+error was mine alone.
+
+1336 tests, clippy 9.
