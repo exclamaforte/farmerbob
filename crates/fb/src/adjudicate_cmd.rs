@@ -14,7 +14,7 @@
 //! objective tier already enforces everywhere else: a check that did not run must say so
 //! rather than be silently skipped.
 
-use farmerbob_core::adjudicate::{adjudicate, missing_evidence, Evidence, Verdict};
+use farmerbob_core::adjudicate::{adjudicate, missing_evidence, Evidence, Ruling};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
@@ -181,13 +181,13 @@ pub fn run(task: &str, epsilon: f64, allow_missing_critique: bool) -> i32 {
     // nothing about what the critics said, which is the half that cannot be computed.
     println!();
     match adjudicate(&cands, epsilon) {
-        Verdict::Winner { arm, on, margin } => {
+        Ruling::Winner { arm, on, margin } => {
             println!("metrics alone would favour {arm} on {on:?} (margin {margin:.4})");
         }
-        Verdict::Undecided { tied, next } => {
+        Ruling::Undecided { tied, next } => {
             println!("metrics alone do not separate {tied:?}; would need {next:?}");
         }
-        Verdict::NoCandidate => {
+        Ruling::NoCandidate => {
             println!("metrics alone: no candidate cleared the gate");
         }
     }

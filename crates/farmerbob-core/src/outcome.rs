@@ -1,3 +1,18 @@
+//! A run's outcome: what the gate decided, why the run ended, and how much
+//! orchestrator work a pass required.
+//!
+//! The verdict itself is NOT defined here. It is [`crate::gate::Verdict`],
+//! re-exported below. This module used to carry its own five-variant copy,
+//! written without sight of `gate`, which silently lacked `WrongTarget` and
+//! `Indeterminate` -- so an outcome recorded through this module could not
+//! express "the gate could not see enough to decide" and had to record some
+//! failure instead. That is the project's recurring meta-bug reached by a new
+//! road: a second model of one concept, where the weaker model loses exactly
+//! the distinction the stronger one was built to preserve.
+//!   (bead farmerbob-jd2.1)
+
+pub use crate::gate::Verdict;
+
 /// Why a run ended. Exactly these and no others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeClass {
@@ -20,21 +35,6 @@ impl OutcomeClass {
     pub fn counts_for_posterior(self) -> bool {
         matches!(self, Self::ArmResult)
     }
-}
-
-/// The gate verdict. Exactly these and no others.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Verdict {
-    /// The changes passed the gate.
-    Pass,
-    /// The arm made no changes.
-    NoOp,
-    /// The changes did not compile.
-    NoCompile,
-    /// The test suite failed.
-    TestsFail,
-    /// No tests were available or run.
-    NoTests,
 }
 
 /// How much orchestrator work a PASS required.

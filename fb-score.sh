@@ -10,6 +10,28 @@ WT_ROOT="$HOME/.local/share/farmerbob/worktrees"
 LOG_ROOT="$HOME/.local/share/farmerbob/logs"
 OUT="$LOG_ROOT/$BEAD.score.json"
 
+# As of this commit the measurement lives in Rust -- `fb score` -- and this script
+# DELEGATES to it. Verified field-by-field against the shell on the 6-candidate `reviewer`
+# task: identical verdict, build, test, tests_run, lines, new_files, crates_touched,
+# clippy and duration on every arm.
+#
+# What the shell could not express, and the Rust does:
+#   * liveness as a BELIEF with an authority (farmerbob_core::liveness) rather than a
+#     boolean, so an orphaned marker is released by the process evidence instead of
+#     outranking it forever;
+#   * clippy and duration as Measurement, so "the crate does not compile so it has no lint
+#     count" is a different fact from "zero warnings", and a missing run record is Missing
+#     rather than the sentinel -1 that any averaging consumer would happily fold in;
+#   * INDETERMINATE, which the shell's five-way if/elif chain had no branch for.
+#
+# Falls back to the inline shell below if the binary is not built, so the harness still
+# works on a clean checkout -- but the fallback cannot return INDETERMINATE and reads the
+# marker as liveness on its own.
+FB_BIN=/home/gabe/Documents/farmerbob/target/debug/fb
+if [ -x "$FB_BIN" ]; then
+  exec "$FB_BIN" score "$BEAD" --crate "$CRATE"
+fi
+
 echo "[" > "$OUT"; first=1
 # Baseline the crate on the repo HEAD, once, so each arm is measured on what it ADDED
 # rather than on what it inherited.  (bead farmerbob-0fx)

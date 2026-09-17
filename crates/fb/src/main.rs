@@ -2,6 +2,7 @@ mod adjudicate_cmd;
 mod cmd;
 mod doctor;
 mod import;
+mod score;
 mod sources;
 mod trial;
 
@@ -45,6 +46,18 @@ enum Command {
     /// Run environment preflight checks and print an actionable report.
     Doctor,
     /// Run a full bakeoff: dispatch, score, cross-review, prove claims, report.
+    /// Measure every candidate worktree for a task, via farmerbob_core.
+    ///
+    /// Replaces fb-score.sh. Liveness needs TWO signals -- the task marker AND a launcher
+    /// process actually sitting in the worktree -- because an orphaned run leaves the
+    /// marker behind forever and then looks live for good.
+    Score {
+        /// The bead / task name whose worktrees to measure.
+        task: String,
+        /// The crate to build, test and lint.
+        #[arg(long = "crate", default_value = "farmerbob-core")]
+        krate: String,
+    },
     Trial {
         /// Task name; the spec is .fb/prompts/<task>.md
         task: String,
@@ -280,6 +293,7 @@ fn main() {
             }
             if v.is_pass() { exit::OK } else { exit::ERROR }
         }
+        Some(Command::Score { task, krate }) => score::run_cmd(&task, &krate, cli.json),
         Some(Command::Brief { task, epsilon, allow_missing_critique }) =>
             adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
         Some(Command::Doctor) => doctor::run(cli.json),

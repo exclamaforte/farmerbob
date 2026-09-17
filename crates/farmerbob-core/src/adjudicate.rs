@@ -57,7 +57,10 @@ pub enum Criterion {
 
 /// The result of adjudicating a set of candidates.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Verdict {
+/// Named `Ruling`, not `Verdict`: [`crate::gate::Verdict`] is the gate's decision
+/// about one run, and this is the adjudicator's decision about a FIELD of runs. The
+/// two shared a name for 44 modules and are not the same thing.
+pub enum Ruling {
     /// One candidate led on the named criterion.
     Winner {
         arm: String,
@@ -75,10 +78,10 @@ pub enum Verdict {
 
 /// Apply the criteria in order, stopping at the first criterion that produces
 /// a unique leader among the candidates still in contention.
-pub fn adjudicate(candidates: &[Evidence], epsilon: f64) -> Verdict {
+pub fn adjudicate(candidates: &[Evidence], epsilon: f64) -> Ruling {
     let mut contenders = eligible(candidates);
     if contenders.is_empty() {
-        return Verdict::NoCandidate;
+        return Ruling::NoCandidate;
     }
 
     let epsilon = if epsilon.is_finite() && epsilon > 0.0 {
@@ -88,7 +91,7 @@ pub fn adjudicate(candidates: &[Evidence], epsilon: f64) -> Verdict {
     };
     if contenders.len() == 1 {
         let candidate = contenders[0];
-        return Verdict::Winner {
+        return Ruling::Winner {
             arm: candidate.arm.clone(),
             on: Criterion::Conformance,
             margin: 1.0,
@@ -175,7 +178,7 @@ pub fn adjudicate(candidates: &[Evidence], epsilon: f64) -> Verdict {
                     }
                 })
                 .fold(0.0_f64, f64::max);
-            return Verdict::Winner {
+            return Ruling::Winner {
                 arm: winner.arm.clone(),
                 on: criterion,
                 margin,
@@ -190,7 +193,7 @@ pub fn adjudicate(candidates: &[Evidence], epsilon: f64) -> Verdict {
         .map(|candidate| candidate.arm.clone())
         .collect();
     tied.sort();
-    Verdict::Undecided { tied, next }
+    Ruling::Undecided { tied, next }
 }
 
 /// Return candidates that have full conformance and ran at least one test.
@@ -279,7 +282,7 @@ mod tests {
         let mut accepted = evidence("accepted");
         accepted.crates_touched = Some(9);
         assert!(
-            matches!(adjudicate(&[rejected, accepted], 0.001), Verdict::Winner {
+            matches!(adjudicate(&[rejected, accepted], 0.001), Ruling::Winner {
             arm, on: Criterion::Conformance, ..
         } if arm == "accepted")
         );
@@ -294,7 +297,7 @@ mod tests {
         broad.crates_touched = Some(2);
         broad.defect_sensitivity = Some(0.9);
         assert!(
-            matches!(adjudicate(&[narrow, broad], 0.001), Verdict::Winner {
+            matches!(adjudicate(&[narrow, broad], 0.001), Ruling::Winner {
             arm, on: Criterion::ScopeDiscipline, ..
         } if arm == "narrow")
         );
@@ -309,7 +312,7 @@ mod tests {
         first.conformance = Some(1.0);
         second.conformance = Some(1.0);
         let result = adjudicate(&[first, second], 0.001);
-        assert!(matches!(result, Verdict::Undecided { next, .. }
+        assert!(matches!(result, Ruling::Undecided { next, .. }
             if next == vec![Criterion::DefectSensitivity]));
     }
 
@@ -321,7 +324,7 @@ mod tests {
         more.tests = Some(100);
         assert!(matches!(
             adjudicate(&[fewer, more], 0.001),
-            Verdict::Undecided { .. }
+            Ruling::Undecided { .. }
         ));
     }
 
@@ -330,7 +333,7 @@ mod tests {
         let result = adjudicate(&[evidence("zeta"), evidence("alpha")], 0.001);
         assert_eq!(
             result,
-            Verdict::Undecided {
+            Ruling::Undecided {
                 tied: vec!["alpha".to_string(), "zeta".to_string()],
                 next: vec![]
             }
@@ -344,7 +347,7 @@ mod tests {
         let mut loser = evidence("loser");
         loser.conformance = Some(0.8);
         assert!(
-            matches!(adjudicate(&[winner, loser], 0.001), Verdict::Winner { margin, .. } if margin > 0.0)
+            matches!(adjudicate(&[winner, loser], 0.001), Ruling::Winner { margin, .. } if margin > 0.0)
         );
     }
 
@@ -354,13 +357,13 @@ mod tests {
         nan.conformance = Some(f64::NAN);
         let valid = evidence("valid");
         assert!(
-            matches!(adjudicate(&[nan, valid], 0.001), Verdict::Winner { arm, .. } if arm == "valid")
+            matches!(adjudicate(&[nan, valid], 0.001), Ruling::Winner { arm, .. } if arm == "valid")
         );
     }
 
     #[test]
     fn empty_field_is_no_candidate() {
-        assert_eq!(adjudicate(&[], 0.001), Verdict::NoCandidate);
+        assert_eq!(adjudicate(&[], 0.001), Ruling::NoCandidate);
     }
 }
 
@@ -392,7 +395,7 @@ mod test_depth_fallback {
         // the confinement field: nothing discriminates, so the proxy is all that remains
         let field = [cand("codex-luna", 7, 226), cand("glm-53-flash", 14, 320)];
         match adjudicate(&field, 0.001) {
-            Verdict::Winner { arm, on, .. } => {
+            Ruling::Winner { arm, on, .. } => {
                 assert_eq!(arm, "glm-53-flash");
                 assert_eq!(on, Criterion::TestDepth);
             }
@@ -406,7 +409,7 @@ mod test_depth_fallback {
         field[0].survival = Some(1.0);
         field[1].survival = Some(0.0);
         match adjudicate(&field, 0.001) {
-            Verdict::Winner { arm, on, .. } => {
+            Ruling::Winner { arm, on, .. } => {
                 assert_eq!(arm, "few-tests", "a direct measure must beat the proxy");
                 assert_eq!(on, Criterion::Survival);
             }
@@ -423,7 +426,7 @@ mod test_depth_fallback {
         field[0].survival = Some(1.0);
         field[1].survival = Some(1.0);
         match adjudicate(&field, 0.001) {
-            Verdict::Winner { arm, on, .. } => {
+            Ruling::Winner { arm, on, .. } => {
                 assert_eq!(arm, "long", "12 tests beats 7 when survival ties");
                 assert_eq!(on, Criterion::TestDepth);
             }
@@ -459,7 +462,7 @@ mod overfitted_suites {
         // three rivals, so its count carries no evidence of depth
         let field = [cand("glm-53-flash", 18, 139, true), cand("codex-luna", 9, 86, false)];
         match adjudicate(&field, 0.001) {
-            Verdict::Winner { arm, on, .. } => {
+            Ruling::Winner { arm, on, .. } => {
                 assert_eq!(arm, "codex-luna");
                 assert_eq!(on, Criterion::TestDepth);
             }
@@ -477,7 +480,7 @@ mod overfitted_suites {
             cand("deepest", 12, 400, false),
         ];
         match adjudicate(&field, 0.001) {
-            Verdict::Winner { arm, on, .. } => {
+            Ruling::Winner { arm, on, .. } => {
                 assert_eq!(arm, "deepest", "depth must still rank the sound suites");
                 assert_eq!(on, Criterion::TestDepth);
             }
