@@ -449,42 +449,19 @@ fn head_starts_with_any(text: &str, n: usize, patterns: &[&str]) -> bool {
         patterns.iter().any(|p| flat.starts_with(p))
     })
 }
-
 /// Remove ANSI escape sequences from one line.
 ///
-/// Every pattern in LIMIT_PATTERNS and INFRA_PATTERNS is anchored to a launcher's `error: `
-/// prefix, on the sound reasoning that an agent DISCUSSING quotas in a task about quotas must
-/// not be misread as one being refused. That anchoring is silently defeated by colour. The
-/// OpenRouter launcher emits
+/// Delegates to `farmerbob_core::limit_signal::strip_ansi`. This was a byte-for-byte twin of
+/// that function, born of the same 2026-09-17 incident, and a critique on refusal-norm named
+/// the cost: "someone must remember both copies". That turned out to be exactly right within
+/// hours -- core's copy learned to strip OSC payloads, after an OSC terminal title was shown
+/// to manufacture a false refusal, and this copy would not have.
 ///
-///     \x1b[91m\x1b[1mError: \x1b[0mKey limit exceeded (total limit).
-///
-/// with the reset sequence sitting BETWEEN the prefix and the message, so the literal bytes
-/// are `Error: \x1b[0mKey limit exceeded` and no `error: <message>` pattern can ever match.
-/// Adding the pattern was not enough and adding more patterns would not have helped; every
-/// existing entry is defeatable the same way the moment a launcher colourises its output.
-///
-/// Found 2026-09-17, when an OpenRouter key spend cap refused all 13 of its arms and each
-/// refusal was recorded as the model producing nothing.
+/// Two implementations of one fact is the shape this project keeps paying for: the bwrap
+/// guard that went into the unused copy, and the launcher table that sources.toml declares
+/// and fb-dispatch ignores.
 fn strip_ansi(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        if c != '\u{1b}' {
-            out.push(c);
-            continue;
-        }
-        // CSI: ESC [ <params> <final byte in @-~>. Anything else after ESC: drop the ESC and
-        // the single byte that follows, which covers the short two-character sequences.
-        if let Some('[') = chars.next() {
-            for c in chars.by_ref() {
-                if ('\u{40}'..='\u{7e}').contains(&c) {
-                    break;
-                }
-            }
-        }
-    }
-    out
+    farmerbob_core::limit_signal::strip_ansi(line)
 }
 
 /// Render the full stdout report, byte-for-byte with the shell original.

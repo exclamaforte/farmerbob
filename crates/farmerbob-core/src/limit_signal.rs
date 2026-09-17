@@ -198,12 +198,52 @@ pub fn strip_ansi(s: &str) -> String {
         // CSI: consume through the final byte (0x40..=0x7E). Any other byte
         // after ESC begins a two-character sequence; drop that byte too.
         // Either scan ends harmlessly at end-of-input.
-        if let Some('[') = chars.next() {
-            for c in chars.by_ref() {
-                if ('\u{40}'..='\u{7e}').contains(&c) {
-                    break;
+        match chars.next() {
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        break;
+                    }
                 }
             }
+            // OSC, DCS, APC, PM, SOS: a string-carrying introducer whose PAYLOAD must go
+            // too, not just the two opening bytes.
+            //
+            // Dropping only `ESC ]` left the payload in the text. A critique on
+            // refusal-norm demonstrated it against the merged code:
+            //
+            //     strip_ansi("\x1b]8;;https://x/rate\x1b\\ ok \x1b]8;;\x1b\\")
+            //         == "8;;https://x/rate ok 8;;"
+            //
+            // and, worse, a launcher setting a terminal title made classify() return
+            // Limited for a build that SUCCEEDED:
+            //
+            //     classify(rules, 1, "\x1b]0;rate limit exceeded\x1b\\ build succeeded")
+            //         == Limited { evidence: "rate limit exceeded" }
+            //
+            // That is the morning's bug wearing a different escape family: text that is not
+            // the launcher refusing, read as the launcher refusing. Here it costs an arm
+            // credit for work it actually did, because a quota_limited run is excluded from
+            // arm results entirely.
+            //
+            // These sequences terminate at BEL (0x07) or at ST (`ESC \`). An unterminated
+            // one runs to end-of-input, which is the correct reading: everything after an
+            // unterminated introducer IS its payload.
+            Some(']' | 'P' | '_' | '^' | 'X') => {
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' {
+                        break;
+                    }
+                    if c == '\u{1b}' {
+                        // ST is `ESC \`; any other ESC ends this string too and begins
+                        // the next sequence, which the outer loop would have to re-read.
+                        // Consuming one byte here is right for ST and harmless otherwise.
+                        let _ = chars.next();
+                        break;
+                    }
+                }
+            }
+            Some(_) | None => {}
         }
     }
     out
@@ -1205,5 +1245,56 @@ mod escalated_limit_detect_glm_53_flash {
             parse_reset("retry-after: later, retry-after: 60", 1_000),
             Some(1_060)
         );
+    }
+}
+
+#[cfg(test)]
+mod osc_regression {
+    use super::*;
+
+    /// Found by a critique on refusal-norm, against code already merged. An OSC payload
+    /// survived stripping, so text that is not the launcher refusing could read as one.
+    #[test]
+    fn an_osc_payload_does_not_survive_stripping() {
+        let hyperlink = "\u{1b}]8;;https://x/rate\u{1b}\\ ok \u{1b}]8;;\u{1b}\\";
+        assert_eq!(strip_ansi(hyperlink).trim(), "ok");
+    }
+
+    /// The consequence, and the reason this is a defect rather than untidiness: a launcher
+    /// setting a terminal title made a SUCCESSFUL build classify as Limited, which excludes
+    /// the run from arm results and costs the arm credit for work it did.
+    #[test]
+    fn a_terminal_title_cannot_manufacture_a_refusal() {
+        let rules = SignalRules::new(3600).with_pattern("rate limit exceeded");
+        let titled = "\u{1b}]0;rate limit exceeded\u{1b}\\ build succeeded";
+        assert!(
+            matches!(classify(&rules, 1, titled, 0), Classification::Normal),
+            "an OSC title is not the launcher refusing"
+        );
+    }
+
+    /// And the real refusal must still fire. Both directions in one place so neither can be
+    /// fixed by breaking the other.
+    #[test]
+    fn a_real_colourised_refusal_still_fires() {
+        let rules = SignalRules::new(3600).with_pattern("error: rate limit exceeded");
+        let real = "\u{1b}[91m\u{1b}[1mError: \u{1b}[0mRate limit exceeded: free-models-per-day.";
+        assert!(matches!(
+            classify(&rules, 1, real, 0),
+            Classification::Limited { .. }
+        ));
+    }
+
+    /// A BEL-terminated OSC, the other terminator.
+    #[test]
+    fn a_bel_terminated_osc_is_stripped() {
+        assert_eq!(strip_ansi("\u{1b}]0;title\u{7}after").trim(), "after");
+    }
+
+    /// An unterminated introducer runs to end of input: everything after it IS its payload,
+    /// and keeping that text is how the false positive got in.
+    #[test]
+    fn an_unterminated_osc_consumes_the_rest() {
+        assert_eq!(strip_ansi("keep\u{1b}]0;never closed"), "keep");
     }
 }
