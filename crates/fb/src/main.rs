@@ -1,5 +1,6 @@
 mod adjudicate_cmd;
 mod cmd;
+mod critique;
 mod doctor;
 mod import;
 mod pareto;
@@ -47,7 +48,21 @@ enum Command {
     },
     /// Run environment preflight checks and print an actionable report.
     Doctor,
-    /// Run a full bakeoff: dispatch, score, cross-review, prove claims, report.
+    /// Cross-review: each implementer critiques ANOTHER implementer's patch.
+    ///
+    /// Ported from fb-critique.sh, which the shell now delegates to. The derangement, the
+    /// patch assembly, the scope report and the "(no critique written)" distinction all
+    /// reproduce the script's behaviour, including its wire format, because other scripts
+    /// grep that output.
+    Critique {
+        /// The bead / task whose candidates review each other.
+        task: String,
+        /// The crate under review.
+        #[arg(long = "crate", default_value = score::DEFAULT_CRATE)]
+        krate: String,
+        /// The declared deliverable, repo-relative.
+        target: String,
+    },
     /// Choose which arms attempt a task, by Thompson sampling over their posteriors.
     ///
     /// Gives farmerbob_core::router its first caller. Arms were hand-picked before this, and
@@ -85,9 +100,10 @@ enum Command {
         /// The bead / task name whose worktrees to measure.
         task: String,
         /// The crate to build, test and lint.
-        #[arg(long = "crate", default_value = "farmerbob-core")]
+        #[arg(long = "crate", default_value = score::DEFAULT_CRATE)]
         krate: String,
     },
+    /// Run a full bakeoff: dispatch, score, cross-review, prove claims, report.
     Trial {
         /// Task name; the spec is .fb/prompts/<task>.md
         task: String,
@@ -323,6 +339,8 @@ fn main() {
             }
             if v.is_pass() { exit::OK } else { exit::ERROR }
         }
+        Some(Command::Critique { task, krate, target }) =>
+            critique::run_cmd(&task, &krate, &target),
         Some(Command::Select { n, seed, needs }) => select::run_cmd(
             n,
             seed,

@@ -421,6 +421,16 @@ fn to_json(r: &Record) -> serde_json::Value {
 }
 
 /// Scores every candidate worktree for `bead`. Returns a process exit code.
+/// The crate a deliverable belongs to: `crates/<name>/...` names it directly.
+fn crate_of(target: Option<&str>) -> Option<String> {
+    let t = target?;
+    let mut parts = t.split('/');
+    (parts.next()? == "crates").then(|| parts.next().map(str::to_string))?
+}
+
+/// The crate assumed when a spec declares no target and none is given.
+pub const DEFAULT_CRATE: &str = "farmerbob-core";
+
 /// Reads the task spec's declared deliverable, the one path the arm was asked to produce.
 ///
 /// Accepts BOTH verbs. Seven readers in this harness each grepped for `fb:creates` alone and
@@ -454,20 +464,41 @@ pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
     let log_root = home.join(".local/share/farmerbob/logs");
     let out = log_root.join(format!("{bead}.score.json"));
 
+    let (target, creates) = declared_target(bead);
+
+    // DERIVE the crate from the declared deliverable rather than trusting a default.
+    //
+    // `--crate` defaulted to farmerbob-core. A bare `fb score port-critique` therefore built,
+    // tested and linted a crate those candidates had never touched, and reported PASS with
+    // clippy 0 for a field in which one candidate's tests actually failed and another was
+    // nine files out of scope. It measured something real; it was not the thing asked about.
+    //
+    // crates/fb/src/critique.rs can only belong to the crate `fb`, so there is no need to
+    // guess. An explicit --crate still overrides, for a target the path cannot classify.
+    //   (bead farmerbob-jd2.12)
+    let krate = match (crate_of(target.as_deref()), krate) {
+        (Some(derived), given) if given == DEFAULT_CRATE && derived != given => {
+            if !json_only {
+                println!("crate: {derived} (derived from the deliverable, not the default)");
+            }
+            derived
+        }
+        (_, given) => given.to_string(),
+    };
+    let krate = krate.as_str();
+    if !json_only {
+        match target.as_deref() {
+            Some(t) => println!("declared deliverable: {t}"),
+            None => println!("declared deliverable: NONE -- scope cannot be checked"),
+        }
+    }
+
     // Baseline the crate on the repo HEAD, once, so each arm is measured on what it ADDED.
     let repo = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let (_, base_log) = run(&repo, &["clippy", "-p", krate, "--all-targets"]);
     let base_clippy = clippy_warnings(&base_log);
     if !json_only {
         println!("clippy baseline: {krate} on HEAD = {base_clippy}");
-    }
-
-    let (target, creates) = declared_target(bead);
-    if !json_only {
-        match target.as_deref() {
-            Some(t) => println!("declared deliverable: {t}"),
-            None => println!("declared deliverable: NONE -- scope cannot be checked"),
-        }
     }
 
     let prefix = format!("{bead}--");

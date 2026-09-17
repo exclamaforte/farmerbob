@@ -1,0 +1,15 @@
+MERGED codex-luna
+Adjudicated 2026-09-17. PASS, 63 tests, 408 lines, clippy -8 (it REMOVED inherited lint debt),
+scope clean. Verified by merging each candidate and building: codex-luna merges clean,
+or-deepseek-v4-latest fails 4 of its own 22 tests on merge and adds 107 clippy warnings,
+or-luna-pro merges but rewrote 9 files it was told not to touch.
+The first brief favoured or-deepseek-v4-latest on 22 tests. That reading came from a score of
+the WRONG CRATE -- I had re-run `fb score` without --crate, so it measured farmerbob-core,
+which these candidates never touched, and reported PASS/clippy-0 for a field containing a
+TESTS-FAIL. Now derived from the deliverable path (farmerbob-jd2.12).
+or-deepseek-v4-latest's critique of or-luna-pro was the sharpest: hardcoded session-specific
+strings as substitution needles, the core behaviour untested, and "eligible() turns an
+unavailable instrument into Missing; the run reads as 0 candidates -- the absent-vs-zero
+conflation the module's own docstring says it refuses."
+`fb critique` is wired as a subcommand; clippy fell from 20 to 6 once the module had a caller.
+Credited: or-deepseek-v4-latest, or-luna-pro.

@@ -179,6 +179,18 @@
    "critic": "glm-53-flash",
    "found_on": "or-ling-30-flash",
    "tests": 3
+  },
+  {
+   "task": "port-critique",
+   "critic": "or-deepseek-v4-latest",
+   "found_on": "or-luna-pro",
+   "tests": 1
+  },
+  {
+   "task": "port-critique",
+   "critic": "or-luna-pro",
+   "found_on": "codex-luna",
+   "tests": 1
   }
  ]
 }
