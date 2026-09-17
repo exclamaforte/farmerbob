@@ -7,7 +7,22 @@ optimise for the real bar rather than guess at it.
 **Gate (all required, else the run scores as failed):**
 - `cargo build -p <crate>` succeeds
 - `cargo test -p <crate>` passes, with at least one test that actually executes
-- only the crate named in the task is modified
+- **you change the ONE file the task declares, and nothing else.** Not "only that crate" --
+  that is what this line used to say, and it understated the rule by a wide margin. The
+  measurement is `farmerbob_core::scope`, it compares paths as exact strings, and it permits
+  exactly two things: the declared target, and adding `pub mod y;` to the `lib.rs` beside it
+  when a NEW file needs that to compile. There is no tolerance band: ONE other changed file
+  is a departure, and a departure now yields the verdict `OutOfScope`, which is not a pass.
+
+  Read this as permission, not only as prohibition. If the task's own instructions make the
+  wider workspace fail to build -- a new enum variant breaking a caller in another crate, say
+  -- that breakage is EXPECTED and you must leave it. Reaching out to fix it is the departure.
+  Say what you left broken in your handoff.
+
+  This line was wrong until 2026-09-17, and three consecutive runs by one arm changed 51, 52
+  and 51 files while being told "only the crate". They were measured against a rule they had
+  not been given, which is the whole of farmerbob-vg0: disclose what is scored, or you are
+  measuring house style rather than capability.
 
 **Scored, in this order:**
 1. **Conformance** — a test suite you will not see, derived from this spec, is run against
@@ -19,8 +34,8 @@ optimise for the real bar rather than guess at it.
 4. **Test depth and generality** — measured directly where possible, by injecting known
    defects and by running your suite against rival implementations. Where neither
    measurement could be taken, the number of distinct behaviours you covered stands in for
-   it. Count is the fallback, not the target:
-   assertions. Your tests must be good enough to catch a bug in **any** correct-looking
+   it. Count is the fallback, not the target: ten tests that pin ten distinct behaviours beat
+   forty that restate one. Your tests must be good enough to catch a bug in **any** correct-looking
    implementation of this spec, not only your own: test the behaviour the specification
    requires, not your particular implementation's internals. Asserting on exact error
    strings, private field names, or an output format the spec does not fix makes a test
@@ -52,9 +67,8 @@ pin it, your tests may not assert on it either -- another correct implementation
 reasonably choose the other side. Say in your handoff which boundary you found unpinned and
 which way you resolved it.
 
-Three tasks have now been decided by candidates disagreeing about exactly this rather than
-about anything either of them got wrong.
-Three earlier tasks were decided by candidates disagreeing about exactly this, every time
+Three tasks have now been decided by candidates disagreeing about exactly this -- an unpinned
+boundary or an unstated list -- rather than about anything either of them got wrong, every time
 because a test asserted a case the specification never fixed.
 
 ## A signature that cannot compute what the spec promises
