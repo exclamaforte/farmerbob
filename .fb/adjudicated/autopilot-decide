@@ -1,0 +1,39 @@
+MERGED codex-luna
+Adjudicated 2026-09-17. Four arms, three PASS, all scope clean.
+
+  codex-luna     +340 lines  14 tests
+  claude-sonnet  +444 lines  16 tests   (disabled since, mid-tick, by user instruction)
+  glm-53-flash   +457 lines  19 tests
+  ifm-k2-think   NO-OP
+
+All three scored 12 of 12 on the spec probe, including the clause easiest to drop -- zero agents
+but ONE DISPATCHER still means Wait, because a dispatcher outlives its agents -- and the ordering
+rule that a queued wave outranks a pending pipeline, which exists because a pipeline blocks the
+loop for as long as a critique takes and once left the heartbeat 638 seconds stale.
+
+MERGED ON CONFORMANCE, WHICH THE CLAUSE PROBE COULD NOT SEE. My spec named `ls -1v` as the
+source of the ordering. I asked for three boundary rules to be decided and stated -- names with
+no digits, equal numeric prefixes, digit runs longer than u64 -- and all three arms agreed on
+those. They disagreed on one I had not thought to ask about, leading zeros:
+
+    ls -1v          alpha beta wave0009 wave9 wave9a wave10
+    codex-luna      alpha beta wave0009 wave9 wave9a wave10     exact
+    claude-sonnet   alpha beta wave9 wave0009 wave9a wave10
+    glm-53-flash    alpha beta wave9 wave9a wave0009 wave10
+
+codex-luna reproduces the reference exactly. The others place wave0009 after wave9, and
+glm-53-flash places it after wave9a, further still. I found this by RUNNING `ls -1v` on a
+directory of those names rather than reasoning about strverscmp, which is the only reliable way
+I have found to settle a question like this today.
+
+Conformance is the rubric's first criterion and test depth is its fourth, so this outranks
+codex-luna having the fewest tests of the three, 14 against 16 and 19. It does not matter in
+practice yet -- every wave file is waveN.tsv with no leading zeros -- but the spec named a
+reference and one arm matched it.
+
+Cross-examination ran without voiding and produced no signal: every arm survived=0 of=0, no
+comparable cells, because each suite exercises its own private helpers. Third task running where
+crossx completes and discriminates nothing; the instrument works and the specs do not give it
+purchase.
+
+1368 tests, clippy 9.
