@@ -1,0 +1,62 @@
+MERGED or-luna-pro
+Adjudicated 2026-09-17. First task gated by `fb differential`, and the gate decided it.
+
+  codex-luna            agrees with the script    251 lines, 0 tests, clippy 2, free
+  or-luna-pro           agrees with the script    232 lines, 1 test,  clippy 4, $0.20
+  or-hy3                DIVERGES                  462 lines
+  or-deepseek-v4-flash  DIVERGES                  NO-OP, no file
+
+OR-HY3 IS THE CATCH. It scored PASS with +462 lines -- the MOST in the field, more than either
+arm that works -- and never declared `mod eligible;`. The compiler never saw the file. That is
+why it built clean and why its test count stayed at baseline while codex-luna's rose. On a
+lines-added heuristic it is the best submission in the wave. `unrecognized subcommand 'eligible'`
+is the whole story, and no gate we owned before today could produce that sentence.
+or-deepseek-v4-flash wrote no file at all and was already NO-OP.
+
+Between the two that agree, the tiebreak was NOT what I first thought. I flagged codex-luna's
+`dispatchable_status` -- twenty lines that build a fake Observation with fabricated tests_run: 1
+and lines_added: 1, call gate::judge, and are invoked exactly once with a literal
+Measurement::observed(true), so the function can only return true -- and then found or-luna-pro
+does the same thing at its line 211. N-of-N: the fault is my SPECIFICATION, which told both arms
+"use farmerbob_core::gate::{judge, Observation, Verdict} for any pass/fail verdict". Eligibility
+is not a run verdict and Observation's fields are meaningless for it, so both arms fabricated
+values to comply. or-luna-pro's version at least passes the real decision through; codex-luna's
+is a constant. That difference is marginal and it is not what decided this.
+
+What decided it is Status::Other(Option<String>). or-luna-pro keeps the registry's actual value
+inside the variant and renders the absent case as "None", matching the Python; codex-luna
+collapses unknown-status and no-status into one variant and recovers the string separately. Both
+happen to print the right thing today. One models the distinction and one restores it.
+
+THE DIFFERENTIAL FOUND TWO REAL BUGS IN THE WINNER, AFTER MERGING, BY BEING RUN PAST ITS
+DECLARED CASES. Neither was reachable by any other check we own:
+
+1. `${price_in}` was missing from the redundant-route message. Shell prints "$0.2/1.2", the port
+   printed "/1.2". price_in is bound and used in the guard above, so nothing warns; it builds,
+   lints and tests clean, and prints the wrong sentence to a human. Caught only because I ran the
+   comparison over or-luna-pro itself, which was not one of the five declared cases.
+
+2. The registry path was `Path::new("sources.toml")` -- RELATIVE. The script reads an absolute
+   "$repo/sources.toml". From any other directory the port answered "cannot read registry" for
+   every arm, which would have benched the entire fleet at once. It fails CLOSED, which is the
+   one mercy: an unreadable registry refuses everything rather than permitting everything, so it
+   could never have caused a dispatch that should not have happened.
+
+   The first fix was wrong too. crate::paths::repo() falls back to the CURRENT DIRECTORY, so it
+   reproduced the bug it was meant to remove and the check still passed from the repo root. Now
+   $FB_REPO, else walk up for sources.toml, else refuse loudly.
+
+Both fixes verified across all 25 registry arms plus an unregistered name: 0 divergences, run
+fresh against the script, never against an artefact. 1087 workspace tests pass, clippy back to
+its pre-existing 9.
+
+The lesson is about the gate, not the arm: A DIFFERENTIAL SEES ONLY THE CASES IT IS GIVEN. Five
+declared cases passed a port with two real bugs in it. or-luna-pro has since been added to the
+declared set, but the general point stands and is worth more than this task -- the case list is
+now the thing to attack, and the registry itself is the obvious generator for a predicate like
+this one.
+
+Not merged from codex-luna, and it cost nothing, which is the uncomfortable part of the Pareto
+story: the free arm and the paid arm produced behaviourally identical, equally correct ports, and
+the paid one won on a design detail worth very little. or-luna-pro was parked as a redundant paid
+route earlier the same day. Parking governs future dispatch, not work already paid for.

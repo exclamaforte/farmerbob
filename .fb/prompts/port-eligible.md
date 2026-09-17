@@ -5,6 +5,7 @@
 <!-- fb:case or-mercury-25 -->
 <!-- fb:case or-gemini-38-flash -->
 <!-- fb:case claude-sonnet -->
+<!-- fb:case or-luna-pro -->
 <!-- fb:case no-such-arm -->
 # Task: port fb-eligible.sh to Rust, behaviour-for-behaviour
 

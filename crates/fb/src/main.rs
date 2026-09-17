@@ -7,6 +7,7 @@ mod defects;
 mod differential;
 mod escalate;
 mod doctor;
+mod eligible;
 mod import;
 mod prove;
 mod pareto;
@@ -84,6 +85,12 @@ enum Command {
         krate: String,
         target: String,
     },
+    /// Refuse to dispatch an arm that is absent, disabled, parked, or redundant.
+    ///
+    /// Ported from fb-eligible.sh, which the dispatcher sources as a predicate. Exit code and
+    /// stderr are BOTH the contract: the dispatcher branches on the first, a human reads the
+    /// second. Verified against the script on five arms covering every branch.
+    Eligible { arm: String },
     /// Run a ported candidate against the script it replaces, and diff.
     ///
     /// The only gate in this harness that is not a gate on form. A candidate that computes
@@ -445,6 +452,7 @@ fn main() {
         Some(Command::Promote { task }) => promote::run_cmd(&task),
         Some(Command::Objective { only }) => objective::run_cmd(if only.is_empty() { None } else { Some(only) }),
         Some(Command::Defects { task, krate, target }) => defects::run_cmd(&task, &krate, &target),
+        Some(Command::Eligible { arm }) => eligible::run_cmd(&arm),
         Some(Command::Differential { task }) => differential::run_cmd(&task),
         Some(Command::Mutants { file, task, max }) => mutants::run_cmd(&file, &task, max),
         Some(Command::Prove { task, krate, target, prover }) =>
