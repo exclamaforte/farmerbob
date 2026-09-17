@@ -81,8 +81,14 @@ pub fn module_declaration_for(target: &str) -> Option<String>;
    cross-examination and independently by a critic, who noted the spec "pins deleted-wins
    dedup only for `departures`, so this is genuinely underdetermined".
 
-3. A change whose `path` equals `module_declaration_for(&declared.target)` is
-   `Allowance::ModuleDeclaration`: it goes in `allowed`, not in `departures`. Adding
+3. A change whose `path` is one of `module_declarations_for(&declared.target)` is
+   `Allowance::ModuleDeclaration`. **Both crate roots count** -- `lib.rs` for a library and
+   `main.rs` for a binary, in the target's own directory. The first version of this spec knew
+   only `lib.rs`, and `fb` is a binary crate, so a task whose own instructions said "declare
+   it from main.rs" had that exact file reported as a scope departure: the harness flagging
+   an arm for doing what it was told. Return both rather than inferring the crate kind -- this
+   module performs no I/O and cannot read Cargo.toml, and editing the root a crate does not
+   use touches a file that is empty or absent anyway: it goes in `allowed`, not in `departures`. Adding
    `pub mod y;` to the crate's own `lib.rs` is required to make a new module compile, so it
    is not a violation. **This is the only allowance.** The `Allowance` enum is exhaustive as
    listed — there are no other variants and you must not add any.

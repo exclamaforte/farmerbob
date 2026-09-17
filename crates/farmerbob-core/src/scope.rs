@@ -98,6 +98,28 @@ pub fn module_declaration_for(target: &str) -> Option<String> {
     Some(format!("{dir}/lib.rs"))
 }
 
+/// Every file in the target's directory that could legitimately declare it as a module.
+///
+/// A library crate declares modules from `lib.rs`; a BINARY crate declares them from
+/// `main.rs`, and this module originally knew only the first. `fb` is a binary crate, so a
+/// port task whose spec says "declare it from main.rs with `mod critique;`" had that very
+/// file reported as a scope departure -- the harness flagging an arm for doing exactly what
+/// it was told.
+///
+/// Both roots are returned rather than guessing which kind of crate this is: nothing here
+/// reads the filesystem or Cargo.toml, and an arm that edits the one its crate does not use
+/// has still only touched an empty or nonexistent file. Returns an empty `Vec` when `target`
+/// is itself a crate root or has no directory.
+pub fn module_declarations_for(target: &str) -> Vec<String> {
+    let Some((dir, file)) = target.rsplit_once('/') else {
+        return Vec::new();
+    };
+    if file == "lib.rs" || file == "main.rs" {
+        return Vec::new();
+    }
+    vec![format!("{dir}/lib.rs"), format!("{dir}/main.rs")]
+}
+
 /// Classifies every change against the declared target.
 ///
 /// A change to the target sets [`Scope::target_changed`] (unless it deletes
@@ -109,7 +131,7 @@ pub fn module_declaration_for(target: &str) -> Option<String> {
 ///
 /// Paths are compared as exact strings; nothing is normalised.
 pub fn assess(declared: &Declared, changes: &[Change]) -> Scope {
-    let declaration = module_declaration_for(&declared.target);
+    let declarations = module_declarations_for(&declared.target);
 
     let mut scope = Scope {
         target_changed: false,
@@ -128,7 +150,7 @@ pub fn assess(declared: &Declared, changes: &[Change]) -> Scope {
             } else {
                 scope.target_changed = true;
             }
-        } else if allowance_for(&change.path, declaration.as_deref()).is_some() {
+        } else if allowance_for(&change.path, &declarations).is_some() {
             // Deleting the declaration is a violation like any other
             // deletion, not an exercised allowance.
             if change.deleted {
@@ -166,12 +188,13 @@ pub fn is_clean(scope: &Scope) -> bool {
 }
 
 /// The one allowance this module grants, if the path earns one.
-fn allowance_for(path: &str, declaration: Option<&str>) -> Option<Allowance> {
-    match declaration {
-        Some(decl) if path == decl => Some(Allowance::ModuleDeclaration),
-        _ => None,
-    }
+fn allowance_for(path: &str, declarations: &[String]) -> Option<Allowance> {
+    declarations
+        .iter()
+        .any(|d| d == path)
+        .then_some(Allowance::ModuleDeclaration)
 }
+
 
 impl Departure {
     /// The path this departure is about, for ordering and de-duplication.
@@ -504,3 +527,72 @@ mod tests {
 }
 
 
+
+#[cfg(test)]
+mod binary_crate_roots {
+    use super::*;
+
+    fn changed(paths: &[&str]) -> Vec<Change> {
+        paths.iter().map(|p| Change { path: (*p).to_string(), deleted: false }).collect()
+    }
+
+    /// `fb` is a BINARY crate: it declares modules from main.rs, not lib.rs. The first
+    /// version knew only lib.rs, so a port task whose spec says "declare it from main.rs"
+    /// had that exact file reported as a scope departure -- the harness flagging an arm for
+    /// doing what it was told.
+    #[test]
+    fn declaring_a_module_from_main_rs_is_not_a_departure() {
+        let declared = Declared { target: "crates/fb/src/critique.rs".into() };
+        let sc = assess(&declared, &changed(&["crates/fb/src/critique.rs", "crates/fb/src/main.rs"]));
+        assert!(sc.target_changed);
+        assert_eq!(sc.allowed, vec!["crates/fb/src/main.rs".to_string()]);
+        assert!(is_clean(&sc), "main.rs is a crate root, not a stray edit");
+    }
+
+    /// A library crate's root still works exactly as before.
+    #[test]
+    fn declaring_a_module_from_lib_rs_is_still_not_a_departure() {
+        let declared = Declared { target: "crates/farmerbob-core/src/scope.rs".into() };
+        let sc = assess(
+            &declared,
+            &changed(&["crates/farmerbob-core/src/scope.rs", "crates/farmerbob-core/src/lib.rs"]),
+        );
+        assert_eq!(sc.allowed, vec!["crates/farmerbob-core/src/lib.rs".to_string()]);
+        assert!(is_clean(&sc));
+    }
+
+    /// The allowance covers the roots and nothing else: a real stray edit still departs.
+    #[test]
+    fn a_sibling_module_is_still_a_departure() {
+        let declared = Declared { target: "crates/fb/src/critique.rs".into() };
+        let sc = assess(
+            &declared,
+            &changed(&["crates/fb/src/critique.rs", "crates/fb/src/main.rs", "crates/fb/src/score.rs"]),
+        );
+        assert_eq!(sc.departures.len(), 1, "score.rs is not a crate root: {:?}", sc.departures);
+        assert!(!is_clean(&sc));
+    }
+
+    /// Deleting a crate root is a violation, exactly as deleting lib.rs always was.
+    #[test]
+    fn deleting_a_crate_root_is_still_a_departure() {
+        let declared = Declared { target: "crates/fb/src/critique.rs".into() };
+        let sc = assess(
+            &declared,
+            &[
+                Change { path: "crates/fb/src/critique.rs".into(), deleted: false },
+                Change { path: "crates/fb/src/main.rs".into(), deleted: true },
+            ],
+        );
+        assert!(sc.allowed.is_empty());
+        assert_eq!(sc.departures.len(), 1);
+    }
+
+    #[test]
+    fn a_crate_root_target_has_no_declaration_of_its_own() {
+        assert!(module_declarations_for("crates/fb/src/main.rs").is_empty());
+        assert!(module_declarations_for("crates/x/src/lib.rs").is_empty());
+        assert!(module_declarations_for("no-directory.rs").is_empty());
+        assert!(module_declarations_for("").is_empty());
+    }
+}
