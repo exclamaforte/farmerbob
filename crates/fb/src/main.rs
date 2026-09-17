@@ -1,3 +1,4 @@
+mod adjudicate_cmd;
 mod cmd;
 mod doctor;
 mod import;
@@ -32,6 +33,13 @@ enum Command {
         #[arg(long)] tests_run: Option<u32>,
         #[arg(long)] lines_added: Option<u32>,
         #[arg(long)] target_present: Option<bool>,
+    },
+    /// Assemble all evidence for a task -- objective AND the critiques -- and decide.
+    Adjudicate {
+        task: String,
+        #[arg(long, default_value_t = 0.001)] epsilon: f64,
+        /// Decide even when no critique exists. Off by default, deliberately.
+        #[arg(long)] allow_missing_critique: bool,
     },
     /// Run environment preflight checks and print an actionable report.
     Doctor,
@@ -271,6 +279,8 @@ fn main() {
             }
             if v.is_pass() { exit::OK } else { exit::ERROR }
         }
+        Some(Command::Adjudicate { task, epsilon, allow_missing_critique }) =>
+            adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
         Some(Command::Doctor) => doctor::run(cli.json),
         Some(Command::Agents { all }) => agents(all, cli.json),
         Some(Command::Leaderboard { from, excluded }) => leaderboard(&from, excluded, cli.json),
