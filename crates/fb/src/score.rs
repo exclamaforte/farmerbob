@@ -38,7 +38,9 @@ struct Record {
     build: bool,
     tests_ok: bool,
     tests_run: u32,
-    lines: u32,
+    /// Lines added. Absent when git cannot read the worktree at all -- which must NOT be
+    /// summed to zero, because zero is the arm's fault and absent is the harness's.
+    lines: Measurement<u32>,
     new_files: u32,
     crates: BTreeSet<String>,
     /// Clippy warnings ABOVE the baseline. Absent when the build failed, because a
@@ -82,14 +84,25 @@ fn run(dir: &Path, args: &[&str]) -> (bool, String) {
     }
 }
 
-fn git(dir: &Path, args: &[&str]) -> String {
-    Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
+/// Runs git in `dir`. `None` means git REFUSED, which is not the same as git printing
+/// nothing.
+///
+/// 103 of 181 worktrees have had their `.git/worktrees/<name>` admin directory pruned. The
+/// files survive, the work is on disk, but `git diff` answers "fatal: not a git repository".
+/// Both this script's shell ancestor and this module's first draft folded that into an empty
+/// string, summed it to 0 lines, and handed `lines_added: Some(0)` to the gate -- which
+/// correctly concluded NO-OP, i.e. THE ARM WROTE NOTHING. Twelve `probe` candidates that
+/// each wrote a working `short()` were recorded as having done nothing at all.
+///
+/// That is the project's recurring failure reached for the tenth time, and the worst
+/// instance so far: every earlier one lost a signal, this one manufactures a false
+/// accusation against the arm and feeds it to the bandit.  (bead farmerbob-jd2.2)
+fn git(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Whether any launcher process has `wt` as its working directory.
@@ -176,28 +189,44 @@ fn measure(wt: &Path, bead: &str, src: &str, krate: &str, base_clippy: i32, log_
         return None;
     }
 
+    // Every line count below depends on git being able to read this worktree. If it cannot,
+    // the count is MISSING, and the gate must return Indeterminate rather than blame the arm.
     let numstat = git(wt, &["diff", "--numstat", "HEAD", "--", "crates/"]);
-    let mut lines: u32 = numstat
-        .lines()
-        .filter_map(|l| l.split_whitespace().next())
-        .filter_map(|n| n.parse::<u32>().ok())
-        .sum();
-
-    let untracked = git(wt, &["ls-files", "--others", "--exclude-standard", "crates/"]);
-    let untracked: Vec<&str> = untracked.lines().filter(|l| !l.is_empty()).collect();
-    for f in &untracked {
-        if let Ok(body) = fs::read_to_string(wt.join(f)) {
-            lines += body.lines().count() as u32;
-        }
-    }
-
+    let untracked_raw = git(wt, &["ls-files", "--others", "--exclude-standard", "crates/"]);
     let tracked = git(wt, &["diff", "--name-only", "HEAD", "--", "crates/"]);
-    let crates: BTreeSet<String> = tracked
-        .lines()
-        .chain(untracked.iter().copied())
-        .filter_map(|p| p.split('/').nth(1))
-        .map(str::to_string)
-        .collect();
+
+    let (lines, untracked, crates): (Measurement<u32>, Vec<String>, BTreeSet<String>) =
+        match (numstat, untracked_raw, tracked) {
+            (Some(ns), Some(ur), Some(tr)) => {
+                let mut n: u32 = ns
+                    .lines()
+                    .filter_map(|l| l.split_whitespace().next())
+                    .filter_map(|x| x.parse::<u32>().ok())
+                    .sum();
+                let untracked: Vec<String> =
+                    ur.lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
+                for f in &untracked {
+                    if let Ok(body) = fs::read_to_string(wt.join(f)) {
+                        n += body.lines().count() as u32;
+                    }
+                }
+                let crates = tr
+                    .lines()
+                    .map(str::to_string)
+                    .chain(untracked.iter().cloned())
+                    .filter_map(|p| p.split('/').nth(1).map(str::to_string))
+                    .collect();
+                (Measurement::observed(n), untracked, crates)
+            }
+            _ => (
+                Measurement::instrument_failed(
+                    "git cannot read this worktree -- its .git/worktrees admin directory was \
+                     pruned, so the diff is unavailable even though the files are on disk",
+                ),
+                Vec::new(),
+                BTreeSet::new(),
+            ),
+        };
 
     let (built, build_log) = run(wt, &["build", "-p", krate]);
     let mut tests_ok = false;
@@ -226,16 +255,17 @@ fn measure(wt: &Path, bead: &str, src: &str, krate: &str, base_clippy: i32, log_
         built: Some(built),
         tests_passed: Some(tests_ok),
         tests_run: Some(tests_run),
-        lines_added: Some(lines),
+        lines_added: lines.value().copied(),
         declared_targets_present: None,
     });
 
     let duration_s = read_duration(log_root, bead, src);
 
     println!(
-        "{src:<22} {:<11} tests={tests_run:<3} clippy={:<4} {lines:>5}L crates={:<2} {:>4}s",
+        "{src:<22} {:<11} tests={tests_run:<3} clippy={:<4} {:>5}L crates={:<2} {:>4}s",
         wire(verdict),
         clippy.value().map(i32::to_string).unwrap_or_else(|| "-".into()),
+        lines.value().map(u32::to_string).unwrap_or_else(|| "?".into()),
         crates.len(),
         duration_s.value().map(|d| format!("{d:.0}")).unwrap_or_else(|| "-".into()),
     );
@@ -281,7 +311,8 @@ fn to_json(r: &Record) -> serde_json::Value {
         "build": if r.build { "pass" } else { "FAIL" },
         "test": if r.tests_ok { "pass" } else { "FAIL" },
         "tests_run": r.tests_run,
-        "lines": r.lines,
+        "lines": r.lines.value().copied().unwrap_or(0),
+        "lines_measured": r.lines.is_observed(),
         "new_files": r.new_files,
         "crates_touched": r.crates.len(),
         "crates": r.crates.iter().cloned().collect::<Vec<_>>().join(","),
@@ -440,5 +471,52 @@ test result: ok. 7 passed; 0 failed; 0 ignored
         let d = read_duration(Path::new("/nonexistent-log-root"), "notask", "nobody");
         assert!(!d.is_observed());
         assert_eq!(d.value(), None);
+    }
+}
+
+#[cfg(test)]
+mod broken_worktree {
+    use super::*;
+
+    /// The tenth instance of this project's recurring failure, and the first that
+    /// manufactures a false accusation rather than merely losing a signal.
+    #[test]
+    fn an_unreadable_worktree_is_indeterminate_not_a_no_op() {
+        // git refused, so lines_added is absent.
+        let unreadable = judge(&GateObs {
+            built: Some(true),
+            tests_passed: Some(true),
+            tests_run: Some(39),
+            lines_added: None,
+            declared_targets_present: None,
+        });
+        assert_eq!(unreadable, Verdict::Indeterminate);
+        assert!(
+            !unreadable.blames_arm(),
+            "a gate that cannot see must not blame the arm"
+        );
+
+        // git answered, and the answer was zero: that IS the arm's fault.
+        let truly_empty = judge(&GateObs {
+            built: Some(true),
+            tests_passed: Some(true),
+            tests_run: Some(39),
+            lines_added: Some(0),
+            declared_targets_present: None,
+        });
+        assert_eq!(truly_empty, Verdict::NoOp);
+        assert!(truly_empty.blames_arm());
+
+        assert_ne!(
+            unreadable, truly_empty,
+            "cannot-measure and wrote-nothing must never reach the same verdict"
+        );
+    }
+
+    #[test]
+    fn a_missing_line_count_is_not_silently_zero() {
+        let m: Measurement<u32> = Measurement::instrument_failed("git cannot read this worktree");
+        assert_eq!(m.value(), None);
+        assert!(!m.is_observed());
     }
 }
