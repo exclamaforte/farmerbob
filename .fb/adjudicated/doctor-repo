@@ -1,0 +1,49 @@
+MERGED claude-sonnet
+Adjudicated 2026-09-17. Four arms, three PASS, all scope clean.
+
+  codex-luna     +656 lines  27 tests
+  claude-sonnet  +944 lines  49 tests
+  glm-53-flash  +1075 lines  50 tests
+  ifm-k2-horizon refused, 8s -- OpenRouter daily token cap
+
+All three implemented all three checks and all three WORK: run against the live repo each found
+the 51 stale fb:creates specs and the 7 with no target, and each reported launcher coverage Ok.
+And all three honour the clause I stated twice -- with cargo off PATH, every one returns Warn,
+never Ok. Consensus on a clause the spec enumerated is worth nothing for ranking, and I did not
+treat it as evidence.
+
+WHAT DECIDED IT is clause 2: the rustfmt message must state HOW MANY FILES.
+
+  claude-sonnet   "2 files pending rustfmt diffs"                                 satisfies it
+  glm-53-flash    "pending changes, but the affected files could not be counted"  honest, does not
+  codex-luna      dumps raw rustfmt output: "Diff in /home/.../crossx.rs:2134:"   does not
+
+That clause is not decoration. The whole incident behind this task is that 53 dirty files existed
+and nobody knew the number. A check that says "something is pending" without saying how much
+reproduces the condition it was written to end. glm-53-flash's version is the better failure --
+it says plainly that it could not count, which is the right shape for an unmeasurable value --
+but it still leaves the operator without the figure.
+
+THE CRITIQUE FOUND TWO REAL DEFECTS in glm-53-flash, both verified:
+
+  1. `if !registry_text.contains("[source") { return Ok("declares no arms") }` -- a malformed
+     sources.toml that never parses is accepted as an empty registry and reported Ok. The spec
+     says an unrunnable check is Warn; this is a check that did not run reporting a pass, which
+     is the exact defect the task exists to detect, committed inside the detector.
+  2. One uninterpretable pattern anywhere in the launcher table sets a global flag that turns
+     every unmatched arm into UNKNOWN, so a genuinely absent arm downgrades from Fail to Warn.
+     Clause 5 requires Fail and requires it to name the arm, because that case costs a whole run.
+
+codex-luna has now filed useful critiques three rounds running, after a day that began with four
+false-absence claims and two fabrications. The corrective was verification per claim, not
+distrust per arm, and it looks right.
+
+FIRST WORKING CROSS-EXAMINATION IN AN ADJUDICATION. The pipeline printed `crossx: ok` rather
+than FAILED, hours after I found and fixed strip_test_modules. The matrix reports every arm
+api_incompatible_with: 2 -- total API divergence -- which is correct and informative: the spec
+fixed three function names and each arm's tests exercise differently-named private helpers, so
+these suites genuinely cannot examine one another. That is a real finding about the SPEC, not
+about any arm: a spec that fixes only the public surface cannot expect cross-examination to
+discriminate, and I should pin helper names when I want that signal.
+
+1220 tests, clippy 9, repo rustfmt-clean.

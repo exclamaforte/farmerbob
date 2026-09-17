@@ -1,9 +1,16 @@
-//! `fb doctor` — environment preflight checks.
+//! `fb doctor` — environment and repository preflight checks.
 //!
 //! Verifies that the current machine can actually run farmerbob: cgroup v2
 //! delegation for confining agents, systemd, an NVIDIA GPU for serialized
 //! inference, git worktree support, disk headroom and the presence of the
 //! agent CLIs farmerbob drives in parallel.
+//!
+//! It also verifies that the REPOSITORY itself is in a state the harness can trust: no
+//! pending `cargo fmt` diffs sitting undetected, no arm the registry calls dispatchable that
+//! `fb-dispatch.sh` cannot actually launch, and no queued task spec whose declared deliverable
+//! is already stale. All three were real outages on 2026-09-17, and none of them was a
+//! property of the machine -- `check_cgroup_v2` and friends could not have caught any of
+//! them, which is why they are checked here separately.
 
 use std::env;
 use std::fmt;
@@ -81,6 +88,7 @@ pub fn run(json: bool) -> i32 {
 
 /// Build the full report by running every check.
 fn run_all() -> Vec<Check> {
+    let repo = crate::paths::repo();
     vec![
         check_cgroup_v2(),
         check_delegated_controllers(),
@@ -89,6 +97,9 @@ fn run_all() -> Vec<Check> {
         check_git_worktree(),
         check_disk_headroom(),
         check_agent_clis(),
+        check_rustfmt(&repo),
+        check_launcher_coverage(&repo),
+        check_spec_targets(&repo),
     ]
 }
 
@@ -417,6 +428,242 @@ fn check_agent_clis() -> Check {
     }
 }
 
+// ---------------------------------------------------------------- repository checks
+//
+// Everything above checks the MACHINE. Everything below checks the REPOSITORY: whether it is
+// clean, whether the registry and the dispatcher agree about which arms can run, and whether
+// queued task specs are still actionable. `repo` is the repository root, passed in rather
+// than discovered here, so these are testable against a throwaway fixture directory instead
+// of the real checkout.
+
+/// `cargo fmt --all --check` over the workspace rooted at `repo`.
+///
+/// An unrunnable check has not passed: this never returns `Status::Ok` when `cargo fmt`
+/// could not be run to completion, whether because `cargo` itself could not be spawned or
+/// because it exited for a reason other than "there are pending diffs" (a missing
+/// `Cargo.toml`, for instance). A repository with zero `.rs` files is `Ok`, not `Warn` --
+/// nothing to format is not a failure to format -- and is decided without invoking `cargo` at
+/// all, so a fixture with no Cargo workspace can still exercise that boundary.
+fn check_rustfmt(repo: &Path) -> Check {
+    if !repo.is_dir() {
+        return Check::new(
+            "rustfmt",
+            Status::Warn,
+            format!("{}: not a directory", repo.display()),
+            None,
+        );
+    }
+    let rs_files = count_rs_files(repo);
+    if rs_files == 0 {
+        return Check::new("rustfmt", Status::Ok, "no .rs files to format", None);
+    }
+
+    let output = Command::new("cargo")
+        .args(["fmt", "--all", "--check", "--", "--files-with-diff"])
+        .current_dir(repo)
+        .output();
+    let output = match output {
+        Ok(o) => o,
+        Err(e) => {
+            return Check::new(
+                "rustfmt",
+                Status::Warn,
+                format!("cargo fmt could not be run: {e}"),
+                None,
+            );
+        }
+    };
+    if output.status.success() {
+        return Check::new(
+            "rustfmt",
+            Status::Ok,
+            format!(
+                "no pending rustfmt diffs across {}",
+                count_noun(rs_files, "file")
+            ),
+            None,
+        );
+    }
+
+    // `--files-with-diff` prints one path per line for each file that would change and
+    // nothing else, so the line count IS the file count -- counting diff hunks instead is
+    // exactly the mistake that hid 489 hunks across 53 files for a year.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let dirty = stdout.lines().filter(|l| !l.trim().is_empty()).count();
+    if dirty > 0 {
+        return Check::new(
+            "rustfmt",
+            Status::Warn,
+            format!("{} pending rustfmt diffs", count_noun(dirty, "file")),
+            Some("cargo fmt --all".to_string()),
+        );
+    }
+
+    // Nonzero exit, but no file list: cargo failed before rustfmt ran at all (no
+    // `Cargo.toml`, no `cargo`/`rustfmt` toolchain, ...). That is still "could not run",
+    // never "Ok".
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Check::new(
+        "rustfmt",
+        Status::Warn,
+        format!("cargo fmt --all --check could not run: {}", stderr.trim()),
+        None,
+    )
+}
+
+/// Every arm `sources.toml` marks dispatchable must have a launcher branch in `fb-dispatch.sh`.
+///
+/// "Dispatchable" excludes an arm whose `status` is `"disabled"` and one carrying a
+/// `redundant_with` key (clause 6): neither is ever launched, so neither belongs in the
+/// launcher table and its absence there is not a finding. Coverage is decided by actually
+/// parsing `fb-dispatch.sh`'s `case "$SRC" in ... esac` block rather than by a hardcoded
+/// guess at what it should contain -- a hardcoded guess is exactly how `claude-sonnet` passed
+/// eligibility and then failed to launch, since the registry and the launcher table are two
+/// independently-edited copies of the same fact. The parser understands a KNOWN SUBSET of
+/// bash `case` patterns: an exact literal, and a trailing-wildcard prefix like `"ifm-*"`. The
+/// bare catch-all `"*"` is recognized and deliberately excluded from coverage, because in
+/// `fb-dispatch.sh` it is the "unknown source" error branch, not a launcher. Any arm this
+/// parser cannot classify against a real pattern is reported as missing rather than assumed
+/// covered.
+///
+/// A missing or unreadable `sources.toml` or `fb-dispatch.sh` is `Warn`, naming which file
+/// could not be read -- never `Ok`, for the same reason as `check_rustfmt`. A `sources.toml`
+/// with no dispatchable arms is `Ok`. An arm that is dispatchable and absent from the table is
+/// `Fail`: this is the fault that cost a whole run, so it is scored higher than a warning.
+fn check_launcher_coverage(repo: &Path) -> Check {
+    let sources_path = repo.join("sources.toml");
+    let sources_text = match fs::read_to_string(&sources_path) {
+        Ok(t) => t,
+        Err(e) => {
+            return Check::new(
+                "launcher coverage",
+                Status::Warn,
+                format!("{}: {e}", sources_path.display()),
+                None,
+            );
+        }
+    };
+    let dispatch_path = repo.join("fb-dispatch.sh");
+    let dispatch_text = match fs::read_to_string(&dispatch_path) {
+        Ok(t) => t,
+        Err(e) => {
+            return Check::new(
+                "launcher coverage",
+                Status::Warn,
+                format!("{}: {e}", dispatch_path.display()),
+                None,
+            );
+        }
+    };
+    let doc: toml::Value = match toml::from_str(&sources_text) {
+        Ok(v) => v,
+        Err(e) => {
+            return Check::new(
+                "launcher coverage",
+                Status::Warn,
+                format!("{}: not valid TOML: {e}", sources_path.display()),
+                None,
+            );
+        }
+    };
+
+    let dispatchable = dispatchable_arms(&doc);
+    let rules = classify_patterns(&dispatch_case_patterns(&dispatch_text));
+    let missing = uncovered_arms(&dispatchable, &rules);
+
+    if missing.is_empty() {
+        Check::new(
+            "launcher coverage",
+            Status::Ok,
+            format!(
+                "{} dispatchable in sources.toml, every one has a launcher branch in fb-dispatch.sh",
+                count_noun(dispatchable.len(), "arm")
+            ),
+            None,
+        )
+    } else {
+        Check::new(
+            "launcher coverage",
+            Status::Fail,
+            format!(
+                "{} dispatchable but missing a launcher branch in fb-dispatch.sh: {}",
+                count_noun(missing.len(), "arm"),
+                missing.join(", ")
+            ),
+            None,
+        )
+    }
+}
+
+/// Every spec in `.fb/prompts` declares a target, and an `fb:creates` target must not exist.
+///
+/// A spec "declares a target" by carrying at least one `<!-- fb:creates PATH -->` or
+/// `<!-- fb:modifies PATH -->` comment; a spec with neither is flagged as declaring no target.
+/// Separately, every `fb:creates` path a spec DOES declare is checked against `repo`: if it
+/// already exists, that spec cannot succeed (every arm correctly no-ops, and the harness
+/// scores the whole no-op wave as failure), so it is flagged too. These are different faults
+/// with different causes -- one is a spec nobody finished writing, the other is a spec the
+/// repository outgrew -- and are reported in separate, separately-named lists so a reader is
+/// never left guessing which one they are looking at.
+///
+/// An empty (or missing) `.fb/prompts` directory is `Ok`: every spec in an empty set trivially
+/// declares a target and no `fb:creates` target in an empty set exists. Only `.md` files are
+/// treated as specs.
+fn check_spec_targets(repo: &Path) -> Check {
+    let files = spec_md_files(&repo.join(".fb/prompts"));
+
+    let mut no_target = Vec::new();
+    let mut stale = Vec::new();
+    for path in &files {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("<unnamed>")
+            .to_string();
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        let targets = parse_spec_targets(&text);
+        if targets.creates.is_empty() && targets.modifies.is_empty() {
+            no_target.push(name.clone());
+        }
+        for created in &targets.creates {
+            if !Path::new(created).is_absolute() && repo.join(created).exists() {
+                stale.push(format!("{name} -> {created}"));
+            }
+        }
+    }
+
+    if no_target.is_empty() && stale.is_empty() {
+        return Check::new(
+            "spec targets",
+            Status::Ok,
+            format!(
+                "{} in .fb/prompts, all declare a target",
+                count_noun(files.len(), "spec")
+            ),
+            None,
+        );
+    }
+
+    let mut parts = Vec::new();
+    if !stale.is_empty() {
+        parts.push(format!(
+            "{} whose fb:creates target already exists: {}",
+            count_noun(stale.len(), "spec"),
+            stale.join(", ")
+        ));
+    }
+    if !no_target.is_empty() {
+        parts.push(format!(
+            "{} with no fb:creates/fb:modifies target: {}",
+            count_noun(no_target.len(), "spec"),
+            no_target.join(", ")
+        ));
+    }
+    Check::new("spec targets", Status::Warn, parts.join("; "), None)
+}
+
 /// Read the current uid from `/proc/self/status`.
 fn current_uid() -> Option<u32> {
     let status = fs::read_to_string("/proc/self/status").ok()?;
@@ -544,6 +791,228 @@ fn parse_gpu_line(line: &str) -> Option<(String, String)> {
         return None;
     }
     Some((name.to_string(), driver.to_string()))
+}
+
+// ---- repository-check helpers -------------------------------------------------------
+
+/// Format a count with an English noun, pluralizing with a trailing `s` when `n != 1`.
+///
+/// Every noun these checks count (`file`, `arm`, `spec`) pluralizes this way, so this does
+/// not attempt anything beyond it.
+fn count_noun(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// Count `.rs` files anywhere under `dir`, skipping `target` (build output) and any directory
+/// whose name starts with `.` (VCS and tool metadata) -- neither holds a source file `cargo
+/// fmt` would ever touch. Unreadable directories contribute zero rather than erroring, since
+/// this is a cheap existence probe, not the check itself.
+fn count_rs_files(dir: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut count = 0;
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == "target" || name.starts_with('.') {
+                continue;
+            }
+            count += count_rs_files(&path);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Arm names in `sources.toml`'s `[source.*]` tables that farmerbob may actually dispatch to.
+///
+/// An arm is dispatchable unless its `status` is exactly `"disabled"`, or it carries a
+/// `redundant_with` key -- a live route to the same model exists elsewhere, so this route's
+/// absence from the launcher table is not itself a finding (clause 6). A missing `status` key
+/// does not disqualify an arm; only an explicit `"disabled"` does. A document with no
+/// `[source]` table produces an empty vec, the same as a `[source]` table with no entries.
+/// Returned sorted lexicographically by arm name.
+fn dispatchable_arms(doc: &toml::Value) -> Vec<String> {
+    let Some(table) = doc.get("source").and_then(toml::Value::as_table) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = table
+        .iter()
+        .filter(|(_, arm)| {
+            let disabled = arm.get("status").and_then(|s| s.as_str()) == Some("disabled");
+            let redundant = arm.get("redundant_with").is_some();
+            !disabled && !redundant
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Extract the raw `case` patterns from the `case "$SRC" in ... esac` block in
+/// `fb-dispatch.sh` that decides how each arm is launched.
+///
+/// A pattern group like `ifm-*)` or `codex-luna)` is recognized only at the start of a
+/// (trimmed) line, immediately followed by `)`, which is how bash `case` arms are written and
+/// is what keeps this from matching `)` characters that show up inside the launcher commands
+/// themselves. Each group is split on `|` and every non-empty token is returned, in source
+/// order. Returns an empty vec if no `case "$SRC" in` block is found -- `check_launcher_coverage`
+/// treats that as "no arm has launcher coverage", not as "every arm is covered".
+fn dispatch_case_patterns(script: &str) -> Vec<String> {
+    const HEADER: &str = "case \"$SRC\" in";
+    let mut patterns = Vec::new();
+    let mut in_block = false;
+    for line in script.lines() {
+        let trimmed = line.trim();
+        if !in_block {
+            if trimmed == HEADER {
+                in_block = true;
+            }
+            continue;
+        }
+        if trimmed == "esac" {
+            break;
+        }
+        let Some(paren) = trimmed.find(')') else {
+            continue;
+        };
+        let head = &trimmed[..paren];
+        let is_pattern_charset = !head.is_empty()
+            && head
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '*' | '|'));
+        if !is_pattern_charset {
+            continue;
+        }
+        patterns.extend(
+            head.split('|')
+                .filter(|t| !t.is_empty())
+                .map(str::to_string),
+        );
+    }
+    patterns
+}
+
+/// Coverage rules a `case` pattern set resolves to: which arm names it matches.
+struct CoverageRules {
+    /// Patterns that must match an arm name exactly.
+    exact: Vec<String>,
+    /// Patterns that match any arm name starting with this (non-empty) prefix.
+    prefix: Vec<String>,
+}
+
+/// Classify raw `case` patterns into exact-match and prefix-match coverage rules.
+///
+/// This recognizes a KNOWN SUBSET of bash glob syntax: a literal token becomes an exact-match
+/// rule, and a token ending in `*` (e.g. `"ifm-*"`) becomes a prefix-match rule on everything
+/// before the `*`. The bare catch-all `"*"` is dropped rather than turned into an
+/// empty-string prefix that would match anything -- in `fb-dispatch.sh` it is the "unknown
+/// source" error branch, so treating it as coverage would recreate exactly the bug this check
+/// exists to catch. Any other shape (`*` embedded or leading, a character class, ...) is
+/// outside this subset and is also dropped: an arm only reachable through such a pattern is
+/// reported as uncovered by `uncovered_arms`, never silently assumed covered.
+fn classify_patterns(patterns: &[String]) -> CoverageRules {
+    let mut exact = Vec::new();
+    let mut prefix = Vec::new();
+    for p in patterns {
+        if p == "*" {
+            continue;
+        }
+        if let Some(stripped) = p.strip_suffix('*') {
+            if !stripped.is_empty() && !stripped.contains('*') {
+                prefix.push(stripped.to_string());
+            }
+            continue;
+        }
+        if !p.contains('*') {
+            exact.push(p.clone());
+        }
+    }
+    CoverageRules { exact, prefix }
+}
+
+/// Whether `arm` is matched by an exact or prefix rule in `rules`.
+fn is_covered(arm: &str, rules: &CoverageRules) -> bool {
+    rules.exact.iter().any(|e| e == arm) || rules.prefix.iter().any(|p| arm.starts_with(p.as_str()))
+}
+
+/// Dispatchable arms matched by neither an exact nor a prefix coverage rule.
+///
+/// Returned sorted lexicographically. An empty `dispatchable` slice always yields an empty
+/// vec -- meaning "nothing to check", not "everything covered". `check_launcher_coverage`
+/// tells the two apart itself, by looking at whether `dispatchable` was empty to begin with.
+fn uncovered_arms(dispatchable: &[String], rules: &CoverageRules) -> Vec<String> {
+    let mut out: Vec<String> = dispatchable
+        .iter()
+        .filter(|a| !is_covered(a, rules))
+        .cloned()
+        .collect();
+    out.sort();
+    out
+}
+
+/// What one `.fb/prompts/*.md` spec declares about its own deliverable.
+struct SpecTargets {
+    /// Paths named by `<!-- fb:creates PATH -->`, in file order.
+    creates: Vec<String>,
+    /// Paths named by `<!-- fb:modifies PATH -->`, in file order.
+    modifies: Vec<String>,
+}
+
+/// Parse `fb:creates`/`fb:modifies` declarations out of a spec's markdown text.
+///
+/// Recognizes lines of the shape `<!-- fb:creates PATH -->` or `<!-- fb:modifies PATH -->`
+/// (surrounding whitespace on the line, and around `PATH`, is tolerated). Both lists preserve
+/// file order and may contain duplicates -- callers that care about uniqueness dedupe
+/// themselves. A spec with neither verb yields two empty lists; that is the "no target
+/// declared" case `check_spec_targets` reports.
+fn parse_spec_targets(text: &str) -> SpecTargets {
+    let mut creates = Vec::new();
+    let mut modifies = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line.trim().strip_prefix("<!--") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        if let Some(after) = rest.strip_prefix("fb:creates")
+            && let Some(path) = after.trim_start().strip_suffix("-->")
+            && !path.trim().is_empty()
+        {
+            creates.push(path.trim().to_string());
+        } else if let Some(after) = rest.strip_prefix("fb:modifies")
+            && let Some(path) = after.trim_start().strip_suffix("-->")
+            && !path.trim().is_empty()
+        {
+            modifies.push(path.trim().to_string());
+        }
+    }
+    SpecTargets { creates, modifies }
+}
+
+/// `.md` files directly inside `dir`, sorted by filename.
+///
+/// A missing or unreadable directory, and a readable directory with no `.md` entries, both
+/// produce an empty vec: this function treats "nothing to examine" the same as "nothing
+/// found", since either way there is nothing for `check_spec_targets` to flag.
+fn spec_md_files(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("md"))
+        .collect();
+    files.sort();
+    files
 }
 
 #[cfg(test)]
@@ -682,5 +1151,479 @@ mod tests {
         assert_eq!(value["status"], "Fail");
         assert_eq!(value["message"], "something broke");
         assert_eq!(value["fix"], "fix it");
+    }
+
+    // ---- repository-check fixtures -------------------------------------------------
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// A fresh, empty directory under the system temp dir, unique to this call. Never reused
+    /// across tests, so parallel `cargo test` threads cannot interfere with each other even
+    /// though they share one process id.
+    fn fixture_dir(tag: &str) -> PathBuf {
+        let n = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("fb-doctor-test-{tag}-{}-{n}", std::process::id()));
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        dir
+    }
+
+    fn write_fixture(dir: &Path, rel: &str, contents: &str) {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create fixture parent dir");
+        }
+        fs::write(path, contents).expect("write fixture file");
+    }
+
+    // ---- check_rustfmt ---------------------------------------------------------------
+
+    #[test]
+    fn rustfmt_zero_rs_files_is_ok_without_running_cargo() {
+        // No Cargo.toml either: if this reached `cargo fmt` it would fail to find a
+        // manifest and this would come back Warn, not Ok. Reaching Ok here proves the
+        // zero-files shortcut fires before cargo is ever invoked.
+        let dir = fixture_dir("rustfmt-zero");
+        let check = check_rustfmt(&dir);
+        assert_eq!(check.status, Status::Ok);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rustfmt_clean_tree_is_ok() {
+        let dir = fixture_dir("rustfmt-clean");
+        write_fixture(
+            &dir,
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write_fixture(
+            &dir,
+            "src/main.rs",
+            "fn main() {\n    println!(\"hi\");\n}\n",
+        );
+        let check = check_rustfmt(&dir);
+        assert_eq!(check.status, Status::Ok, "message was: {}", check.message);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rustfmt_dirty_tree_is_warn_with_file_count_and_fix() {
+        let dir = fixture_dir("rustfmt-dirty-one");
+        write_fixture(
+            &dir,
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write_fixture(
+            &dir,
+            "src/main.rs",
+            "fn main(){\nlet x=1;\nprintln!(\"{}\",x);\n}\n",
+        );
+        let check = check_rustfmt(&dir);
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check.message.contains("1 file") && !check.message.contains("1 files"),
+            "message was: {}",
+            check.message
+        );
+        assert_eq!(check.fix, Some("cargo fmt --all".to_string()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rustfmt_counts_files_not_hunks() {
+        // Two files, each with several independent formatting violations far apart in the
+        // file, so a hunk-counting implementation would report more than 2.
+        let dir = fixture_dir("rustfmt-dirty-two");
+        write_fixture(
+            &dir,
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        // `mod other;` is required: rustfmt walks the module tree from the crate root, so a
+        // loose src/other.rs with no `mod` declaration pulling it in would be invisible to
+        // `cargo fmt --all` and this test would (incorrectly) see only 1 dirty file.
+        let messy = "fn a(){\nlet x=1;\nprintln!(\"{}\",x);\n}\n\nfn b(){\nlet y=2;\nprintln!(\"{}\",y);\n}\n\nfn c(){\nlet z=3;\nprintln!(\"{}\",z);\n}\n";
+        write_fixture(&dir, "src/main.rs", &format!("mod other;\n\n{messy}"));
+        write_fixture(&dir, "src/other.rs", messy);
+        let check = check_rustfmt(&dir);
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check.message.contains("2 files"),
+            "message was: {}",
+            check.message
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rustfmt_missing_cargo_toml_is_warn_never_ok() {
+        // Has a .rs file (so the zero-files shortcut does not fire) but no Cargo.toml, so
+        // `cargo fmt` cannot even determine what to format.
+        let dir = fixture_dir("rustfmt-no-manifest");
+        write_fixture(&dir, "src/main.rs", "fn main() {}\n");
+        let check = check_rustfmt(&dir);
+        assert_eq!(check.status, Status::Warn);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rustfmt_nonexistent_repo_is_warn_never_ok() {
+        let dir = std::env::temp_dir().join("fb-doctor-test-rustfmt-does-not-exist");
+        let _ = fs::remove_dir_all(&dir);
+        let check = check_rustfmt(&dir);
+        assert_eq!(check.status, Status::Warn);
+    }
+
+    #[test]
+    fn count_noun_pluralizes_correctly() {
+        assert_eq!(count_noun(0, "file"), "0 files");
+        assert_eq!(count_noun(1, "file"), "1 file");
+        assert_eq!(count_noun(2, "file"), "2 files");
+    }
+
+    #[test]
+    fn count_rs_files_skips_target_and_dotdirs() {
+        let dir = fixture_dir("count-rs");
+        write_fixture(&dir, "src/main.rs", "");
+        write_fixture(&dir, "src/nested/lib.rs", "");
+        write_fixture(&dir, "target/debug/build/gen.rs", "");
+        write_fixture(&dir, ".git/hooks/gen.rs", "");
+        write_fixture(&dir, "README.md", "");
+        assert_eq!(count_rs_files(&dir), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- check_launcher_coverage ------------------------------------------------------
+
+    const DISPATCH_FIXTURE: &str = r#"
+case "$SRC" in
+    codex-luna)      run_confined codex "$P" ;;
+    claude-sonnet)   run_confined claude "$P" ;;
+    ifm-*)           run_confined opencode -m "$MODEL" "$P" ;;
+    or-*)            run_confined ori opencode run -m "$MODEL" "$P" ;;
+    *) echo "unknown source $SRC" \
+            "no launcher"
+       exit 127 ;;
+esac
+"#;
+
+    fn sources_fixture(extra: &str) -> String {
+        format!(
+            "[source.claude-sonnet]\nstatus = \"verified\"\n\n\
+             [source.codex-luna]\nstatus = \"verified\"\n\n\
+             [source.ifm-k2-horizon]\nstatus = \"verified\"\n\n\
+             [source.or-hy3]\nstatus = \"verified\"\n\n{extra}"
+        )
+    }
+
+    #[test]
+    fn coverage_all_covered_is_ok() {
+        let dir = fixture_dir("coverage-ok");
+        write_fixture(&dir, "sources.toml", &sources_fixture(""));
+        write_fixture(&dir, "fb-dispatch.sh", DISPATCH_FIXTURE);
+        let check = check_launcher_coverage(&dir);
+        assert_eq!(check.status, Status::Ok, "message was: {}", check.message);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn coverage_missing_arm_is_fail_and_names_it() {
+        let dir = fixture_dir("coverage-missing");
+        let extra = "[source.gemini-38-flash]\nstatus = \"verified\"\n";
+        write_fixture(&dir, "sources.toml", &sources_fixture(extra));
+        write_fixture(&dir, "fb-dispatch.sh", DISPATCH_FIXTURE);
+        let check = check_launcher_coverage(&dir);
+        assert_eq!(check.status, Status::Fail);
+        assert!(
+            check.message.contains("gemini-38-flash"),
+            "message was: {}",
+            check.message
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn coverage_disabled_and_redundant_arms_are_not_required() {
+        let dir = fixture_dir("coverage-excluded");
+        let extra = "[source.parked-thing]\nstatus = \"disabled\"\n\n\
+                     [source.paid-duplicate]\nstatus = \"verified\"\nredundant_with = \"codex-luna\"\n";
+        write_fixture(&dir, "sources.toml", &sources_fixture(extra));
+        write_fixture(&dir, "fb-dispatch.sh", DISPATCH_FIXTURE);
+        let check = check_launcher_coverage(&dir);
+        assert_eq!(check.status, Status::Ok, "message was: {}", check.message);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn coverage_zero_arms_is_ok() {
+        let dir = fixture_dir("coverage-zero");
+        write_fixture(&dir, "sources.toml", "");
+        write_fixture(&dir, "fb-dispatch.sh", DISPATCH_FIXTURE);
+        let check = check_launcher_coverage(&dir);
+        assert_eq!(check.status, Status::Ok);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn coverage_missing_sources_toml_is_warn_and_names_it() {
+        let dir = fixture_dir("coverage-no-sources");
+        write_fixture(&dir, "fb-dispatch.sh", DISPATCH_FIXTURE);
+        let check = check_launcher_coverage(&dir);
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check.message.contains("sources.toml"),
+            "message was: {}",
+            check.message
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn coverage_missing_dispatch_script_is_warn_and_names_it() {
+        let dir = fixture_dir("coverage-no-dispatch");
+        write_fixture(&dir, "sources.toml", &sources_fixture(""));
+        let check = check_launcher_coverage(&dir);
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check.message.contains("fb-dispatch.sh"),
+            "message was: {}",
+            check.message
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn classify_patterns_excludes_bare_wildcard() {
+        let patterns = vec![
+            "claude-sonnet".to_string(),
+            "ifm-*".to_string(),
+            "*".to_string(),
+        ];
+        let rules = classify_patterns(&patterns);
+        assert_eq!(rules.exact, vec!["claude-sonnet".to_string()]);
+        assert_eq!(rules.prefix, vec!["ifm-".to_string()]);
+        // The bare "*" must not have become an empty-string prefix: that would match
+        // everything, silently granting coverage to any arm at all.
+        assert!(!is_covered("literally-anything", &rules));
+    }
+
+    #[test]
+    fn is_covered_matches_exact_and_prefix() {
+        let rules = classify_patterns(&["claude-sonnet".to_string(), "or-*".to_string()]);
+        assert!(is_covered("claude-sonnet", &rules));
+        assert!(is_covered("or-hy3", &rules));
+        assert!(!is_covered("gemini-38-flash", &rules));
+        assert!(!is_covered("claude-sonnet-2", &rules)); // exact match, not a prefix match
+    }
+
+    #[test]
+    fn uncovered_arms_empty_input_yields_empty_output() {
+        let rules = classify_patterns(&["or-*".to_string()]);
+        assert_eq!(uncovered_arms(&[], &rules), Vec::<String>::new());
+    }
+
+    #[test]
+    fn uncovered_arms_is_sorted() {
+        let rules = classify_patterns(&["or-*".to_string()]);
+        let dispatchable = vec!["zzz-arm".to_string(), "aaa-arm".to_string()];
+        assert_eq!(
+            uncovered_arms(&dispatchable, &rules),
+            vec!["aaa-arm".to_string(), "zzz-arm".to_string()]
+        );
+    }
+
+    #[test]
+    fn dispatch_case_patterns_extracts_and_splits_on_pipe() {
+        let script =
+            "case \"$SRC\" in\n  a|b)   run a ;;\n  c-*)   run c ;;\n  *)     fail ;;\nesac\n";
+        assert_eq!(
+            dispatch_case_patterns(script),
+            vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c-*".to_string(),
+                "*".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn dispatch_case_patterns_empty_when_no_block_found() {
+        assert_eq!(
+            dispatch_case_patterns("#!/bin/bash\necho hi\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn dispatchable_arms_excludes_disabled_and_redundant() {
+        let doc: toml::Value = toml::from_str(
+            "[source.a]\nstatus = \"verified\"\n\n\
+             [source.b]\nstatus = \"disabled\"\n\n\
+             [source.c]\nstatus = \"verified\"\nredundant_with = \"a\"\n\n\
+             [source.d]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            dispatchable_arms(&doc),
+            vec!["a".to_string(), "d".to_string()]
+        );
+    }
+
+    #[test]
+    fn dispatchable_arms_empty_table_is_empty() {
+        let doc: toml::Value = toml::from_str("").unwrap();
+        assert_eq!(dispatchable_arms(&doc), Vec::<String>::new());
+    }
+
+    // ---- check_spec_targets ------------------------------------------------------------
+
+    #[test]
+    fn spec_targets_ok_when_all_declare_and_none_stale() {
+        let dir = fixture_dir("spec-ok");
+        write_fixture(&dir, "crates/fb/src/existing.rs", "// already here\n");
+        write_fixture(
+            &dir,
+            ".fb/prompts/a.md",
+            "<!-- fb:modifies crates/fb/src/existing.rs -->\n# Task\n",
+        );
+        write_fixture(
+            &dir,
+            ".fb/prompts/b.md",
+            "<!-- fb:creates crates/fb/src/new_thing.rs -->\n# Task\n",
+        );
+        let check = check_spec_targets(&dir);
+        assert_eq!(check.status, Status::Ok, "message was: {}", check.message);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spec_targets_stale_create_is_warn_naming_spec_and_path() {
+        let dir = fixture_dir("spec-stale");
+        write_fixture(&dir, "crates/fb/src/already_here.rs", "// oops\n");
+        write_fixture(
+            &dir,
+            ".fb/prompts/stale-task.md",
+            "<!-- fb:creates crates/fb/src/already_here.rs -->\n# Task\n",
+        );
+        let check = check_spec_targets(&dir);
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check.message.contains("stale-task.md"),
+            "message was: {}",
+            check.message
+        );
+        assert!(
+            check.message.contains("crates/fb/src/already_here.rs"),
+            "message was: {}",
+            check.message
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spec_targets_no_target_is_warn_named_separately_from_stale() {
+        let dir = fixture_dir("spec-mixed");
+        write_fixture(&dir, "crates/fb/src/already_here.rs", "// oops\n");
+        write_fixture(
+            &dir,
+            ".fb/prompts/stale-task.md",
+            "<!-- fb:creates crates/fb/src/already_here.rs -->\n# Task\n",
+        );
+        write_fixture(
+            &dir,
+            ".fb/prompts/no-target-task.md",
+            "# Task with no markers\n",
+        );
+        let check = check_spec_targets(&dir);
+        assert_eq!(check.status, Status::Warn);
+        // Both faults must be visible, and distinguishably so: a reader must be able to tell
+        // "already exists" apart from "declared nothing" rather than see one merged list.
+        assert!(check.message.contains("stale-task.md"));
+        assert!(check.message.contains("no-target-task.md"));
+        assert!(check.message.contains("already exists"));
+        assert!(check.message.contains("no fb:creates/fb:modifies target"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spec_targets_empty_dir_is_ok() {
+        let dir = fixture_dir("spec-empty");
+        fs::create_dir_all(dir.join(".fb/prompts")).unwrap();
+        let check = check_spec_targets(&dir);
+        assert_eq!(check.status, Status::Ok);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spec_targets_ignores_non_markdown_files() {
+        let dir = fixture_dir("spec-non-md");
+        write_fixture(&dir, ".fb/prompts/README.txt", "not a spec\n");
+        let check = check_spec_targets(&dir);
+        assert_eq!(check.status, Status::Ok, "message was: {}", check.message);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spec_targets_reports_only_the_stale_target_among_several() {
+        let dir = fixture_dir("spec-partial-stale");
+        write_fixture(&dir, "crates/fb/src/exists.rs", "// here\n");
+        write_fixture(
+            &dir,
+            ".fb/prompts/two-targets.md",
+            "<!-- fb:creates crates/fb/src/exists.rs -->\n<!-- fb:creates crates/fb/src/not_yet.rs -->\n",
+        );
+        let check = check_spec_targets(&dir);
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.message.contains("exists.rs"));
+        assert!(!check.message.contains("not_yet.rs"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_spec_targets_preserves_order_and_ignores_other_lines() {
+        let text = "<!-- fb:reads other.sh -->\n\
+                     <!-- fb:creates a.rs -->\n\
+                     some prose\n\
+                     <!-- fb:modifies b.rs -->\n\
+                     <!-- fb:creates c.rs -->\n";
+        let targets = parse_spec_targets(text);
+        assert_eq!(
+            targets.creates,
+            vec!["a.rs".to_string(), "c.rs".to_string()]
+        );
+        assert_eq!(targets.modifies, vec!["b.rs".to_string()]);
+    }
+
+    #[test]
+    fn parse_spec_targets_no_markers_is_two_empty_lists() {
+        let targets = parse_spec_targets("# just a heading\nsome text\n");
+        assert!(targets.creates.is_empty());
+        assert!(targets.modifies.is_empty());
+    }
+
+    #[test]
+    fn spec_md_files_sorted_and_filters_extension() {
+        let dir = fixture_dir("spec-md-files");
+        write_fixture(&dir, "z.md", "");
+        write_fixture(&dir, "a.md", "");
+        write_fixture(&dir, "notes.txt", "");
+        let files: Vec<String> = spec_md_files(&dir)
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+            .collect();
+        assert_eq!(files, vec!["a.md".to_string(), "z.md".to_string()]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spec_md_files_missing_dir_is_empty() {
+        let dir = std::env::temp_dir().join("fb-doctor-test-spec-md-does-not-exist");
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(spec_md_files(&dir), Vec::<PathBuf>::new());
     }
 }

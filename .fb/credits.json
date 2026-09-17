@@ -233,6 +233,12 @@
    "critic": "or-hy3",
    "found_on": "or-luna-pro",
    "tests": 2
+  },
+  {
+   "task": "crossx-graft",
+   "critic": "glm-53-flash",
+   "found_on": "ifm-k2-think",
+   "tests": 1
   }
  ]
 }
