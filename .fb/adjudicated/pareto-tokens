@@ -1,0 +1,37 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. Four arms, two PASS; both ifm arms refused at ~18s on their daily token
+cap, and claude-sonnet was disabled mid-wave by user instruction.
+
+  codex-luna    +302 lines   6 tests
+  glm-53-flash  +575 lines  22 tests
+
+BOTH produce an identical board, which is the test that matters:
+
+    codex-luna    TOKENS  n/a -> 3932090      UNPRICED 32/32 unchanged
+    glm-53-flash  TOKENS  n/a (correct: zcode reports no count)
+    totals        $16.8747 unchanged
+
+Clause 2 holds -- recovering tokens did not touch the UNPRICED column, because tokens are not
+dollars -- and clause 7 holds, the frontier is untouched. Both arms pin both clauses by name.
+
+THE CRITIQUE IS PROJECTION, and this is the fourth from this critic today. codex-luna claimed
+glm's `launcher_for` "only examines `Source::launcher`, with a special-case fallback for the
+literal `codex-luna`". That is a verbatim description of CODEX-LUNA'S OWN code at
+pareto.rs:212-217. glm reads `registry.cmd.get(arm)`, which is what the spec asked for. The
+claim is not merely false; it is the filer's own defect wearing the rival's name.
+
+AND THE DETECTOR MISSED IT. `fb promote pareto-tokens` returned PROMOTED 2, REFUSED-BY-
+VERIFICATION 0. verify_quotes extracts fragments between DOUBLE QUOTES; critics write Markdown
+and quote code in BACKTICKS. The instrument is looking in the wrong delimiter, and it is the
+second time this limitation has decided nothing -- I recorded the first when adjudicating
+claim-verify. Filed as a P1 with the fix and the two cases that need care.
+
+glm-53-flash on test depth: 22 distinct behaviours against 6, including both critical clauses
+named explicitly (`tokens_known_and_bill_absent_is_still_wholly_unpriced`,
+`recovered_tokens_do_not_move_the_frontier`). codex-luna's six are dense rather than thin and
+cover the same ground, so this is a margin rather than a gap -- but its launcher_for does not
+meet the spec, which settles it.
+
+crossx FAILED again on this crates/fb task, the P1 already open.
+
+1390 tests, clippy 9.
