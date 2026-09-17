@@ -41,6 +41,18 @@ const LIMIT_PATTERNS: &[&str] = &[
     "error: rate limit exceeded",
     "error: 429",
     "usage limit reached",
+    // OpenRouter, when the KEY's total spend cap is reached rather than a per-minute rate:
+    //   Error: Key limit exceeded (total limit). Manage it using https://openrouter.ai/...
+    // Absent from this list until 2026-09-17, when it took out all 13 OpenRouter arms at
+    // once and the harness recorded each refusal as a NO-OP -- an arm that produced nothing.
+    // Two false NO-OPs reached the posterior in four and nine seconds respectively, which is
+    // less time than it takes an agent to read its prompt.
+    //
+    // This is farmerbob-h04 again, one provider and one error string later. The lesson that
+    // list did not learn is that it is a list: every refusal NOT enumerated here is scored
+    // as a failure of the model. The default is the dangerous one, and the set of ways a
+    // provider can say no is open. (farmerbob-2ve -- superset status on enumerated lists.)
+    "error: key limit exceeded",
 ];
 
 /// Patterns that, appearing in the head of a run's log, mean the harness itself
@@ -290,7 +302,12 @@ fn quota_blocked(rec: &Value, read_log: &dyn Fn(&Path) -> Option<String>) -> boo
     let Some(text) = log_head(rec, read_log) else {
         return false;
     };
-    let head = first_lines(&text, 5);
+    // Lowercased as well as ANSI-stripped. Every pattern in the list is lowercase and real
+    // launchers capitalise: "Error: Key limit exceeded". Nothing lowercased the haystack, so
+    // a capitalised refusal never matched any pattern here. The unit tests all passed because
+    // they were written with lowercase fixtures, which is how a check can be wrong for months
+    // while its tests are green -- the fixture agreed with the code instead of with the logs.
+    let head = first_lines(&text, 5).to_lowercase();
     LIMIT_PATTERNS.iter().any(|p| head.contains(p))
 }
 
@@ -299,7 +316,10 @@ fn harness_failed(rec: &Value, read_log: &dyn Fn(&Path) -> Option<String>) -> bo
     let Some(text) = log_head(rec, read_log) else {
         return false;
     };
-    let head = first_lines(&text, 12);
+    // Lowercased for the same reason as quota_blocked: these patterns are lowercase and
+    // launchers capitalise. "Incorrect API key provided" never matched
+    // "incorrect api key provided".
+    let head = first_lines(&text, 12).to_lowercase();
     INFRA_PATTERNS.iter().any(|p| head.contains(p))
 }
 
@@ -321,7 +341,48 @@ fn log_head(rec: &Value, read_log: &dyn Fn(&Path) -> Option<String>) -> Option<S
 }
 
 fn first_lines(text: &str, n: usize) -> String {
-    text.lines().take(n).collect::<Vec<_>>().join("\n")
+    text.lines()
+        .take(n)
+        .map(strip_ansi)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Remove ANSI escape sequences from one line.
+///
+/// Every pattern in LIMIT_PATTERNS and INFRA_PATTERNS is anchored to a launcher's `error: `
+/// prefix, on the sound reasoning that an agent DISCUSSING quotas in a task about quotas must
+/// not be misread as one being refused. That anchoring is silently defeated by colour. The
+/// OpenRouter launcher emits
+///
+///     \x1b[91m\x1b[1mError: \x1b[0mKey limit exceeded (total limit).
+///
+/// with the reset sequence sitting BETWEEN the prefix and the message, so the literal bytes
+/// are `Error: \x1b[0mKey limit exceeded` and no `error: <message>` pattern can ever match.
+/// Adding the pattern was not enough and adding more patterns would not have helped; every
+/// existing entry is defeatable the same way the moment a launcher colourises its output.
+///
+/// Found 2026-09-17, when an OpenRouter key spend cap refused all 13 of its arms and each
+/// refusal was recorded as the model producing nothing.
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        // CSI: ESC [ <params> <final byte in @-~>. Anything else after ESC: drop the ESC and
+        // the single byte that follows, which covers the short two-character sequences.
+        if let Some('[') = chars.next() {
+            for c in chars.by_ref() {
+                if ('\u{40}'..='\u{7e}').contains(&c) {
+                    break;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Render the full stdout report, byte-for-byte with the shell original.
@@ -712,7 +773,27 @@ mod tests {
         assert_eq!(out, "quota_limited");
     }
 
+    /// Verbatim from the head of port-status--or-hy3.log, 2026-09-17. The marker sits on the
+    /// FIFTH line, exactly at the edge of the window quota_blocked reads -- the two escape
+    /// sequences the launcher prints count as lines. One more banner line from any future
+    /// launcher version and this refusal slides out of the window and is scored as an arm
+    /// failure again, silently. Recorded here so the next person knows the margin is one line.
     #[test]
+    fn an_openrouter_key_limit_is_a_refusal_not_a_no_op() {
+        let log = "Using the OpenRouter credential from the global credential /home/x/.ori/credentials.json.\n\
+                   \u{1b}[0m\n\
+                   > build \u{b7} tencent/hy3\n\
+                   \u{1b}[0m\n\
+                   \u{1b}[91m\u{1b}[1mError: \u{1b}[0mKey limit exceeded (total limit). Manage it using https://openrouter.ai/\n";
+        let rec = json!({"log": "x.log", "verdict": "NO-OP", "rc": 1});
+        let reader = |_: &Path| Some(log.to_string());
+        let out = classify_outcome(&rec, Some(&json!("NO-OP")), &reader);
+        assert_eq!(
+            out, "quota_limited",
+            "a provider refusing on spend must never be recorded as an arm producing nothing"
+        );
+    }
+
     fn outcome_infrastructure_from_permission_kill() {
         let log = "permission requested: external_directory\n... rejected permission to use this specific tool call ...";
         let rec = json!({"log": "x.log", "verdict": "PASS"});
