@@ -47,7 +47,17 @@ echo "== queue =="
 for p in .fb/prompts/*.md; do
   b=$(basename "$p" .md); case "$b" in _*) continue ;; esac
   [ -f "$LOGS/$b.score.json" ] && continue
-  echo "  unspent spec: $b"
+  # A `creates` spec whose target ALREADY EXISTS is dead: dispatch's precondition rejects it,
+  # or worse it runs and every arm correctly no-ops, measuring nothing. Merging a winner is
+  # what kills them -- bandit-route was authored against a base where router.rs did not exist
+  # and has been unrunnable ever since router.rs was merged. Listing it as available work
+  # invites spending four arms on a guaranteed no-op.  (bead farmerbob-m71)
+  tgt=$(fb_target "$b" 2>/dev/null)
+  if [ "$(fb_target_verb "$b" 2>/dev/null)" = creates ] && [ -n "$tgt" ] && [ -f "$tgt" ]; then
+    echo "  unspent spec: $b   ** STALE: $tgt already exists, a creates-task would no-op **"
+  else
+    echo "  unspent spec: $b"
+  fi
 done
 ls .fb/wave*.tsv 2>/dev/null | while read -r w; do
   n=$(awk 'NF' "$w" | wc -l)
