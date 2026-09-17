@@ -77,6 +77,18 @@
    "critic": "or-mercury-25",
    "found_on": "ifm-k2-horizon",
    "tests": 1
+  },
+  {
+   "task": "gpu-lease",
+   "critic": "or-qwen38-flash",
+   "found_on": "glm-53-flash",
+   "tests": 1
+  },
+  {
+   "task": "gpu-lease",
+   "critic": "or-muse-spark",
+   "found_on": "or-qwen38-flash",
+   "tests": 1
   }
  ]
 }

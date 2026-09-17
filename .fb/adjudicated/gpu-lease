@@ -1,11 +1,9 @@
-VOID (evidence destroyed) -- spec amended, requeue
-Adjudicated 2026-09-16. All eight candidates INDETERMINATE: git lost their worktree admin
-directories (farmerbob-13p) so no diff can be measured. No winner is possible.
-The subjective tier paid anyway, and it paid against MY SPEC. Three critics, reviewing three
-DIFFERENT subjects, converged on the same three defects -- inherited acquired_at on handover,
-holder_died dropping all but one grant, status().held_for always zero. A defect in nearly
-every implementation is evidence about the specification. All three traced to signatures that
-made the promised behaviour uncomputable: release/status took no clock, and Option<Grant>
-could not report a multi-resource handover the spec's own invariant 3 required.
-Spec amended to pin time provenance, the aggregate return, and held_for. Requeue.
-Credited: glm-53-flash, ifm-k2-horizon, or-inkling, or-mercury-25.
+MERGED glm-53-flash
+Adjudicated 2026-09-16, second round. 702 tests, clippy 0, 641 lines. The only arm using
+concrete types throughout -- no invented clock trait, no generic bounds -- and the only one to
+give max_hold a per-resource home, which is the reading I subsequently pinned in the spec.
+Cross-examination measured NOTHING (every off-diagonal cell nocomp) because the three arms
+built incompatible interfaces from a malformed API line; that is farmerbob-4j6, not a result
+about any arm. Two critics found a further unpinned clause -- holder_died's ordering -- in the
+amendment I wrote last round to fix the previous ambiguity. Now pinned to registration order.
+Credited: or-qwen38-flash, or-muse-spark.

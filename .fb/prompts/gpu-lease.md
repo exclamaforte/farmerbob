@@ -45,8 +45,7 @@ pub enum RequestOutcome { Granted(LeaseToken), Queued { position: usize } }
 pub struct Grant {
     pub resource: ResourceName,
     pub holder:   HolderId,
-    pub token:    LeaseToken,
-    pub acquired_at: DateTime<Utc>,
+    pub lease:    LeaseId,
 }
 
 pub struct LeaseStatus {
@@ -75,8 +74,16 @@ lease handed to a waiter by `release`, `expire` or `holder_died` starts its full
 moment of handover; it NEVER inherits the predecessor's `acquired_at`. No method may call
 `Utc::now()` internally — the clock is always the caller's.
 
-**`holder_died` returns EVERY grant it produces, in the order the resources were granted,
-and an empty `Vec` when it produced none.** A holder may hold several resources at once.
+**`holder_died` returns EVERY grant it produces, and an empty `Vec` when it produced none.**
+
+**The order is the order the resources were REGISTERED via `register_resource`, not the order
+the dying holder acquired them.** The previous wording said "the order the resources were
+granted", and two independent critics -- or-qwen38-flash and or-muse-spark, reviewing
+different subjects -- showed that is ambiguous: implementations iterate in registration order,
+which disagrees with acquisition order whenever resources are first granted out of
+registration order. or-qwen38-flash gave the probe: acquire gpu1 then gpu0, kill the holder,
+and the grants come back `["gpu0", "gpu1"]`. Registration order is chosen because it is
+stable, observable from the manager alone, and needs no per-grant sequence number. A holder may hold several resources at once.
 The previous `Option<Grant>` could report at most one, which made invariant 3 below
 unreportable for the second and subsequent resource, and every implementation either
 dropped the extra grants or silently skipped advancing those queues.
