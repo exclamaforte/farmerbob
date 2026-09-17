@@ -22,6 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use farmerbob_core::gate::{judge, Observation as GateObs, Verdict};
 use farmerbob_core::liveness::{Authority, Liveness, Observation as LiveObs, Tracker};
 use farmerbob_core::measurement::Measurement;
+use farmerbob_core::scope::{assess, is_clean, Change, Declared, Departure, Scope};
 
 /// Launcher process names that indicate an agent is working in a worktree.
 const LAUNCHERS: [&str; 4] = ["opencode", "agy", "zcode", "codex"];
@@ -48,6 +49,10 @@ struct Record {
     clippy: Measurement<i32>,
     duration_s: Measurement<f64>,
     liveness: Liveness,
+    /// Whether the run stayed inside its declared deliverable. Absent when git could not
+    /// read the worktree, because "no departures found" and "we could not look" are
+    /// different facts and an empty list reads as the first.
+    scope: Measurement<Scope>,
     err: Option<String>,
 }
 
@@ -182,7 +187,15 @@ fn clippy_warnings(log: &str) -> i32 {
 }
 
 /// Measures one worktree. Returns `None` when the run is still live.
-fn measure(wt: &Path, bead: &str, src: &str, krate: &str, base_clippy: i32, log_root: &Path) -> Option<Record> {
+fn measure(
+    wt: &Path,
+    bead: &str,
+    src: &str,
+    krate: &str,
+    target: Option<&str>,
+    base_clippy: i32,
+    log_root: &Path,
+) -> Option<Record> {
     let (live, why) = liveness_of(wt);
     if live == Liveness::Working {
         println!("{src:<22} {:<11} (SKIPPED: {why})", "LIVE");
@@ -194,6 +207,7 @@ fn measure(wt: &Path, bead: &str, src: &str, krate: &str, base_clippy: i32, log_
     let numstat = git(wt, &["diff", "--numstat", "HEAD", "--", "crates/"]);
     let untracked_raw = git(wt, &["ls-files", "--others", "--exclude-standard", "crates/"]);
     let tracked = git(wt, &["diff", "--name-only", "HEAD", "--", "crates/"]);
+    let mut changed_paths: Option<Vec<String>> = None;
 
     let (lines, untracked, crates): (Measurement<u32>, Vec<String>, BTreeSet<String>) =
         match (numstat, untracked_raw, tracked) {
@@ -216,6 +230,12 @@ fn measure(wt: &Path, bead: &str, src: &str, krate: &str, base_clippy: i32, log_
                     .chain(untracked.iter().cloned())
                     .filter_map(|p| p.split('/').nth(1).map(str::to_string))
                     .collect();
+                changed_paths = Some(
+                    tr.lines()
+                        .map(str::to_string)
+                        .chain(untracked.iter().cloned())
+                        .collect::<Vec<String>>(),
+                );
                 (Measurement::observed(n), untracked, crates)
             }
             _ => (
@@ -227,6 +247,33 @@ fn measure(wt: &Path, bead: &str, src: &str, krate: &str, base_clippy: i32, log_
                 BTreeSet::new(),
             ),
         };
+
+    // Scope, measured against the DECLARED DELIVERABLE rather than by counting crates.
+    // Counting crates was the old signal, and an arm that modified 36 files across a crate
+    // it was never asked to touch registered as "touched 2" -- the count was not wrong, it
+    // was measuring the wrong thing.  (bead farmerbob-jxp)
+    //
+    // Deletions: `git diff --name-only` lists a deleted path like any other, so the two are
+    // told apart by asking git for the status letters separately. A path git cannot report
+    // on at all leaves the whole assessment Missing rather than empty.
+    let deleted: Vec<String> = git(wt, &["diff", "--name-only", "--diff-filter=D", "HEAD", "--", "crates/"])
+        .map(|o| o.lines().map(str::to_string).collect())
+        .unwrap_or_default();
+    let scope: Measurement<Scope> = match (changed_paths.as_ref(), target) {
+        (Some(paths), Some(t)) => {
+            let changes: Vec<Change> = paths
+                .iter()
+                .map(|p| Change { path: p.clone(), deleted: deleted.contains(p) })
+                .collect();
+            Measurement::observed(assess(&Declared { target: t.to_string() }, &changes))
+        }
+        (None, _) => Measurement::instrument_failed(
+            "git cannot read this worktree, so which files changed is unknown",
+        ),
+        (_, None) => Measurement::nothing_to_measure(
+            "the task spec declares no deliverable, so there is no scope to check",
+        ),
+    };
 
     let (built, build_log) = run(wt, &["build", "-p", krate]);
     let mut tests_ok = false;
@@ -261,8 +308,13 @@ fn measure(wt: &Path, bead: &str, src: &str, krate: &str, base_clippy: i32, log_
 
     let duration_s = read_duration(log_root, bead, src);
 
+    let scope_note = match scope.value() {
+        Some(sc) if !is_clean(sc) => format!("  OUT OF SCOPE: {} file(s)", sc.departures.len()),
+        Some(_) => String::new(),
+        None => "  scope=?".to_string(),
+    };
     println!(
-        "{src:<22} {:<11} tests={tests_run:<3} clippy={:<4} {:>5}L crates={:<2} {:>4}s",
+        "{src:<22} {:<11} tests={tests_run:<3} clippy={:<4} {:>5}L crates={:<2} {:>4}s{scope_note}",
         wire(verdict),
         clippy.value().map(i32::to_string).unwrap_or_else(|| "-".into()),
         lines.value().map(u32::to_string).unwrap_or_else(|| "?".into()),
@@ -282,6 +334,7 @@ fn measure(wt: &Path, bead: &str, src: &str, krate: &str, base_clippy: i32, log_
         clippy,
         duration_s,
         liveness: live,
+        scope,
         err,
     })
 }
@@ -323,12 +376,35 @@ fn to_json(r: &Record) -> serde_json::Value {
         "duration_s": r.duration_s.value().copied().unwrap_or(-1.0),
         "duration_measured": r.duration_s.is_observed(),
         "liveness": format!("{:?}", r.liveness),
+        // Scope against the declared deliverable. `scope_clean` is null, not true, when the
+        // assessment could not be made.
+        "scope_clean": r.scope.value().map(is_clean),
+        "scope_departures": r.scope.value().map(|sc| sc.departures.len()).unwrap_or(0),
+        "scope_measured": r.scope.is_observed(),
+        "departed": r.scope.value().map(|sc| sc.departures.iter().map(|d| match d {
+            Departure::Foreign { path } => path.clone(),
+            Departure::Deleted { path } => format!("{path} (deleted)"),
+        }).collect::<Vec<_>>()).unwrap_or_default(),
         "blames_arm": r.verdict.blames_arm(),
         "err": r.err.clone().unwrap_or_default(),
     })
 }
 
 /// Scores every candidate worktree for `bead`. Returns a process exit code.
+/// Reads the task spec's declared deliverable, the one path the arm was asked to produce.
+///
+/// Accepts BOTH verbs. Seven readers in this harness each grepped for `fb:creates` alone and
+/// six of them did not know `fb:modifies` existed.  (bead farmerbob-9mh)
+fn declared_target(bead: &str) -> Option<String> {
+    let spec = fs::read_to_string(format!(".fb/prompts/{bead}.md")).ok()?;
+    spec.lines()
+        .filter_map(|l| l.trim().strip_prefix("<!-- fb:"))
+        .filter_map(|r| r.strip_prefix("creates ").or_else(|| r.strip_prefix("modifies ")))
+        .filter_map(|r| r.split_whitespace().next())
+        .map(str::to_string)
+        .next()
+}
+
 pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
     let home = match std::env::var("HOME") {
         Ok(h) => PathBuf::from(h),
@@ -347,6 +423,14 @@ pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
     let base_clippy = clippy_warnings(&base_log);
     if !json_only {
         println!("clippy baseline: {krate} on HEAD = {base_clippy}");
+    }
+
+    let target = declared_target(bead);
+    if !json_only {
+        match target.as_deref() {
+            Some(t) => println!("declared deliverable: {t}"),
+            None => println!("declared deliverable: NONE -- scope cannot be checked"),
+        }
     }
 
     let prefix = format!("{bead}--");
@@ -372,7 +456,7 @@ pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
     for wt in &dirs {
         let name = wt.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         let src = name.strip_prefix(&prefix).unwrap_or(name);
-        if let Some(r) = measure(wt, bead, src, krate, base_clippy, &log_root) {
+        if let Some(r) = measure(wt, bead, src, krate, target.as_deref(), base_clippy, &log_root) {
             records.push(r);
         }
     }
@@ -518,5 +602,67 @@ mod broken_worktree {
         let m: Measurement<u32> = Measurement::instrument_failed("git cannot read this worktree");
         assert_eq!(m.value(), None);
         assert!(!m.is_observed());
+    }
+}
+
+#[cfg(test)]
+mod scope_integration {
+    use super::*;
+
+    /// The signal this replaces counted CRATES. codex-luna modified 36 files across a crate
+    /// it was never asked to touch and that registered as "touched 2".  (bead farmerbob-jxp)
+    #[test]
+    fn a_rewrite_of_another_crate_is_a_departure_not_a_crate_count() {
+        let declared = Declared { target: "crates/farmerbob-core/src/matrix.rs".into() };
+        let changes: Vec<Change> = [
+            "crates/farmerbob-core/src/matrix.rs", // the deliverable
+            "crates/farmerbob-core/src/lib.rs",    // the required module declaration
+            "crates/fb/src/main.rs",               // out of scope
+            "crates/fb/src/doctor.rs",             // out of scope
+        ]
+        .iter()
+        .map(|p| Change { path: (*p).to_string(), deleted: false })
+        .collect();
+
+        let sc = assess(&declared, &changes);
+        assert!(sc.target_changed);
+        assert_eq!(sc.allowed, vec!["crates/farmerbob-core/src/lib.rs".to_string()]);
+        assert_eq!(sc.departures.len(), 2, "both crates/fb files are departures");
+        assert!(!is_clean(&sc));
+    }
+
+    #[test]
+    fn declaring_the_new_module_is_not_a_departure() {
+        let declared = Declared { target: "crates/farmerbob-core/src/scope.rs".into() };
+        let changes = [
+            Change { path: "crates/farmerbob-core/src/scope.rs".into(), deleted: false },
+            Change { path: "crates/farmerbob-core/src/lib.rs".into(), deleted: false },
+        ];
+        assert!(is_clean(&assess(&declared, &changes)), "adding `pub mod x;` is required");
+    }
+
+    /// An unreadable worktree must not read as "stayed in scope". Same rule as lines_added:
+    /// an empty departure list and an unmeasured one are different facts.
+    #[test]
+    fn an_unreadable_worktree_leaves_scope_missing_not_clean() {
+        let m: Measurement<Scope> =
+            Measurement::instrument_failed("git cannot read this worktree");
+        assert!(!m.is_observed());
+        assert_eq!(m.value().map(is_clean), None, "must not read as clean");
+    }
+
+    /// Both declaration verbs. Six of seven readers in this harness knew only fb:creates.
+    #[test]
+    fn the_target_reader_accepts_creates_and_modifies() {
+        for (verb, want) in [("creates", "crates/a/src/b.rs"), ("modifies", "crates/a/src/b.rs")] {
+            let line = format!("<!-- fb:{verb} {want} -->");
+            let got: Option<String> = line
+                .trim()
+                .strip_prefix("<!-- fb:")
+                .and_then(|r| r.strip_prefix("creates ").or_else(|| r.strip_prefix("modifies ")))
+                .and_then(|r| r.split_whitespace().next())
+                .map(str::to_string);
+            assert_eq!(got.as_deref(), Some(want), "verb {verb} must parse");
+        }
     }
 }
