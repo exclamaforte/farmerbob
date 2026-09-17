@@ -1,0 +1,12 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. 27 tests, clippy 0, 475 lines. Cross-examination was the project's
+first full CONSENSUS -- 16 of 16 cells pass, no suite discriminates -- so survival is n/a and
+the decision rests on test depth, lint and the critiques.
+Two critics independently found a defect present in ALL FOUR implementations: canonical_model
+matched its markers case-sensitively because the spec pinned strip-strip-lowercase, so a
+mixed-case route id silently defeated free/paid deduplication -- farmerbob-15p, the exact bug
+this module exists to prevent. N-of-N means the spec is at fault; nobody was scored on it.
+Repaired in the merged code (lowercase first) with escalated tests, and pinned in the spec.
+Two further spec holes found and pinned: the non-finite invariant was stated absolutely but
+enforced only on inputs, and reason strings omitted the route id, making `missing` untraceable.
+Credited: or-hy3, or-qwen38-flash, glm-53-flash.

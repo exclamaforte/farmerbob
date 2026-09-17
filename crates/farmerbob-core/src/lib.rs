@@ -36,6 +36,7 @@ pub mod liveness;
 pub mod matrix;
 pub mod measurement;
 pub mod outcome;
+pub mod pricing;
 pub mod prior;
 pub mod promote;
 pub mod proto;

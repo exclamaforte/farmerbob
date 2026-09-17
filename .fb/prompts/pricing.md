@@ -97,17 +97,42 @@ pub struct Priced {
    A price of exactly `0.0` is **not** negative and is priced normally, giving `observed(0.0)`.
 
 7. A `Metered` route where either price is `NaN` or infinite yields
-   `Measurement::untrusted("<reason>")`. No non-finite value may ever reach `observed`.
+   `Measurement::untrusted("<reason>")`.
+
+   **This rule is about the INPUT PRICES. Separately, if the COMPUTED cost is not finite --
+   which `u64::MAX` tokens against a large price can produce by overflow -- the result is also
+   `Measurement::untrusted("<reason>")`.** No non-finite value may ever reach `observed`, and
+   an earlier version of this spec stated that invariant while scoping the only rule that
+   enforced it to the inputs. Two critics flagged the gap; one wrote that the code "doesn't
+   honor the literal sentence it wrote", which was true of the spec before it was true of any
+   implementation.
+
+8. Every reason string passed to `instrument_failed`, `nothing_to_measure` and `untrusted`
+   **contains `route.id` verbatim.** The `missing` count in `Priced` is otherwise untraceable:
+   a caller knows how many runs were unpriced and has no way to learn which, short of
+   replaying `price` per run. A critic put it exactly: the id "was in hand at construction
+   time; embedding it in the reason string costs nothing and is what would make the cost axis
+   auditable -- this module's stated purpose".
 
 ## `canonical_model` and `same_capability` — pinned
 
 `canonical_model` reduces a route id to the weights it reaches, so a free route and a paid
 route to the same model compare equal:
 
+- **Lowercase the whole id FIRST.** Every step below then matches against the lowercased
+  string, so the markers are effectively case-insensitive.
 - Strip a trailing `":free"` if present. That suffix and no other.
 - Strip a leading `"or-"` or `"openrouter/"` if present, whichever matches first, and only one.
-- Lowercase the result.
 - Everything else is preserved exactly, including all remaining `/` separators.
+
+The order matters and an earlier version of this spec had it backwards -- strip, strip,
+lowercase -- which made the markers case-SENSITIVE. All four implementations followed that
+order exactly, so it was a defect in the specification and not in any of them, and the
+cross-examination matrix was in full consensus precisely because every arm shared it. Two
+critics found it independently: `OpenRouter/Qwen/Qwen3.8-Flash:free` canonicalised to
+`openrouter/qwen/qwen3.8-flash` while the paid route canonicalised to `qwen/qwen3.8-flash`,
+so `same_capability` silently failed to deduplicate -- which is the exact bug this module
+exists to prevent.
 
 Worked examples, which are the contract:
 
@@ -116,6 +141,8 @@ Worked examples, which are the contract:
 | `openrouter/qwen/qwen3.8-flash:free`        | `qwen/qwen3.8-flash`      |
 | `or-qwen38-flash`                           | `qwen38-flash`            |
 | `qwen/QWEN3.8-Flash`                        | `qwen/qwen3.8-flash`      |
+| `OpenRouter/Qwen/Qwen3.8-Flash:free`        | `qwen/qwen3.8-flash`      |
+| `OR-Qwen38-Flash`                           | `qwen38-flash`            |
 | `":free"`                                   | `""` (empty, not an error)|
 | `""`                                        | `""`                      |
 
