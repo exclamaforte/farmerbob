@@ -16,7 +16,7 @@
 //! overrides plus hardcoded paths make review units untestable against fake trees."
 //!   (bead farmerbob-jd2.14)
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Resolve an override against a default. Pure, so it can be tested without mutating the
 /// process environment -- the first version of this module tested the wrappers by setting
@@ -67,6 +67,7 @@ pub fn repo() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     /// The whole point: a differential can be redirected away from the real artefacts.
     #[test]

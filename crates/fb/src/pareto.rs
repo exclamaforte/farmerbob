@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use farmerbob_core::cost::{aggregate, frontier, totals, ArmCost, RunCost};
 use farmerbob_core::pricing::canonical_model;

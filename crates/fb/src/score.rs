@@ -453,13 +453,6 @@ fn declared_target(bead: &str) -> (Option<String>, bool) {
 }
 
 pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
-    let home = match std::env::var("HOME") {
-        Ok(h) => PathBuf::from(h),
-        Err(_) => {
-            eprintln!("error: HOME is not set");
-            return 2;
-        }
-    };
     let wt_root = crate::paths::worktrees();
     let log_root = crate::paths::logs();
     let out = log_root.join(format!("{bead}.score.json"));
