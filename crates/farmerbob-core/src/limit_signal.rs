@@ -14,11 +14,31 @@
 //! Everything here is pure logic: no I/O, no network, no clock reads. The
 //! current time enters only as the `now` parameter, used to resolve *relative*
 //! reset statements ("try again in 3600 seconds") into absolute instants.
+//!
+//! Matching happens against [`normalise`]`ed` text, currently ANSI-stripped.
+//! Launchers colourise, and a reset sequence between an anchored pattern's
+//! prefix and its message makes the anchored form the one that misses (found
+//! 2026-09-17, when thirteen OpenRouter refusals were each recorded as the
+//! model producing nothing). The recognised patterns, exclusions and reset
+//! formats remain known subsets, never closed sets: `Normal` claims only that
+//! no known marker was present, not that a run was genuine.
 
 /// What the harness concluded about one finished run, from its exit status and output.
+///
+/// The three conclusions are fixed, but the evidence they are drawn from is not:
+/// the formats a provider uses to refuse service are a **known subset, not a
+/// closed set**, and each new one has been discovered the same way — by finding
+/// runs that had been scored as arm failures for some unknown period. The rules
+/// in [`SignalRules`] are data precisely so extending that subset never requires
+/// touching this type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Classification {
-    /// Ran to completion. Not a limit.
+    /// No refusal marker was recognised in the output.
+    ///
+    /// This is deliberately weaker than "confirmed to be a genuine run". It
+    /// means only that none of the markers this rule set knows were present;
+    /// a refusal phrased in a form no pattern catches also lands here. That
+    /// gap is how the 2026-09-17 incident recorded refused arms as NO-OPs.
     Normal,
     /// Provider refused on quota grounds. Carries the reset instant when one was stated,
     /// as a unix timestamp in seconds.
@@ -29,29 +49,41 @@ pub enum Classification {
         /// fallback window then; a guessed instant must never masquerade as a
         /// measured one.
         reset_at: Option<u64>,
-        /// The output text that matched, for a human deciding whether the
-        /// classifier is right.
+        /// The matched text from the ANSI-normalised output (see [`normalise`]),
+        /// for a human deciding whether the classifier is right. Never carries
+        /// escape codes: a record that does cannot be compared against a
+        /// pattern by anyone reading it later.
         evidence: String,
     },
     /// Something matched a limit-shaped pattern but the rule set is not confident.
     /// The caller must not park a bucket on this alone.
     Ambiguous {
-        /// The output text that matched, for a human deciding whether the
-        /// classifier is right.
+        /// The matched text from the ANSI-normalised output (see [`normalise`]),
+        /// for a human deciding whether the classifier is right. Never carries
+        /// escape codes.
         evidence: String,
     },
 }
 
 /// One provider's recognition rules. Data, not code: a new adapter is a new value,
 /// never a new match arm.
+///
+/// The pattern lists below are **known subsets, not closed sets**: the ways a
+/// provider can say no are open-ended and grow. Extend a list only when a
+/// mis-scored run proves the gap — never speculatively, since a speculatively
+/// broad pattern is how an agent *discussing* quotas gets misread as one being
+/// refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalRules {
     /// Exit codes that mean quota, e.g. `vec![429]`.
     pub limit_exit_codes: Vec<i32>,
-    /// Case-insensitive substrings of stderr/stdout that mean quota.
+    /// Case-insensitive substrings of stderr/stdout that mean quota. A known
+    /// subset of refusal formats, not a closed set. Matched against
+    /// [`normalise`]d output, so anchored patterns survive launcher colour.
     pub limit_patterns: Vec<String>,
     /// Substrings that look like a limit but are NOT one, checked first.
-    /// e.g. "rate limit" inside a model's own explanatory prose.
+    /// e.g. "rate limit" inside a model's own explanatory prose. Also a known
+    /// subset; also matched against [`normalise`]d output.
     pub exclusions: Vec<String>,
     /// Fallback window when a limit is detected but no reset time is stated.
     ///
@@ -95,60 +127,128 @@ impl SignalRules {
 /// `now` is the current unix time in seconds, used only to resolve *relative* reset
 /// statements ("try again in 3600 seconds") into absolute instants.
 ///
+/// Patterns and exclusions are matched against `normalise(output)`, not
+/// the raw bytes: a launcher that colourises its refusal puts escape sequences
+/// between an anchored pattern's prefix and its message, and matching raw bytes
+/// silently defeats anchoring (the 2026-09-17 incident). The [`evidence`]
+/// carried by [`Classification::Limited`] and [`Classification::Ambiguous`] is a
+/// slice of that same normalised text, so records never contain escape codes.
+///
 /// The decision order is: exclusions first (any hit means [`Classification::Normal`],
 /// even when a limit pattern also matched), then limit patterns (a hit with exit
 /// code `0` is [`Classification::Ambiguous`], otherwise [`Classification::Limited`]),
 /// then limit exit codes (a hit alone suffices for [`Classification::Limited`]).
 /// Anything else is [`Classification::Normal`]: ordinary failure is the common
 /// case and must not pollute the quota path.
+///
+/// [`evidence`]: Classification::Limited::evidence
 pub fn classify(rules: &SignalRules, exit_code: i32, output: &str, now: u64) -> Classification {
+    let text = normalise(output);
     if rules
         .exclusions
         .iter()
-        .any(|exclusion| find_insensitive(output, exclusion).is_some())
+        .any(|exclusion| find_insensitive(&text, exclusion).is_some())
     {
         return Classification::Normal;
     }
-    if let Some(evidence) = first_match_text(output, &rules.limit_patterns) {
+    if let Some(evidence) = first_match_text(&text, &rules.limit_patterns) {
         if exit_code == 0 {
             return Classification::Ambiguous { evidence };
         }
         return Classification::Limited {
-            reset_at: parse_reset(output, now),
+            reset_at: parse_reset(&text, now),
             evidence,
         };
     }
     if rules.limit_exit_codes.contains(&exit_code) {
-        let evidence = if output.is_empty() {
+        // The fallback keys on the normalised text: an output of escape codes
+        // alone leaves a human nothing to read, exactly like no output at all.
+        let reset_at = parse_reset(&text, now);
+        let evidence = if text.is_empty() {
             format!("exit code {exit_code}")
         } else {
-            output.to_string()
+            text
         };
-        return Classification::Limited {
-            reset_at: parse_reset(output, now),
-            evidence,
-        };
+        return Classification::Limited { reset_at, evidence };
     }
     Classification::Normal
 }
 
+/// Strip ANSI escape sequences from `s`, returning owned text.
+///
+/// Removes CSI sequences (`ESC [` … final byte in `0x40..=0x7E`) and two-character
+/// `ESC <byte>` sequences. Text containing no escapes is returned unchanged.
+///
+/// A truncated escape at end-of-input (`"abc\x1b"`, `"abc\x1b["`) is dropped
+/// without panicking or looping: logs get cut off mid-sequence.
+///
+/// ```
+/// use farmerbob_core::limit_signal::strip_ansi;
+/// assert_eq!(strip_ansi("\u{1b}[91m\u{1b}[1mError: \u{1b}[0mRate limit exceeded"), "Error: Rate limit exceeded");
+/// assert_eq!(strip_ansi("no escapes here"), "no escapes here");
+/// ```
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        // CSI: consume through the final byte (0x40..=0x7E). Any other byte
+        // after ESC begins a two-character sequence; drop that byte too.
+        // Either scan ends harmlessly at end-of-input.
+        if let Some('[') = chars.next() {
+            for c in chars.by_ref() {
+                if ('\u{40}'..='\u{7e}').contains(&c) {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The text [`classify`] actually matches against, exposed so a caller can see what was searched.
+///
+/// Currently: ANSI-stripped. Casing is NOT folded here — matching is already
+/// case-insensitive and folding twice would be a second place to get it wrong.
+///
+/// ```
+/// use farmerbob_core::limit_signal::normalise;
+/// assert_eq!(normalise("\u{1b}[0mRate limit exceeded"), "Rate limit exceeded");
+/// assert_eq!(normalise("MiXeD case"), "MiXeD case");
+/// ```
+pub fn normalise(s: &str) -> String {
+    strip_ansi(s)
+}
+
 /// Extract an absolute reset instant from free text, if one is stated.
 ///
-/// Recognises, at minimum:
+/// Recognises, at minimum (a **known subset, not a closed set** — more formats
+/// exist and more will appear):
 ///   - `retry-after: 3600`              (seconds from `now`)
 ///   - `"reset_at": 1789000000`         (absolute unix seconds)
 ///   - `resets at 2026-09-17T00:00:00Z` (RFC 3339)
 ///
 /// Returns [`None`] rather than guessing on unparseable input. A *relative*
 /// statement never resolves to an instant in the past relative to `now`.
+///
+/// The text is matched after [`normalise`] strips escape sequences. The reset
+/// statement travels in the same launcher stream as the refusal line, so it had
+/// exactly the same colour exposure: the OpenRouter launcher wraps its whole
+/// error line, reset statement included, and reading raw bytes would miss a
+/// `retry-after:` split by a reset sequence just as anchoring was missed.
 pub fn parse_reset(output: &str, now: u64) -> Option<u64> {
-    parse_reset_at_field(output)
-        .or_else(|| parse_resets_at_timestamp(output))
-        .or_else(|| parse_relative_seconds(output, now))
+    let text = normalise(output);
+    parse_reset_at_field(&text)
+        .or_else(|| parse_resets_at_timestamp(&text))
+        .or_else(|| parse_relative_seconds(&text, now))
 }
 
-// Returns the exact output slice matched by the first matching pattern,
-// preserving the output's original casing for human review.
+// Returns the exact text slice matched by the first matching pattern, taken
+// from the (normalised) text passed in, preserving its original casing for
+// human review.
 fn first_match_text(output: &str, patterns: &[String]) -> Option<String> {
     patterns.iter().find_map(|pattern| {
         let (start, end) = find_insensitive(output, pattern)?;
@@ -255,7 +355,9 @@ fn leading_digits(text: &str) -> &str {
 
 // Relative statements ("retry-after: 3600", "try again in 3600 seconds",
 // "reset in 30") resolved against `now`. Saturating addition keeps the result
-// out of the past even for `0` or saturating inputs.
+// out of the past even for `0` or saturating inputs. The keyword list is a
+// known subset of the phrasings that introduce a relative reset, not a closed
+// set; see `parse_reset`.
 fn parse_relative_seconds(output: &str, now: u64) -> Option<u64> {
     const KEYWORDS: &[&str] = &[
         "retry-after",
@@ -296,7 +398,8 @@ fn parse_relative_seconds(output: &str, now: u64) -> Option<u64> {
 }
 
 // Absolute unix seconds ("reset_at": 1789000000). Returned as stated, even when
-// in the past: only relative statements are clamped to the present.
+// in the past: only relative statements are clamped to the present. Keyword
+// list is a known subset, not a closed set.
 fn parse_reset_at_field(output: &str) -> Option<u64> {
     const KEYWORDS: &[&str] = &["reset_at", "reset-at", "resets_at", "resetat"];
     for keyword in KEYWORDS {
@@ -334,7 +437,8 @@ fn datetime_to_unix(text: &str) -> Option<u64> {
     u64::try_from(seconds).ok()
 }
 
-// Prefixed RFC 3339 statements ("resets at 2026-09-17T00:00:00Z").
+// Prefixed RFC 3339 statements ("resets at 2026-09-17T00:00:00Z"). Keyword
+// list is a known subset, not a closed set.
 fn parse_resets_at_timestamp(output: &str) -> Option<u64> {
     const KEYWORDS: &[&str] = &["resets at", "reset at"];
     for keyword in KEYWORDS {
@@ -750,6 +854,273 @@ mod conformance_limit_detect {
 
 
 
+// Clause tests for colour and casing survival, derived from the 2026-09-17
+// incident: thirteen OpenRouter refusals, each recorded as the model producing
+// nothing, because the launcher's reset sequence sat between the `Error: `
+// prefix and the message and the anchored pattern never matched raw bytes.
+#[cfg(test)]
+mod colour_survival {
+    use super::*;
+
+    // The verbatim bytes from the incident log. Note there is NO contiguous
+    // `Error: Rate limit exceeded` in here: `\x1b[0m` sits between them.
+    const INCIDENT_LINE: &str = "\u{1b}[91m\u{1b}[1mError: \u{1b}[0mRate limit exceeded: free-models-per-day-high-balance.";
+
+    // Clause 1: strip_ansi removes exactly the incident's escapes.
+    #[test]
+    fn strip_ansi_removes_the_incident_escapes() {
+        assert_eq!(
+            strip_ansi("\u{1b}[91m\u{1b}[1mError: \u{1b}[0mRate limit exceeded"),
+            "Error: Rate limit exceeded"
+        );
+    }
+
+    // Clause 2: escape-free text is returned unchanged, byte for byte.
+    #[test]
+    fn strip_ansi_is_identity_without_escapes() {
+        for s in [
+            "",
+            "plain ascii text",
+            "Error: Rate limit exceeded: free-models-per-day-high-balance.",
+            "unicode héllo — ✓, tabs\tnewlines\nand\rcarriage returns",
+            "brackets and codes that only LOOK like escapes: [91m [0m",
+        ] {
+            assert_eq!(strip_ansi(s).as_bytes(), s.as_bytes());
+            assert_eq!(strip_ansi(s), s);
+        }
+    }
+
+    #[test]
+    fn strip_ansi_removes_csi_sequences_with_parameters() {
+        assert_eq!(strip_ansi("\u{1b}[38;5;196mred\u{1b}[49m\u{1b}[0m"), "red");
+        assert_eq!(strip_ansi("a\u{1b}[1mb\u{1b}[22m c"), "ab c");
+    }
+
+    #[test]
+    fn strip_ansi_removes_two_character_escapes() {
+        assert_eq!(strip_ansi("\u{1b}Mline one"), "line one");
+        assert_eq!(strip_ansi("before\u{1b}cafter"), "beforeafter");
+    }
+
+    // Boundary: escape-only input strips to nothing.
+    #[test]
+    fn strip_ansi_escape_only_input_is_empty() {
+        assert_eq!(strip_ansi("\u{1b}[0m"), "");
+        assert_eq!(strip_ansi("\u{1b}M"), "");
+    }
+
+    // Boundary: a truncated escape at end-of-input must neither panic nor loop.
+    #[test]
+    fn strip_ansi_truncated_escape_at_end_of_input() {
+        assert_eq!(strip_ansi("abc\u{1b}"), "abc");
+        assert_eq!(strip_ansi("abc\u{1b}["), "abc");
+        assert_eq!(strip_ansi("abc\u{1b}[91"), "abc");
+        assert_eq!(strip_ansi("\u{1b}"), "");
+        assert_eq!(strip_ansi("\u{1b}["), "");
+    }
+
+    // The pinned definition of `normalise`: ANSI-stripped, casing NOT folded.
+    #[test]
+    fn normalise_strips_escapes_but_not_case() {
+        assert_eq!(
+            normalise("\u{1b}[91m\u{1b}[1mError: \u{1b}[0mRate limit exceeded"),
+            "Error: Rate limit exceeded"
+        );
+        assert_eq!(normalise("MiXeD Case"), "MiXeD Case");
+        assert_eq!(normalise("no escapes"), "no escapes");
+    }
+
+    // Clause 3: THE regression. Against these bytes the anchored pattern read
+    // as Normal before the fix — colour broke the byte contiguity of
+    // `Error: Rate limit exceeded` that anchoring depends on.
+    #[test]
+    fn anchored_pattern_survives_colourised_prefix() {
+        let rules = SignalRules::new(60).with_pattern("error: rate limit exceeded");
+        match classify(&rules, 1, INCIDENT_LINE, 1_000) {
+            Classification::Limited { reset_at, evidence } => {
+                assert_eq!(evidence, "Error: Rate limit exceeded");
+                assert_eq!(reset_at, None);
+            }
+            other => panic!("colourised anchored refusal must be Limited, got {other:?}"),
+        }
+    }
+
+    // Clause 4: the fix must not trade the anchored form for the unanchored
+    // one — both shapes must fire against the same bytes.
+    #[test]
+    fn unanchored_pattern_still_matches_colourised_text() {
+        let rules = SignalRules::new(60).with_pattern("rate limit exceeded");
+        match classify(&rules, 1, INCIDENT_LINE, 1_000) {
+            Classification::Limited { .. } => {}
+            other => panic!("colourised unanchored refusal must be Limited, got {other:?}"),
+        }
+    }
+
+    // Colour can land anywhere, not only at the prefix: an escape INSIDE the
+    // phrase a pattern anchors on must not break the match either.
+    #[test]
+    fn escape_inside_the_phrase_does_not_break_the_match() {
+        let rules = SignalRules::new(60).with_pattern("rate limit exceeded");
+        match classify(&rules, 1, "rate \u{1b}[0mlimit exceeded now", 1_000) {
+            Classification::Limited { evidence, .. } => {
+                assert_eq!(evidence, "rate limit exceeded");
+            }
+            other => panic!("expected Limited, got {other:?}"),
+        }
+    }
+
+    // Clause 5: exclusions are matched against normalised text too. The reset
+    // sequence here splits the exclusion phrase itself, so only normalised
+    // matching can see it.
+    #[test]
+    fn exclusion_fires_on_colourised_text() {
+        let rules = SignalRules::new(60)
+            .with_pattern("rate limit")
+            .with_exclusion("as an example of rate limit");
+        let colourised = "\u{1b}[1mas an example \u{1b}[0mof rate limit output";
+        assert_eq!(classify(&rules, 1, colourised, 1_000), Classification::Normal);
+    }
+
+    // Clause 6: parse_reset reads normalised text — the reset statement
+    // travels in the same colourised launcher stream as the refusal line.
+    #[test]
+    fn parse_reset_finds_a_reset_in_colourised_text() {
+        let colourised = "\u{1b}[91mError: \u{1b}[0mRate limit exceeded; retry-after: 3600";
+        assert_eq!(parse_reset(colourised, 1_000), Some(4_600));
+        let split_mid_phrase = "resets \u{1b}[0mat 2026-09-17T00:00:00Z";
+        assert_eq!(parse_reset(split_mid_phrase, 1_000), Some(1_789_603_200));
+    }
+
+    #[test]
+    fn classify_recovers_the_reset_from_colourised_text() {
+        let rules = SignalRules::new(60).with_pattern("rate limit exceeded");
+        let colourised = "\u{1b}[91mError: \u{1b}[0mRate limit exceeded; retry-after: 3600";
+        match classify(&rules, 1, colourised, 1_000) {
+            Classification::Limited { reset_at, .. } => assert_eq!(reset_at, Some(4_600)),
+            other => panic!("expected Limited, got {other:?}"),
+        }
+    }
+
+    // Clause 7: evidence on a Limited from colourised input contains no \x1b —
+    // a record that still carries escape codes cannot be compared against a
+    // pattern by anyone reading it later. The same holds on every path that
+    // fills evidence.
+    #[test]
+    fn limited_evidence_is_normalised_not_raw() {
+        let rules = SignalRules::new(60).with_pattern("error: rate limit exceeded");
+        match classify(&rules, 1, INCIDENT_LINE, 1_000) {
+            Classification::Limited { evidence, .. } => {
+                assert!(!evidence.contains('\u{1b}'), "raw evidence leaked: {evidence:?}");
+                assert_eq!(evidence, "Error: Rate limit exceeded");
+            }
+            other => panic!("expected Limited, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ambiguous_evidence_is_normalised_not_raw() {
+        let rules = SignalRules::new(60).with_pattern("rate limit exceeded");
+        match classify(&rules, 0, INCIDENT_LINE, 1_000) {
+            Classification::Ambiguous { evidence } => {
+                assert!(!evidence.contains('\u{1b}'), "raw evidence leaked: {evidence:?}");
+                assert_eq!(evidence, "Rate limit exceeded");
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exit_code_evidence_is_normalised_not_raw() {
+        let rules = SignalRules::new(60).with_exit_code(429);
+        match classify(&rules, 429, "\u{1b}[91mError\u{1b}[0m: spend cap reached", 1_000) {
+            Classification::Limited { evidence, .. } => {
+                assert!(!evidence.contains('\u{1b}'), "raw evidence leaked: {evidence:?}");
+                assert_eq!(evidence, "Error: spend cap reached");
+            }
+            other => panic!("expected Limited, got {other:?}"),
+        }
+    }
+
+    // Boundary: empty output with a registered limit exit code keeps the
+    // exit-code evidence and stays Limited.
+    #[test]
+    fn empty_output_with_limit_exit_code_keeps_exit_code_evidence() {
+        let rules = SignalRules::new(60).with_exit_code(1);
+        match classify(&rules, 1, "", 1_000) {
+            Classification::Limited { evidence, reset_at } => {
+                assert_eq!(evidence, "exit code 1");
+                assert_eq!(reset_at, None);
+            }
+            other => panic!("expected Limited, got {other:?}"),
+        }
+    }
+
+    // Boundary: zero patterns and zero exit codes must classify everything
+    // Normal — never Limited, never a panic — whatever the input.
+    #[test]
+    fn zero_rules_classify_normal_and_never_panic() {
+        let rules = SignalRules::new(60);
+        let cases: [(i32, &str); 6] = [
+            (1, ""),
+            (1, INCIDENT_LINE),
+            (1, "rate limit exceeded, quota gone, 429"),
+            (0, "normal completion"),
+            (429, "\u{1b}[0m"),
+            (-1, "\u{1b}"),
+        ];
+        for (code, out) in cases {
+            assert_eq!(
+                classify(&rules, code, out, 1_000),
+                Classification::Normal,
+                "empty rules must be inert for exit {code}, output {out:?}"
+            );
+        }
+    }
+
+    // Pins first_match_text's existing choice, so it cannot change by
+    // accident: patterns are tried in LIST order first; only then does
+    // leftmost position matter, and only within one pattern.
+    #[test]
+    fn several_patterns_match_in_list_order_not_text_position() {
+        let rules = SignalRules::new(60)
+            .with_pattern("quota exceeded")
+            .with_pattern("rate limit");
+        match classify(&rules, 1, "rate limit first, then quota exceeded", 1_000) {
+            Classification::Limited { evidence, .. } => {
+                assert_eq!(evidence, "quota exceeded");
+            }
+            other => panic!("expected Limited, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_pattern_matches_its_leftmost_occurrence() {
+        let rules = SignalRules::new(60).with_pattern("limit");
+        match classify(&rules, 1, "rate limit; another limit here", 1_000) {
+            Classification::Limited { evidence, .. } => {
+                assert_eq!(evidence, "limit");
+            }
+            other => panic!("expected Limited, got {other:?}"),
+        }
+    }
+
+    // The pattern list order pin holds under colour too, and the evidence for
+    // the list-first pattern is read from the normalised text.
+    #[test]
+    fn list_order_pin_survives_colour() {
+        let rules = SignalRules::new(60)
+            .with_pattern("quota exceeded")
+            .with_pattern("error: rate limit");
+        let both_present =
+            INCIDENT_LINE.replace("Rate limit", "Rate limit (quota exceeded)");
+        match classify(&rules, 1, &both_present, 1_000) {
+            Classification::Limited { evidence, .. } => {
+                assert_eq!(evidence, "quota exceeded");
+            }
+            other => panic!("expected Limited, got {other:?}"),
+        }
+    }
+}
 // ESCALATED: 2 confirmed finding(s) by critic or-muse-spark, found on glm-53-flash.
 // Promoted from an executed proof that passed the reference veto. Provenance is
 // recorded so a bad test can be traced and retired.  (bead farmerbob-mqr)

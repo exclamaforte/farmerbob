@@ -1,0 +1,58 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. Four arms; one never launched.
+
+  codex-luna       PASS  +2780 lines  49 tests   SCOPE: 51 departures, 53 files
+  glm-53-flash     PASS   +396 lines  63 tests   scope clean
+  ifm-k2-horizon   PASS   +219 lines  56 tests   scope clean
+  claude-sonnet    rc=127 in 0s -- fb-dispatch has no launcher branch for it; not the arm
+
+CODEX-LUNA IS OUT ON SCOPE, and the way it nearly escaped notice is the finding. The spec says
+"Do not change any other file". It changed 53, +2780/-1075, rewriting much of farmerbob-core and
+crates/fb. `fb score` MEASURED this correctly -- scope_clean: false, scope_departures: 51 -- and
+the verdict is still PASS, because scope is evidence for the adjudicator rather than a gate. The
+objective TABLE has no scope column at all, so a metric-led reading sees only that the arm with
+by far the most lines passed. The number that disqualifies it is recorded and not displayed.
+
+THE CLAUSES DID NOT DISCRIMINATE. I ran the spec's ten falsifiable clauses as an executable probe
+against all three implementations. 10/10 for every arm, including codex-luna's own judgement that
+strip_ansi must be idempotent. Then the boundaries: zero patterns, truncated ESC at end-of-input,
+escape-only input, parse_reset on colourised text, and normalise NOT folding case -- identical
+results, three times over.
+
+That is consensus from a shared cause: the spec enumerated the clauses, so every arm implemented
+exactly them. A consensus matrix is as informative as no matrix, and I did not treat agreement as
+corroboration.
+
+CROSS-EXAMINED BY HAND, because fb-crossx FAILED on this file. It fails for a reason worth
+recording: limit_signal.rs already contains conformance_limit_detect and
+escalated_limit_detect_glm_53_flash from earlier merges, so grafting a candidate's suite
+redeclares them and the whole matrix reads nocompile. Renaming EVERY module in the grafted block
+rather than only `mod tests` fixed it in one line, which is a fix fb-crossx should carry.
+Result: each arm's suite against the other's implementation, 119 passed, 0 failed, both
+directions. No behavioural disagreement exists between the finalists.
+
+SO THE DECISION RESTS ON WHAT ACTUALLY DIFFERS, and it is thin. Both are correct. glm-53-flash
+pins evidence-normalisation on all three carriers -- Limited, Ambiguous, and the exit-code
+evidence path -- where ifm-k2-horizon pins it only on Limited; the spec's clause 7 asked for
+Limited and glm went past it to the two the spec did not name. It also pins
+`escape_inside_the_phrase_does_not_break_the_match`, which is the exact shape of the incident:
+not an escape before the phrase, but one INSIDE it, which is what made the anchored pattern miss.
+21 new tests to 14, over the same boundaries.
+
+A first name-level diff of the two suites suggested ifm had pinned ten boundaries glm had not.
+That was wrong -- the names differ and the boundaries are the same
+(`classify_exclusion_fires_on_colourised_text` against `exclusion_fires_on_colourised_text`).
+Comparing test NAMES is not comparing coverage, and the conclusion only survived because I
+checked it.
+
+The single critique, codex-luna on glm-53-flash: NO MATERIAL DEFECTS, with a judgement that
+classify normalises and then calls the public parse_reset which normalises again, making the
+behaviour depend on strip_ansi being idempotent. Real observation, and I verified idempotency
+holds in all three implementations including on adjacent ESC bytes. It changes nothing about the
+ranking but it is the kind of thing only a reader finds. ifm-k2-horizon was never critiqued at
+all -- the pipeline produced one critique for a field of three.
+
+Verified after merge on the case that started this: core's classify now returns Limited for BOTH
+"rate limit exceeded" and "error: rate limit exceeded" against the verbatim colourised bytes.
+Before, the anchored form -- the safer form, the one that stops an agent discussing quotas from
+reading as one being refused -- returned Normal. 1115 workspace tests, clippy 0 on the crate.

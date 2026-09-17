@@ -377,14 +377,6 @@ fn head_starts_with_any(text: &str, n: usize, patterns: &[&str]) -> bool {
     })
 }
 
-fn first_lines(text: &str, n: usize) -> String {
-    text.lines()
-        .take(n)
-        .map(strip_ansi)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// Remove ANSI escape sequences from one line.
 ///
 /// Every pattern in LIMIT_PATTERNS and INFRA_PATTERNS is anchored to a launcher's `error: `
