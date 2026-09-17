@@ -34,8 +34,9 @@ enum Command {
         #[arg(long)] lines_added: Option<u32>,
         #[arg(long)] target_present: Option<bool>,
     },
-    /// Assemble all evidence for a task -- objective AND the critiques -- and decide.
-    Adjudicate {
+    /// Assemble all evidence for a task -- objective metrics AND the critiques -- for the
+    /// adjudicator to weigh. Does not pick a winner.
+    Brief {
         task: String,
         #[arg(long, default_value_t = 0.001)] epsilon: f64,
         /// Decide even when no critique exists. Off by default, deliberately.
@@ -279,7 +280,7 @@ fn main() {
             }
             if v.is_pass() { exit::OK } else { exit::ERROR }
         }
-        Some(Command::Adjudicate { task, epsilon, allow_missing_critique }) =>
+        Some(Command::Brief { task, epsilon, allow_missing_critique }) =>
             adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
         Some(Command::Doctor) => doctor::run(cli.json),
         Some(Command::Agents { all }) => agents(all, cli.json),

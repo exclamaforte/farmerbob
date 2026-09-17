@@ -1,4 +1,9 @@
-//! `fb adjudicate <task>` — assemble every piece of evidence for one task and decide.
+//! `fb brief <task>` — assemble every piece of evidence for one task, for the ADJUDICATOR.
+//!
+//! This does NOT pick a winner. The orchestrator does, and the whole point of the design is
+//! that it does so with both tiers in front of it: objective metrics the harness computed,
+//! and the critiques the models wrote about each other. An automated verdict is either
+//! redundant with the adjudicator or a replacement for it, and neither is wanted.
 //!
 //! Written because adjudication kept being done by hand from whatever was convenient, and
 //! the subjective tier kept being the part that got skipped. Six consecutive tasks were
@@ -172,19 +177,20 @@ pub fn run(task: &str, epsilon: f64, allow_missing_critique: bool) -> i32 {
         println!("\n== not measured: {missing:?}");
     }
 
+    // The rubric ordering, offered as ONE input among several and labelled as such. It knows
+    // nothing about what the critics said, which is the half that cannot be computed.
     println!();
     match adjudicate(&cands, epsilon) {
         Verdict::Winner { arm, on, margin } => {
-            println!("WINNER {arm} on {on:?} (margin {margin:.4})");
-            0
+            println!("metrics alone would favour {arm} on {on:?} (margin {margin:.4})");
         }
         Verdict::Undecided { tied, next } => {
-            println!("UNDECIDED among {tied:?}; would be broken by {next:?}");
-            3
+            println!("metrics alone do not separate {tied:?}; would need {next:?}");
         }
         Verdict::NoCandidate => {
-            println!("NO CANDIDATE cleared the gate");
-            1
+            println!("metrics alone: no candidate cleared the gate");
         }
     }
+    println!("\nThis is a brief, not a verdict. Weigh the critiques above against it.");
+    0
 }
