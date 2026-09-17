@@ -21,8 +21,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use farmerbob_core::pricing::canonical_model;
-use farmerbob_core::prior::{update, Posterior};
-use farmerbob_core::router::{eligibility, select, ArmInfo, ArmName, Weights};
+use farmerbob_core::prior::{Posterior, update};
+use farmerbob_core::router::{ArmInfo, ArmName, Weights, eligibility, select};
 
 /// Deterministic PRNG. The draws that pick a wave's field are reproducible from its seed, so
 /// a selection can be replayed and argued with, like every other measurement here.
@@ -70,7 +70,11 @@ impl Rng {
     fn beta(&mut self, a: f64, b: f64) -> f64 {
         let (x, y) = (self.gamma(a.max(1e-9)), self.gamma(b.max(1e-9)));
         let s = x + y;
-        if s.is_finite() && s > 0.0 { (x / s).clamp(0.0, 1.0) } else { 0.5 }
+        if s.is_finite() && s > 0.0 {
+            (x / s).clamp(0.0, 1.0)
+        } else {
+            0.5
+        }
     }
 }
 
@@ -95,7 +99,11 @@ fn registry(repo: &Path, needed_all: &[String]) -> Result<Vec<Registered>, Strin
 
     let mut out = Vec::new();
     for (name, v) in table {
-        let model = v.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
+        let model = v
+            .get("model")
+            .and_then(|m| m.as_str())
+            .unwrap_or("")
+            .to_string();
         let disabled_reason = match v.get("status").and_then(|s| s.as_str()) {
             Some("disabled") => Some(
                 v.get("disabled_reason")
@@ -130,12 +138,24 @@ fn registry(repo: &Path, needed_all: &[String]) -> Result<Vec<Registered>, Strin
                 name: ArmName(name.clone()),
                 // Replaced below from measured history; uniform until then, which is what
                 // makes an untried arm win sometimes.
-                posterior: Posterior { alpha: 1.0, beta: 1.0 },
-                price_in: v.get("price_in").and_then(toml::Value::as_float).unwrap_or(0.0),
+                posterior: Posterior {
+                    alpha: 1.0,
+                    beta: 1.0,
+                },
+                price_in: v
+                    .get("price_in")
+                    .and_then(toml::Value::as_float)
+                    .unwrap_or(0.0),
                 mean_latency_s: None,
                 capabilities,
-                parked_until: v.get("parked_until").and_then(toml::Value::as_integer).map(|i| i as u64),
-                redundant_with: v.get("redundant_with").and_then(|r| r.as_str()).map(str::to_string),
+                parked_until: v
+                    .get("parked_until")
+                    .and_then(toml::Value::as_integer)
+                    .map(|i| i as u64),
+                redundant_with: v
+                    .get("redundant_with")
+                    .and_then(|r| r.as_str())
+                    .map(str::to_string),
                 disabled_reason,
             },
         })
@@ -158,7 +178,9 @@ fn history(base: &Path) -> BTreeMap<String, (u32, u32, Option<f64>)> {
         if r.get("outcome").and_then(|o| o.as_str()) != Some("arm_result") {
             continue;
         }
-        let Some(arm) = r.get("arm").and_then(|a| a.as_str()) else { continue };
+        let Some(arm) = r.get("arm").and_then(|a| a.as_str()) else {
+            continue;
+        };
         let e = acc.entry(arm.to_string()).or_insert((0, 0, 0.0, 0));
         if r.get("verdict").and_then(|v| v.as_str()) == Some("PASS") {
             e.0 += 1;
@@ -171,9 +193,7 @@ fn history(base: &Path) -> BTreeMap<String, (u32, u32, Option<f64>)> {
         }
     }
     acc.into_iter()
-        .map(|(k, (s, f, secs, n))| {
-            (k, (s, f, (n > 0).then(|| secs / f64::from(n))))
-        })
+        .map(|(k, (s, f, secs, n))| (k, (s, f, (n > 0).then(|| secs / f64::from(n)))))
         .collect()
 }
 
@@ -229,7 +249,11 @@ pub fn run_cmd(n: usize, seed: Option<u64>, needed: &[String], json_only: bool) 
 
     let seed = seed.unwrap_or(now);
     let mut rng = Rng::new(seed);
-    let weights = Weights { task_value: 1.0, dollar_weight: 0.02, latency_weight: 0.00005 };
+    let weights = Weights {
+        task_value: 1.0,
+        dollar_weight: 0.02,
+        latency_weight: 0.00005,
+    };
 
     let mut pool: Vec<ArmInfo> = reg.iter().map(|r| r.info.clone()).collect();
     let mut chosen: Vec<(String, f64, f64)> = Vec::new();
@@ -261,29 +285,43 @@ pub fn run_cmd(n: usize, seed: Option<u64>, needed: &[String], json_only: bool) 
     }
 
     println!("seed {seed}  (selection is reproducible from it)\n");
-    println!("{:<22}{:>9}{:>8}{:>9}{:>8}  {}", "CHOSEN", "DRAWN p", "SCORE", "MEAN", "RUNS", "");
+    println!(
+        "{:<22}{:>9}{:>8}{:>9}{:>8}  {}",
+        "CHOSEN", "DRAWN p", "SCORE", "MEAN", "RUNS", ""
+    );
     for (arm, p, score) in &chosen {
         let post = reg
             .iter()
             .find(|r| r.info.name.as_str() == arm)
             .map(|r| r.info.posterior)
-            .unwrap_or(Posterior { alpha: 1.0, beta: 1.0 });
+            .unwrap_or(Posterior {
+                alpha: 1.0,
+                beta: 1.0,
+            });
         println!(
             "{arm:<22}{p:>9.3}{score:>8.3}{:>9.2}{:>8.0}",
             post.mean(),
             post.observations()
         );
     }
-    let unknown: Vec<&str> = reg.iter().filter(|r| r.capability_unknown)
-        .map(|r| r.info.name.as_str()).collect();
+    let unknown: Vec<&str> = reg
+        .iter()
+        .filter(|r| r.capability_unknown)
+        .map(|r| r.info.name.as_str())
+        .collect();
     if !unknown.is_empty() && !needed.is_empty() {
         println!(
             "\n{} of {} arms have no recorded capabilities, so the {:?} requirement could not",
-            unknown.len(), reg.len(), needed
+            unknown.len(),
+            reg.len(),
+            needed
         );
         println!("  be applied to them. That is a gap in sources.toml, not a fact about them.");
     }
-    println!("\n{:<22}{}", "EXCLUDED", "why  (a filter, never evidence -- no posterior moved)");
+    println!(
+        "\n{:<22}{}",
+        "EXCLUDED", "why  (a filter, never evidence -- no posterior moved)"
+    );
     for r in &reg {
         if let Some(reason) = eligibility(&r.info, needed, now, &healthy_free) {
             println!("{:<22}{reason:?}", r.info.name.as_str());
@@ -293,7 +331,14 @@ pub fn run_cmd(n: usize, seed: Option<u64>, needed: &[String], json_only: bool) 
         eprintln!("\nno eligible arm");
         return 3;
     }
-    println!("\ntsv: {}", chosen.iter().map(|(a, _, _)| a.as_str()).collect::<Vec<_>>().join(","));
+    println!(
+        "\ntsv: {}",
+        chosen
+            .iter()
+            .map(|(a, _, _)| a.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
     0
 }
 
@@ -308,10 +353,19 @@ mod tests {
 
     #[test]
     fn draws_are_reproducible_from_the_seed() {
-        let a: Vec<f64> = { let mut r = Rng::new(42); (0..8).map(|_| r.uniform()).collect() };
-        let b: Vec<f64> = { let mut r = Rng::new(42); (0..8).map(|_| r.uniform()).collect() };
+        let a: Vec<f64> = {
+            let mut r = Rng::new(42);
+            (0..8).map(|_| r.uniform()).collect()
+        };
+        let b: Vec<f64> = {
+            let mut r = Rng::new(42);
+            (0..8).map(|_| r.uniform()).collect()
+        };
         assert_eq!(a, b, "a selection must be replayable from its seed");
-        let c: Vec<f64> = { let mut r = Rng::new(43); (0..8).map(|_| r.uniform()).collect() };
+        let c: Vec<f64> = {
+            let mut r = Rng::new(43);
+            (0..8).map(|_| r.uniform()).collect()
+        };
         assert_ne!(a, c, "different seeds must explore differently");
     }
 
@@ -328,7 +382,13 @@ mod tests {
     #[test]
     fn beta_draws_are_finite_and_in_range_including_degenerate_shapes() {
         let mut r = Rng::new(11);
-        for (a, b) in [(1.0, 1.0), (0.001, 0.001), (500.0, 1.0), (1.0, 500.0), (0.0, 0.0)] {
+        for (a, b) in [
+            (1.0, 1.0),
+            (0.001, 0.001),
+            (500.0, 1.0),
+            (1.0, 500.0),
+            (0.0, 0.0),
+        ] {
             for _ in 0..500 {
                 let p = r.beta(a, b);
                 assert!(p.is_finite(), "Beta({a},{b}) produced a non-finite draw");
@@ -350,8 +410,14 @@ mod tests {
                 proven_wins += 1;
             }
         }
-        assert!(proven_wins > n * 6 / 10, "the proven arm should usually win: {proven_wins}/{n}");
-        assert!(proven_wins < n, "an unknown arm must sometimes win, or nothing is explored");
+        assert!(
+            proven_wins > n * 6 / 10,
+            "the proven arm should usually win: {proven_wins}/{n}"
+        );
+        assert!(
+            proven_wins < n,
+            "an unknown arm must sometimes win, or nothing is explored"
+        );
     }
 
     /// An unrecorded capability is UNKNOWN, and must not read as absent. Getting this
@@ -362,7 +428,10 @@ mod tests {
         let unknown_caps = needed.clone(); // what registry() gives an arm with no record
         let info = ArmInfo {
             name: ArmName("unrecorded".into()),
-            posterior: Posterior { alpha: 1.0, beta: 1.0 },
+            posterior: Posterior {
+                alpha: 1.0,
+                beta: 1.0,
+            },
             price_in: 0.0,
             mean_latency_s: None,
             capabilities: unknown_caps,

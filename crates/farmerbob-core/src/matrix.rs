@@ -143,7 +143,10 @@ pub fn shape(m: &Matrix) -> Shape {
         let (row, col) = (k / n, k % n);
         row == col || m.cells[k] != Cell::NoCompile
     });
-    if n >= 4 && fully_measured && let Some(camps) = camps(m) {
+    if n >= 4
+        && fully_measured
+        && let Some(camps) = camps(m)
+    {
         return Shape::SpecAmbiguous { camps };
     }
 
@@ -802,12 +805,7 @@ mod tests {
     fn rule1_all_pass_yields_consensus_with_every_arm() {
         let matrix = m(
             &["a", "b", "c", "d"],
-            &[
-                &[P, P, P, P],
-                &[P, P, P, P],
-                &[P, P, P, P],
-                &[P, P, P, P],
-            ],
+            &[&[P, P, P, P], &[P, P, P, P], &[P, P, P, P], &[P, P, P, P]],
         );
         assert_eq!(
             shape(&matrix),
@@ -828,12 +826,7 @@ mod tests {
         // and in full: every cell passed, so there is no status to select by.
         let matrix = m(
             &["delta", "alpha", "charlie", "bravo"],
-            &[
-                &[P, P, P, P],
-                &[P, P, P, P],
-                &[P, P, P, P],
-                &[P, P, P, P],
-            ],
+            &[&[P, P, P, P], &[P, P, P, P], &[P, P, P, P], &[P, P, P, P]],
         );
         assert_eq!(
             shape(&matrix),
@@ -853,12 +846,7 @@ mod tests {
         // Byte order places every uppercase letter before any lowercase one.
         let matrix = m(
             &["b", "A", "a", "B"],
-            &[
-                &[P, P, P, P],
-                &[P, P, P, P],
-                &[P, P, P, P],
-                &[P, P, P, P],
-            ],
+            &[&[P, P, P, P], &[P, P, P, P], &[P, P, P, P], &[P, P, P, P]],
         );
         assert_eq!(
             shape(&matrix),
@@ -894,12 +882,7 @@ mod tests {
         // cell passes: the broken-instrument check still outranks Consensus.
         let matrix = m(
             &["a", "b", "c", "d"],
-            &[
-                &[P, P, P, P],
-                &[P, P, P, P],
-                &[P, P, X, P],
-                &[P, P, P, P],
-            ],
+            &[&[P, P, P, P], &[P, P, P, P], &[P, P, X, P], &[P, P, P, P]],
         );
         assert_eq!(
             shape(&matrix),
@@ -913,10 +896,7 @@ mod tests {
 
     #[test]
     fn rule3_single_offdiagonal_fail_prevents_consensus() {
-        let matrix = m(
-            &["a", "b", "c"],
-            &[&[P, P, P], &[P, P, P], &[F, P, P]],
-        );
+        let matrix = m(&["a", "b", "c"], &[&[P, P, P], &[P, P, P], &[F, P, P]]);
         assert_eq!(shape(&matrix), Shape::Discriminating);
     }
 
@@ -953,10 +933,7 @@ mod tests {
     fn rule4_no_offdiagonal_fail_still_not_consensus_under_nocompile() {
         // Diagonal all-Pass, every other cell Pass *or* NoCompile, at least
         // one NoCompile: agreement was never measured on that pair.
-        let matrix = m(
-            &["a", "b", "c"],
-            &[&[P, P, X], &[P, P, P], &[P, P, P]],
-        );
+        let matrix = m(&["a", "b", "c"], &[&[P, P, X], &[P, P, P], &[P, P, P]]);
         let s = shape(&matrix);
         assert!(
             !matches!(s, Shape::Consensus { .. }),
@@ -1052,12 +1029,7 @@ mod tests {
         // not agree, they failed to be comparable.
         let matrix = m(
             &["a", "b", "c", "d"],
-            &[
-                &[P, X, X, X],
-                &[X, P, X, X],
-                &[X, X, P, X],
-                &[X, X, X, P],
-            ],
+            &[&[P, X, X, X], &[X, P, X, X], &[X, X, P, X], &[X, X, X, P]],
         );
         let s = shape(&matrix);
         assert!(

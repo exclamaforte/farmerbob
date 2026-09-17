@@ -98,19 +98,34 @@ impl LeaseManager {
     pub fn register(&mut self, resource: ResourceName, limit: usize) {
         self.resources.insert(
             resource,
-            ResourceState { limit, last_now: 0, holders: Vec::new(), queue: VecDeque::new() },
+            ResourceState {
+                limit,
+                last_now: 0,
+                holders: Vec::new(),
+                queue: VecDeque::new(),
+            },
         );
     }
 
     /// Requests a lease, returning `None` for an unregistered resource.
-    pub fn request(&mut self, resource: &ResourceName, holder: HolderId, now: u64) -> Option<RequestOutcome> {
+    pub fn request(
+        &mut self,
+        resource: &ResourceName,
+        holder: HolderId,
+        now: u64,
+    ) -> Option<RequestOutcome> {
         let state = self.resources.get_mut(resource)?;
         state.last_now = now;
         if let Some(entry) = state.holders.iter().find(|entry| entry.holder == holder) {
-            return Some(RequestOutcome::Granted { lease: entry.lease.id, token: entry.lease.token.clone() });
+            return Some(RequestOutcome::Granted {
+                lease: entry.lease.id,
+                token: entry.lease.token.clone(),
+            });
         }
         if let Some(position) = state.queue.iter().position(|queued| queued == &holder) {
-            return Some(RequestOutcome::Queued { position: position.saturating_add(1) });
+            return Some(RequestOutcome::Queued {
+                position: position.saturating_add(1),
+            });
         }
         if state.holders.len() < state.limit {
             let id = LeaseId::new();
@@ -118,24 +133,38 @@ impl LeaseManager {
             let lease = Lease {
                 id,
                 resource: resource.0.clone(),
-                class: if state.limit == 1 { LeaseClass::Exclusive } else { LeaseClass::Shared { vram_bytes: 0 } },
+                class: if state.limit == 1 {
+                    LeaseClass::Exclusive
+                } else {
+                    LeaseClass::Shared { vram_bytes: 0 }
+                },
                 holder: RunId::new(),
                 token: token.clone(),
                 acquired_at: lease_time(now),
                 ttl: Duration::zero(),
             };
-            state.holders.push(Entry { lease, holder, acquired_secs: now });
+            state.holders.push(Entry {
+                lease,
+                holder,
+                acquired_secs: now,
+            });
             Some(RequestOutcome::Granted { lease: id, token })
         } else {
             state.queue.push_back(holder);
-            Some(RequestOutcome::Queued { position: state.queue.len() })
+            Some(RequestOutcome::Queued {
+                position: state.queue.len(),
+            })
         }
     }
 
     /// Releases a lease by token and grants the next waiter, if any.
     pub fn release(&mut self, token: &str) -> Option<Grant> {
         for (resource, state) in &mut self.resources {
-            if let Some(index) = state.holders.iter().position(|entry| entry.lease.token == token) {
+            if let Some(index) = state
+                .holders
+                .iter()
+                .position(|entry| entry.lease.token == token)
+            {
                 state.holders.remove(index);
                 return Self::grant_next(resource, state, state.last_now);
             }
@@ -150,11 +179,17 @@ impl LeaseManager {
             let mut kept = Vec::with_capacity(state.holders.len());
             for entry in state.holders.drain(..) {
                 let held = now.saturating_sub(entry.acquired_secs);
-                if held > max_hold_secs { revoked.push(grant_for(resource, &entry)); } else { kept.push(entry); }
+                if held > max_hold_secs {
+                    revoked.push(grant_for(resource, &entry));
+                } else {
+                    kept.push(entry);
+                }
             }
             state.holders = kept;
             while state.holders.len() < state.limit {
-                if Self::grant_next(resource, state, now).is_none() { break; }
+                if Self::grant_next(resource, state, now).is_none() {
+                    break;
+                }
             }
         }
         revoked
@@ -167,11 +202,17 @@ impl LeaseManager {
             state.queue.retain(|queued| queued != holder);
             let mut kept = Vec::with_capacity(state.holders.len());
             for entry in state.holders.drain(..) {
-                if &entry.holder == holder { removed.push(grant_for(resource, &entry)); } else { kept.push(entry); }
+                if &entry.holder == holder {
+                    removed.push(grant_for(resource, &entry));
+                } else {
+                    kept.push(entry);
+                }
             }
             state.holders = kept;
             while state.holders.len() < state.limit {
-                if Self::grant_next(resource, state, state.last_now).is_none() { break; }
+                if Self::grant_next(resource, state, state.last_now).is_none() {
+                    break;
+                }
             }
         }
         removed
@@ -182,18 +223,51 @@ impl LeaseManager {
         let state = self.resources.get(resource)?;
         let (holder, held_secs) = if state.holders.len() == 1 {
             let entry = &state.holders[0];
-            (Some(entry.holder.clone()), now.saturating_sub(entry.acquired_secs))
-        } else { (None, 0) };
-        Some(LeaseStatus { resource: resource.clone(), holder, held_secs, queue_depth: state.queue.len(), waiting: state.queue.iter().cloned().collect() })
+            (
+                Some(entry.holder.clone()),
+                now.saturating_sub(entry.acquired_secs),
+            )
+        } else {
+            (None, 0)
+        };
+        Some(LeaseStatus {
+            resource: resource.clone(),
+            holder,
+            held_secs,
+            queue_depth: state.queue.len(),
+            waiting: state.queue.iter().cloned().collect(),
+        })
     }
 
-    fn grant_next(resource: &ResourceName, state: &mut ResourceState, acquired_secs: u64) -> Option<Grant> {
-        if state.holders.len() >= state.limit { return None; }
+    fn grant_next(
+        resource: &ResourceName,
+        state: &mut ResourceState,
+        acquired_secs: u64,
+    ) -> Option<Grant> {
+        if state.holders.len() >= state.limit {
+            return None;
+        }
         let holder = state.queue.pop_front()?;
         let id = LeaseId::new();
         let token = uuid::Uuid::new_v4().to_string();
-        let lease = Lease { id, resource: resource.0.clone(), class: if state.limit == 1 { LeaseClass::Exclusive } else { LeaseClass::Shared { vram_bytes: 0 } }, holder: RunId::new(), token: token.clone(), acquired_at: lease_time(acquired_secs), ttl: Duration::zero() };
-        let entry = Entry { lease, holder, acquired_secs };
+        let lease = Lease {
+            id,
+            resource: resource.0.clone(),
+            class: if state.limit == 1 {
+                LeaseClass::Exclusive
+            } else {
+                LeaseClass::Shared { vram_bytes: 0 }
+            },
+            holder: RunId::new(),
+            token: token.clone(),
+            acquired_at: lease_time(acquired_secs),
+            ttl: Duration::zero(),
+        };
+        let entry = Entry {
+            lease,
+            holder,
+            acquired_secs,
+        };
         let grant = grant_for(resource, &entry);
         state.holders.push(entry);
         Some(grant)
@@ -204,17 +278,30 @@ impl LeaseManager {
 mod tests {
     use super::*;
 
-    fn resource(name: &str) -> ResourceName { ResourceName(name.to_owned()) }
-    fn holder(name: &str) -> HolderId { HolderId(name.to_owned()) }
+    fn resource(name: &str) -> ResourceName {
+        ResourceName(name.to_owned())
+    }
+    fn holder(name: &str) -> HolderId {
+        HolderId(name.to_owned())
+    }
 
     #[test]
     fn never_more_than_limit_holders_of_a_resource_at_once() {
         let mut manager = LeaseManager::new();
         let r = resource("gpu");
         manager.register(r.clone(), 2);
-        assert!(matches!(manager.request(&r, holder("a"), 1), Some(RequestOutcome::Granted { .. })));
-        assert!(matches!(manager.request(&r, holder("b"), 1), Some(RequestOutcome::Granted { .. })));
-        assert!(matches!(manager.request(&r, holder("c"), 1), Some(RequestOutcome::Queued { .. })));
+        assert!(matches!(
+            manager.request(&r, holder("a"), 1),
+            Some(RequestOutcome::Granted { .. })
+        ));
+        assert!(matches!(
+            manager.request(&r, holder("b"), 1),
+            Some(RequestOutcome::Granted { .. })
+        ));
+        assert!(matches!(
+            manager.request(&r, holder("c"), 1),
+            Some(RequestOutcome::Queued { .. })
+        ));
         assert_eq!(manager.status(&r, 1).map(|s| s.queue_depth), Some(1));
     }
 
@@ -223,7 +310,10 @@ mod tests {
         let mut manager = LeaseManager::new();
         let r = resource("x");
         manager.register(r.clone(), 1);
-        let token = match manager.request(&r, holder("a"), 0) { Some(RequestOutcome::Granted { token, .. }) => token, _ => return };
+        let token = match manager.request(&r, holder("a"), 0) {
+            Some(RequestOutcome::Granted { token, .. }) => token,
+            _ => return,
+        };
         manager.request(&r, holder("b"), 0);
         manager.request(&r, holder("c"), 0);
         let grant = manager.release(&token);
@@ -235,13 +325,22 @@ mod tests {
         let mut manager = LeaseManager::new();
         let r = resource("x");
         manager.register(r.clone(), 1);
-        let token = match manager.request(&r, holder("a"), 0) { Some(RequestOutcome::Granted { token, .. }) => token, _ => return };
+        let token = match manager.request(&r, holder("a"), 0) {
+            Some(RequestOutcome::Granted { token, .. }) => token,
+            _ => return,
+        };
         manager.request(&r, holder("b"), 0);
         assert!(manager.release(&token).is_some());
-        let btoken = match manager.request(&r, holder("b"), 0) { Some(RequestOutcome::Granted { token, .. }) => token, _ => return };
+        let btoken = match manager.request(&r, holder("b"), 0) {
+            Some(RequestOutcome::Granted { token, .. }) => token,
+            _ => return,
+        };
         manager.request(&r, holder("c"), 0);
         assert_eq!(manager.expire(10, 1).len(), 1);
-        assert_eq!(manager.status(&r, 10).map(|s| s.holder), Some(Some(holder("c"))));
+        assert_eq!(
+            manager.status(&r, 10).map(|s| s.holder),
+            Some(Some(holder("c")))
+        );
         let _ = btoken;
     }
 
@@ -261,7 +360,10 @@ mod tests {
         let mut manager = LeaseManager::new();
         let r = resource("x");
         manager.register(r.clone(), 1);
-        let token = match manager.request(&r, holder("a"), 0) { Some(RequestOutcome::Granted { token, .. }) => token, _ => return };
+        let token = match manager.request(&r, holder("a"), 0) {
+            Some(RequestOutcome::Granted { token, .. }) => token,
+            _ => return,
+        };
         assert!(manager.release("unknown").is_none());
         manager.release(&token);
         assert!(manager.release(&token).is_none());
@@ -270,7 +372,11 @@ mod tests {
     #[test]
     fn request_unregistered_resource_returns_none() {
         let mut manager = LeaseManager::new();
-        assert!(manager.request(&resource("missing"), holder("a"), 0).is_none());
+        assert!(
+            manager
+                .request(&resource("missing"), holder("a"), 0)
+                .is_none()
+        );
     }
 
     #[test]
@@ -278,7 +384,10 @@ mod tests {
         let mut manager = LeaseManager::new();
         let r = resource("x");
         manager.register(r.clone(), 1);
-        let token = match manager.request(&r, holder("a"), 0) { Some(RequestOutcome::Granted { token, .. }) => token, _ => return };
+        let token = match manager.request(&r, holder("a"), 0) {
+            Some(RequestOutcome::Granted { token, .. }) => token,
+            _ => return,
+        };
         manager.request(&r, holder("b"), 0);
         manager.request(&r, holder("a"), 0);
         assert_eq!(manager.holder_died(&holder("a")).len(), 1);

@@ -273,7 +273,10 @@ fn find_insensitive(haystack: &str, needle: &str) -> Option<(usize, usize)> {
         let mut matches = true;
         let mut offset = 0;
         while offset < needle_chars.len() {
-            match (hay_chars.get(start_index + offset), needle_chars.get(offset)) {
+            match (
+                hay_chars.get(start_index + offset),
+                needle_chars.get(offset),
+            ) {
                 (Some((_, hay)), Some(need)) => {
                     if *hay != *need && !chars_equal_insensitive(*hay, *need) {
                         matches = false;
@@ -533,7 +536,10 @@ mod tests {
     #[test]
     fn zero_exit_with_no_signal_is_normal() {
         let rules = quota_rules();
-        assert_eq!(classify(&rules, 0, "all work finished", 1000), Classification::Normal);
+        assert_eq!(
+            classify(&rules, 0, "all work finished", 1000),
+            Classification::Normal
+        );
     }
 
     #[test]
@@ -576,7 +582,10 @@ mod tests {
 
     #[test]
     fn parse_reset_retry_after_seconds() {
-        assert_eq!(parse_reset("Error 429: retry-after: 3600, slow down", 1000), Some(4600));
+        assert_eq!(
+            parse_reset("Error 429: retry-after: 3600, slow down", 1000),
+            Some(4600)
+        );
     }
 
     #[test]
@@ -603,7 +612,10 @@ mod tests {
     #[test]
     fn parse_reset_resets_at_rfc3339() {
         assert_eq!(
-            parse_reset("usage limit hit, resets at 2026-09-17T00:00:00Z please wait", 1000),
+            parse_reset(
+                "usage limit hit, resets at 2026-09-17T00:00:00Z please wait",
+                1000
+            ),
             Some(1789603200)
         );
     }
@@ -624,7 +636,10 @@ mod tests {
             Some(instant) => assert!(instant >= u64::MAX.saturating_sub(5)),
             None => panic!("expected a saturating instant"),
         }
-        assert_eq!(parse_reset("retry-after: 99999999999999999999999999", 1000), None);
+        assert_eq!(
+            parse_reset("retry-after: 99999999999999999999999999", 1000),
+            None
+        );
     }
 
     #[test]
@@ -634,13 +649,19 @@ mod tests {
             classify(&rules, 1, "rate limit quota exceeded 429", 1000),
             Classification::Normal
         );
-        assert_eq!(classify(&rules, 429, "rate limit", 1000), Classification::Normal);
+        assert_eq!(
+            classify(&rules, 429, "rate limit", 1000),
+            Classification::Normal
+        );
     }
 
     #[test]
     fn empty_pattern_and_exclusion_are_inert() {
         let rules = SignalRules::new(60).with_pattern("").with_exclusion("");
-        assert_eq!(classify(&rules, 1, "anything at all", 1000), Classification::Normal);
+        assert_eq!(
+            classify(&rules, 1, "anything at all", 1000),
+            Classification::Normal
+        );
     }
 
     #[test]
@@ -687,7 +708,10 @@ mod tests {
 
     #[test]
     fn parse_reset_reset_at_keyword_case_insensitive() {
-        assert_eq!(parse_reset(r#""RESET_AT": 1789000000"#, 1000), Some(1789000000));
+        assert_eq!(
+            parse_reset(r#""RESET_AT": 1789000000"#, 1000),
+            Some(1789000000)
+        );
     }
 
     #[test]
@@ -767,7 +791,12 @@ mod conformance_limit_detect {
     #[test]
     fn ordinary_failure_is_normal() {
         assert_eq!(
-            classify(&rules(), 1, "thread 'main' panicked at src/main.rs:4", 1_000),
+            classify(
+                &rules(),
+                1,
+                "thread 'main' panicked at src/main.rs:4",
+                1_000
+            ),
             Classification::Normal
         );
     }
@@ -824,8 +853,18 @@ mod conformance_limit_detect {
     // "parse_reset returns None rather than guessing on unparseable input."
     #[test]
     fn parse_reset_refuses_to_guess() {
-        for junk in ["", "no reset here", "later", "soon-ish", "retry-after: eventually"] {
-            assert_eq!(parse_reset(junk, 1_000), None, "must not guess from {junk:?}");
+        for junk in [
+            "",
+            "no reset here",
+            "later",
+            "soon-ish",
+            "retry-after: eventually",
+        ] {
+            assert_eq!(
+                parse_reset(junk, 1_000),
+                None,
+                "must not guess from {junk:?}"
+            );
         }
     }
 
@@ -833,7 +872,10 @@ mod conformance_limit_detect {
     #[test]
     fn a_relative_reset_is_never_in_the_past() {
         if let Some(t) = parse_reset("retry-after: 60", 5_000) {
-            assert!(t >= 5_000, "a relative reset must not resolve into the past");
+            assert!(
+                t >= 5_000,
+                "a relative reset must not resolve into the past"
+            );
         }
     }
 
@@ -848,11 +890,12 @@ mod conformance_limit_detect {
             Classification::Limited { .. } => {}
             other => panic!("a freshly composed rule set must work, got {other:?}"),
         }
-        assert_eq!(classify(&r, 1, "please do not slow down", 0), Classification::Normal);
+        assert_eq!(
+            classify(&r, 1, "please do not slow down", 0),
+            Classification::Normal
+        );
     }
 }
-
-
 
 // Clause tests for colour and casing survival, derived from the 2026-09-17
 // incident: thirteen OpenRouter refusals, each recorded as the model producing
@@ -864,7 +907,8 @@ mod colour_survival {
 
     // The verbatim bytes from the incident log. Note there is NO contiguous
     // `Error: Rate limit exceeded` in here: `\x1b[0m` sits between them.
-    const INCIDENT_LINE: &str = "\u{1b}[91m\u{1b}[1mError: \u{1b}[0mRate limit exceeded: free-models-per-day-high-balance.";
+    const INCIDENT_LINE: &str =
+        "\u{1b}[91m\u{1b}[1mError: \u{1b}[0mRate limit exceeded: free-models-per-day-high-balance.";
 
     // Clause 1: strip_ansi removes exactly the incident's escapes.
     #[test]
@@ -978,7 +1022,10 @@ mod colour_survival {
             .with_pattern("rate limit")
             .with_exclusion("as an example of rate limit");
         let colourised = "\u{1b}[1mas an example \u{1b}[0mof rate limit output";
-        assert_eq!(classify(&rules, 1, colourised, 1_000), Classification::Normal);
+        assert_eq!(
+            classify(&rules, 1, colourised, 1_000),
+            Classification::Normal
+        );
     }
 
     // Clause 6: parse_reset reads normalised text — the reset statement
@@ -1010,7 +1057,10 @@ mod colour_survival {
         let rules = SignalRules::new(60).with_pattern("error: rate limit exceeded");
         match classify(&rules, 1, INCIDENT_LINE, 1_000) {
             Classification::Limited { evidence, .. } => {
-                assert!(!evidence.contains('\u{1b}'), "raw evidence leaked: {evidence:?}");
+                assert!(
+                    !evidence.contains('\u{1b}'),
+                    "raw evidence leaked: {evidence:?}"
+                );
                 assert_eq!(evidence, "Error: Rate limit exceeded");
             }
             other => panic!("expected Limited, got {other:?}"),
@@ -1022,7 +1072,10 @@ mod colour_survival {
         let rules = SignalRules::new(60).with_pattern("rate limit exceeded");
         match classify(&rules, 0, INCIDENT_LINE, 1_000) {
             Classification::Ambiguous { evidence } => {
-                assert!(!evidence.contains('\u{1b}'), "raw evidence leaked: {evidence:?}");
+                assert!(
+                    !evidence.contains('\u{1b}'),
+                    "raw evidence leaked: {evidence:?}"
+                );
                 assert_eq!(evidence, "Rate limit exceeded");
             }
             other => panic!("expected Ambiguous, got {other:?}"),
@@ -1032,9 +1085,17 @@ mod colour_survival {
     #[test]
     fn exit_code_evidence_is_normalised_not_raw() {
         let rules = SignalRules::new(60).with_exit_code(429);
-        match classify(&rules, 429, "\u{1b}[91mError\u{1b}[0m: spend cap reached", 1_000) {
+        match classify(
+            &rules,
+            429,
+            "\u{1b}[91mError\u{1b}[0m: spend cap reached",
+            1_000,
+        ) {
             Classification::Limited { evidence, .. } => {
-                assert!(!evidence.contains('\u{1b}'), "raw evidence leaked: {evidence:?}");
+                assert!(
+                    !evidence.contains('\u{1b}'),
+                    "raw evidence leaked: {evidence:?}"
+                );
                 assert_eq!(evidence, "Error: spend cap reached");
             }
             other => panic!("expected Limited, got {other:?}"),
@@ -1111,8 +1172,7 @@ mod colour_survival {
         let rules = SignalRules::new(60)
             .with_pattern("quota exceeded")
             .with_pattern("error: rate limit");
-        let both_present =
-            INCIDENT_LINE.replace("Rate limit", "Rate limit (quota exceeded)");
+        let both_present = INCIDENT_LINE.replace("Rate limit", "Rate limit (quota exceeded)");
         match classify(&rules, 1, &both_present, 1_000) {
             Classification::Limited { evidence, .. } => {
                 assert_eq!(evidence, "quota exceeded");
@@ -1125,25 +1185,25 @@ mod colour_survival {
 // Promoted from an executed proof that passed the reference veto. Provenance is
 // recorded so a bad test can be traced and retired.  (bead farmerbob-mqr)
 #[cfg(test)]
-    mod escalated_limit_detect_glm_53_flash {
-        use super::*;
-        // claim_1: Trailing sentence period breaks RFC3339 reset recognition.
-        #[test]
-        fn claim_1() {
-            let now = 1_789_000_000;
-            assert_eq!(
-                parse_reset("resets at 2026-09-17T00:00:00Z.", now),
-                Some(1_789_603_200)
-            );
-        }
-
-        // claim_2: Only the first occurrence of each reset prefix is examined,
-        // so an unparseable first mention hides a valid later one.
-        #[test]
-        fn claim_2() {
-            assert_eq!(
-                parse_reset("retry-after: later, retry-after: 60", 1_000),
-                Some(1_060)
-            );
-        }
+mod escalated_limit_detect_glm_53_flash {
+    use super::*;
+    // claim_1: Trailing sentence period breaks RFC3339 reset recognition.
+    #[test]
+    fn claim_1() {
+        let now = 1_789_000_000;
+        assert_eq!(
+            parse_reset("resets at 2026-09-17T00:00:00Z.", now),
+            Some(1_789_603_200)
+        );
     }
+
+    // claim_2: Only the first occurrence of each reset prefix is examined,
+    // so an unparseable first mention hides a valid later one.
+    #[test]
+    fn claim_2() {
+        assert_eq!(
+            parse_reset("retry-after: later, retry-after: 60", 1_000),
+            Some(1_060)
+        );
+    }
+}

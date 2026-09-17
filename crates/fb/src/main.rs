@@ -2,18 +2,18 @@ mod adjudicate_cmd;
 mod cmd;
 mod critique;
 mod crossx;
-mod promote;
 mod defects;
 mod differential;
-mod escalate;
 mod doctor;
 mod eligible;
+mod escalate;
 mod import;
-mod prove;
-mod pareto;
 mod mutants;
 mod objective;
+mod pareto;
 mod paths;
+mod promote;
+mod prove;
 mod score;
 mod select;
 mod sources;
@@ -42,22 +42,30 @@ enum Command {
     /// This is the one implementation. Omit a flag to say NOT MEASURED, which is a
     /// different fact from zero and yields Indeterminate rather than blaming the arm.
     Gate {
-        #[arg(long)] built: Option<bool>,
-        #[arg(long)] tests_passed: Option<bool>,
-        #[arg(long)] tests_run: Option<u32>,
-        #[arg(long)] lines_added: Option<u32>,
-        #[arg(long)] target_present: Option<bool>,
+        #[arg(long)]
+        built: Option<bool>,
+        #[arg(long)]
+        tests_passed: Option<bool>,
+        #[arg(long)]
+        tests_run: Option<u32>,
+        #[arg(long)]
+        lines_added: Option<u32>,
+        #[arg(long)]
+        target_present: Option<bool>,
         /// Files changed outside the declared deliverable. Omit to say NOT ASSESSED,
         /// which yields Indeterminate -- scope unchecked is not scope found clean.
-        #[arg(long)] scope_departures: Option<u32>,
+        #[arg(long)]
+        scope_departures: Option<u32>,
     },
     /// Assemble all evidence for a task -- objective metrics AND the critiques -- for the
     /// adjudicator to weigh. Does not pick a winner.
     Brief {
         task: String,
-        #[arg(long, default_value_t = 0.001)] epsilon: f64,
+        #[arg(long, default_value_t = 0.001)]
+        epsilon: f64,
         /// Decide even when no critique exists. Off by default, deliberately.
-        #[arg(long)] allow_missing_critique: bool,
+        #[arg(long)]
+        allow_missing_critique: bool,
     },
     /// Run environment preflight checks and print an actionable report.
     Doctor,
@@ -75,7 +83,10 @@ enum Command {
         task: String,
     },
     /// Rebuild logs/objective.json.
-    Objective { #[arg(default_value = "")] only: String },
+    Objective {
+        #[arg(default_value = "")]
+        only: String,
+    },
     /// Measure each candidate suite's sensitivity against a set of injected defects.
     ///
     /// Ported from fb-defects.sh. A defect is valid when the reference conformance suite
@@ -99,9 +110,7 @@ enum Command {
     /// The only gate in this harness that is not a gate on form. A candidate that computes
     /// nothing -- and one such was submitted, passing build, scope, lint and its own tests --
     /// satisfies every other check we own. This one it cannot satisfy.
-    Differential {
-        task: String,
-    },
+    Differential { task: String },
     /// Generate a defect set mechanically, so suite sensitivity can be measured.
     ///
     /// DefectSensitivity is the adjudicator's only direct measure of suite quality and has
@@ -307,12 +316,27 @@ fn agents(all: bool, json: bool) -> i32 {
         return exit::OK;
     }
 
-    println!("{:<24} {:<10} {:>8} {:>9}  {}", "ARM", "BUCKET", "IN", "OUT", "MODEL");
+    println!(
+        "{:<24} {:<10} {:>8} {:>9}  {}",
+        "ARM", "BUCKET", "IN", "OUT", "MODEL"
+    );
     for (arm, s) in reg.dispatchable() {
         let (i, o) = (s.price_in.unwrap_or(0.0), s.price_out.unwrap_or(0.0));
-        let price = if s.is_free() { "free".to_string() } else { format!("{i:.3}") };
-        let out = if s.is_free() { String::new() } else { format!("{o:.3}") };
-        println!("{arm:<24} {:<10} {price:>8} {out:>9}  {}", s.bucket(), s.model);
+        let price = if s.is_free() {
+            "free".to_string()
+        } else {
+            format!("{i:.3}")
+        };
+        let out = if s.is_free() {
+            String::new()
+        } else {
+            format!("{o:.3}")
+        };
+        println!(
+            "{arm:<24} {:<10} {price:>8} {out:>9}  {}",
+            s.bucket(),
+            s.model
+        );
     }
     if all {
         let refused: Vec<(&String, String)> = reg
@@ -395,19 +419,31 @@ fn leaderboard(from: &str, show_excluded: bool, json: bool) -> i32 {
         let env = serde_json::json!({"schema":"leaderboard","version":1,"data":rows});
         match serde_json::to_string_pretty(&env) {
             Ok(t) => println!("{t}"),
-            Err(e) => { eprintln!("error: {e}"); return exit::ERROR; }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return exit::ERROR;
+            }
         }
         return exit::OK;
     }
 
-    println!("{:<24}{:>4}{:>4}{:>5}{:>8}{:>10}{:>9}", "ARM", "OK", "NO", "n", "RATE", "LINES", "EXCL");
+    println!(
+        "{:<24}{:>4}{:>4}{:>5}{:>8}{:>10}{:>9}",
+        "ARM", "OK", "NO", "n", "RATE", "LINES", "EXCL"
+    );
     let mut rows: Vec<(&String, &Tally)> = per_arm.iter().collect();
     rows.sort_by(|a, b| {
         let r = |t: &Tally| {
             let n = t.accepted + t.rejected;
-            if n > 0 { t.accepted as f64 / n as f64 } else { -1.0 }
+            if n > 0 {
+                t.accepted as f64 / n as f64
+            } else {
+                -1.0
+            }
         };
-        r(b.1).partial_cmp(&r(a.1)).unwrap_or(std::cmp::Ordering::Equal)
+        r(b.1)
+            .partial_cmp(&r(a.1))
+            .unwrap_or(std::cmp::Ordering::Equal)
             .then(b.1.accepted.cmp(&a.1.accepted))
     });
     for (arm, t) in rows {
@@ -417,9 +453,16 @@ fn leaderboard(from: &str, show_excluded: bool, json: bool) -> i32 {
         } else {
             "n/a".into()
         };
-        println!("{arm:<24}{:>4}{:>4}{:>5}{rate:>8}{:>10}{:>9}", t.accepted, t.rejected, n, t.lines, t.excluded);
+        println!(
+            "{arm:<24}{:>4}{:>4}{:>5}{rate:>8}{:>10}{:>9}",
+            t.accepted, t.rejected, n, t.lines, t.excluded
+        );
     }
-    println!("\n{} runs; {} excluded as not-arm-results", records.len(), excluded_rows.len());
+    println!(
+        "\n{} runs; {} excluded as not-arm-results",
+        records.len(),
+        excluded_rows.len()
+    );
     if show_excluded {
         println!("\nexcluded:");
         for (arm, bead, why) in &excluded_rows {
@@ -432,8 +475,15 @@ fn leaderboard(from: &str, show_excluded: bool, json: bool) -> i32 {
 fn main() {
     let cli = Cli::parse();
     let code = match cli.command {
-        Some(Command::Gate { built, tests_passed, tests_run, lines_added, target_present, scope_departures }) => {
-            use farmerbob_core::gate::{judge, unmeasured, explain, Observation};
+        Some(Command::Gate {
+            built,
+            tests_passed,
+            tests_run,
+            lines_added,
+            target_present,
+            scope_departures,
+        }) => {
+            use farmerbob_core::gate::{Observation, explain, judge, unmeasured};
             let o = Observation {
                 built,
                 tests_passed,
@@ -446,7 +496,10 @@ fn main() {
             if cli.json {
                 println!(
                     "{{\"verdict\":\"{v:?}\",\"is_pass\":{},\"blames_arm\":{},\"unmeasured\":{:?},\"explain\":{:?}}}",
-                    v.is_pass(), v.blames_arm(), unmeasured(&o), explain(&o, v)
+                    v.is_pass(),
+                    v.blames_arm(),
+                    unmeasured(&o),
+                    explain(&o, v)
                 );
             } else {
                 println!("{v:?}  {}", explain(&o, v));
@@ -454,48 +507,81 @@ fn main() {
             if v.is_pass() { exit::OK } else { exit::ERROR }
         }
         Some(Command::Promote { task }) => promote::run_cmd(&task),
-        Some(Command::Objective { only }) => objective::run_cmd(if only.is_empty() { None } else { Some(only) }),
-        Some(Command::Defects { task, krate, target }) => defects::run_cmd(&task, &krate, &target),
+        Some(Command::Objective { only }) => {
+            objective::run_cmd(if only.is_empty() { None } else { Some(only) })
+        }
+        Some(Command::Defects {
+            task,
+            krate,
+            target,
+        }) => defects::run_cmd(&task, &krate, &target),
         Some(Command::Eligible { arm }) => eligible::run_cmd(&arm),
         Some(Command::Differential { task }) => differential::run_cmd(&task),
         Some(Command::Mutants { file, task, max }) => mutants::run_cmd(&file, &task, max),
-        Some(Command::Prove { task, krate, target, prover }) =>
-            prove::run_cmd(&task, &krate, &target, &prover),
-        Some(Command::Escalate { command, task, critic, subject, n }) =>
-            escalate::run_cmd(&command, &task, &critic, &subject, &n),
-        Some(Command::Crossx { task, krate, target }) =>
-            crossx::run_cmd(&task, &krate, &target),
-        Some(Command::Critique { task, krate, target }) =>
-            critique::run_cmd(&task, &krate, &target),
+        Some(Command::Prove {
+            task,
+            krate,
+            target,
+            prover,
+        }) => prove::run_cmd(&task, &krate, &target, &prover),
+        Some(Command::Escalate {
+            command,
+            task,
+            critic,
+            subject,
+            n,
+        }) => escalate::run_cmd(&command, &task, &critic, &subject, &n),
+        Some(Command::Crossx {
+            task,
+            krate,
+            target,
+        }) => crossx::run_cmd(&task, &krate, &target),
+        Some(Command::Critique {
+            task,
+            krate,
+            target,
+        }) => critique::run_cmd(&task, &krate, &target),
         Some(Command::Select { n, seed, needs }) => select::run_cmd(
             n,
             seed,
-            &needs.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect::<Vec<_>>(),
+            &needs
+                .split(',')
+                .filter(|x| !x.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
             cli.json,
         ),
         Some(Command::Pareto { epsilon }) => pareto::run_cmd(epsilon, cli.json),
         Some(Command::Score { task, krate }) => score::run_cmd(&task, &krate, cli.json),
-        Some(Command::Brief { task, epsilon, allow_missing_critique }) =>
-            adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Brief {
+            task,
+            epsilon,
+            allow_missing_critique,
+        }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
         Some(Command::Doctor) => doctor::run(cli.json),
         Some(Command::Agents { all }) => agents(all, cli.json),
         Some(Command::Leaderboard { from, excluded }) => leaderboard(&from, excluded, cli.json),
-        Some(Command::Trial { task, krate, target, agents, prover, from }) => {
-            match trial::Stage::parse(&from) {
-                None => {
-                    eprintln!("error: unknown stage `{from}`");
-                    2
-                }
-                Some(stage) => trial::Trial {
-                    task,
-                    krate,
-                    target,
-                    arms: agents.split(',').map(str::to_string).collect(),
-                    prover,
-                }
-                .run(stage),
+        Some(Command::Trial {
+            task,
+            krate,
+            target,
+            agents,
+            prover,
+            from,
+        }) => match trial::Stage::parse(&from) {
+            None => {
+                eprintln!("error: unknown stage `{from}`");
+                2
             }
-        }
+            Some(stage) => trial::Trial {
+                task,
+                krate,
+                target,
+                arms: agents.split(',').map(str::to_string).collect(),
+                prover,
+            }
+            .run(stage),
+        },
         None => {
             println!("fb — farmerbob. Try `fb --help`.");
             exit::OK

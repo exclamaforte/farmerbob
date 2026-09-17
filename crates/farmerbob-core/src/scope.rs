@@ -144,9 +144,9 @@ pub fn assess(declared: &Declared, changes: &[Change]) -> Scope {
             // A task asks for a file to exist; deleting it is not
             // producing it.
             if change.deleted {
-                scope
-                    .departures
-                    .push(Departure::Deleted { path: change.path.clone() });
+                scope.departures.push(Departure::Deleted {
+                    path: change.path.clone(),
+                });
             } else {
                 scope.target_changed = true;
             }
@@ -154,20 +154,20 @@ pub fn assess(declared: &Declared, changes: &[Change]) -> Scope {
             // Deleting the declaration is a violation like any other
             // deletion, not an exercised allowance.
             if change.deleted {
-                scope
-                    .departures
-                    .push(Departure::Deleted { path: change.path.clone() });
+                scope.departures.push(Departure::Deleted {
+                    path: change.path.clone(),
+                });
             } else {
                 scope.allowed.push(change.path.clone());
             }
         } else if change.deleted {
-            scope
-                .departures
-                .push(Departure::Deleted { path: change.path.clone() });
+            scope.departures.push(Departure::Deleted {
+                path: change.path.clone(),
+            });
         } else {
-            scope
-                .departures
-                .push(Departure::Foreign { path: change.path.clone() });
+            scope.departures.push(Departure::Foreign {
+                path: change.path.clone(),
+            });
         }
     }
 
@@ -194,7 +194,6 @@ fn allowance_for(path: &str, declarations: &[String]) -> Option<Allowance> {
         .any(|d| d == path)
         .then_some(Allowance::ModuleDeclaration)
 }
-
 
 impl Departure {
     /// The path this departure is about, for ordering and de-duplication.
@@ -284,7 +283,10 @@ mod tests {
     // nowhere else.
     #[test]
     fn rule2_a_change_to_the_target_sets_target_changed_alone() {
-        let scope = assess(&declared("crates/x/src/y.rs"), &[change("crates/x/src/y.rs")]);
+        let scope = assess(
+            &declared("crates/x/src/y.rs"),
+            &[change("crates/x/src/y.rs")],
+        );
         assert!(scope.target_changed);
         assert!(scope.allowed.is_empty());
         assert!(scope.departures.is_empty());
@@ -308,10 +310,7 @@ mod tests {
     fn rule3_target_and_declaration_change_together_cleanly() {
         let scope = assess(
             &declared("crates/x/src/y.rs"),
-            &[
-                change("crates/x/src/lib.rs"),
-                change("crates/x/src/y.rs"),
-            ],
+            &[change("crates/x/src/lib.rs"), change("crates/x/src/y.rs")],
         );
         assert!(scope.target_changed);
         assert_eq!(scope.allowed, vec![String::from("crates/x/src/lib.rs")]);
@@ -364,7 +363,10 @@ mod tests {
     // false.
     #[test]
     fn rule5_deleting_the_target_is_a_departure_not_a_change() {
-        let scope = assess(&declared("crates/x/src/y.rs"), &[deleted("crates/x/src/y.rs")]);
+        let scope = assess(
+            &declared("crates/x/src/y.rs"),
+            &[deleted("crates/x/src/y.rs")],
+        );
         assert!(!scope.target_changed);
         assert!(scope.allowed.is_empty());
         assert_eq!(
@@ -383,7 +385,10 @@ mod tests {
         assert!(!untouched.target_changed);
         assert!(is_clean(&untouched));
 
-        let produced = assess(&declared("crates/x/src/y.rs"), &[change("crates/x/src/y.rs")]);
+        let produced = assess(
+            &declared("crates/x/src/y.rs"),
+            &[change("crates/x/src/y.rs")],
+        );
         assert!(produced.target_changed);
         assert!(is_clean(&produced));
 
@@ -526,14 +531,18 @@ mod tests {
     }
 }
 
-
-
 #[cfg(test)]
 mod binary_crate_roots {
     use super::*;
 
     fn changed(paths: &[&str]) -> Vec<Change> {
-        paths.iter().map(|p| Change { path: (*p).to_string(), deleted: false }).collect()
+        paths
+            .iter()
+            .map(|p| Change {
+                path: (*p).to_string(),
+                deleted: false,
+            })
+            .collect()
     }
 
     /// `fb` is a BINARY crate: it declares modules from main.rs, not lib.rs. The first
@@ -542,8 +551,13 @@ mod binary_crate_roots {
     /// doing what it was told.
     #[test]
     fn declaring_a_module_from_main_rs_is_not_a_departure() {
-        let declared = Declared { target: "crates/fb/src/critique.rs".into() };
-        let sc = assess(&declared, &changed(&["crates/fb/src/critique.rs", "crates/fb/src/main.rs"]));
+        let declared = Declared {
+            target: "crates/fb/src/critique.rs".into(),
+        };
+        let sc = assess(
+            &declared,
+            &changed(&["crates/fb/src/critique.rs", "crates/fb/src/main.rs"]),
+        );
         assert!(sc.target_changed);
         assert_eq!(sc.allowed, vec!["crates/fb/src/main.rs".to_string()]);
         assert!(is_clean(&sc), "main.rs is a crate root, not a stray edit");
@@ -552,36 +566,63 @@ mod binary_crate_roots {
     /// A library crate's root still works exactly as before.
     #[test]
     fn declaring_a_module_from_lib_rs_is_still_not_a_departure() {
-        let declared = Declared { target: "crates/farmerbob-core/src/scope.rs".into() };
+        let declared = Declared {
+            target: "crates/farmerbob-core/src/scope.rs".into(),
+        };
         let sc = assess(
             &declared,
-            &changed(&["crates/farmerbob-core/src/scope.rs", "crates/farmerbob-core/src/lib.rs"]),
+            &changed(&[
+                "crates/farmerbob-core/src/scope.rs",
+                "crates/farmerbob-core/src/lib.rs",
+            ]),
         );
-        assert_eq!(sc.allowed, vec!["crates/farmerbob-core/src/lib.rs".to_string()]);
+        assert_eq!(
+            sc.allowed,
+            vec!["crates/farmerbob-core/src/lib.rs".to_string()]
+        );
         assert!(is_clean(&sc));
     }
 
     /// The allowance covers the roots and nothing else: a real stray edit still departs.
     #[test]
     fn a_sibling_module_is_still_a_departure() {
-        let declared = Declared { target: "crates/fb/src/critique.rs".into() };
+        let declared = Declared {
+            target: "crates/fb/src/critique.rs".into(),
+        };
         let sc = assess(
             &declared,
-            &changed(&["crates/fb/src/critique.rs", "crates/fb/src/main.rs", "crates/fb/src/score.rs"]),
+            &changed(&[
+                "crates/fb/src/critique.rs",
+                "crates/fb/src/main.rs",
+                "crates/fb/src/score.rs",
+            ]),
         );
-        assert_eq!(sc.departures.len(), 1, "score.rs is not a crate root: {:?}", sc.departures);
+        assert_eq!(
+            sc.departures.len(),
+            1,
+            "score.rs is not a crate root: {:?}",
+            sc.departures
+        );
         assert!(!is_clean(&sc));
     }
 
     /// Deleting a crate root is a violation, exactly as deleting lib.rs always was.
     #[test]
     fn deleting_a_crate_root_is_still_a_departure() {
-        let declared = Declared { target: "crates/fb/src/critique.rs".into() };
+        let declared = Declared {
+            target: "crates/fb/src/critique.rs".into(),
+        };
         let sc = assess(
             &declared,
             &[
-                Change { path: "crates/fb/src/critique.rs".into(), deleted: false },
-                Change { path: "crates/fb/src/main.rs".into(), deleted: true },
+                Change {
+                    path: "crates/fb/src/critique.rs".into(),
+                    deleted: false,
+                },
+                Change {
+                    path: "crates/fb/src/main.rs".into(),
+                    deleted: true,
+                },
             ],
         );
         assert!(sc.allowed.is_empty());

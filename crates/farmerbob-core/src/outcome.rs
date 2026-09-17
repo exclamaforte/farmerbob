@@ -199,7 +199,11 @@ mod tests {
 
     #[test]
     fn unknown_does_not_count_for_the_posterior() {
-        let records = [outcome(OutcomeClass::Unknown, Verdict::NoCompile, Rescue::None)];
+        let records = [outcome(
+            OutcomeClass::Unknown,
+            Verdict::NoCompile,
+            Rescue::None,
+        )];
         assert_eq!(posterior_delta(&records, Rescue::Rewritten), (0, 0));
         assert!(!OutcomeClass::Unknown.counts_for_posterior());
     }
@@ -213,21 +217,36 @@ mod tests {
 
     #[test]
     fn validation_order_is_deterministic_when_two_rules_are_violated_at_once() {
-        let mut record = outcome(OutcomeClass::Infrastructure, Verdict::Pass, Rescue::Cosmetic);
+        let mut record = outcome(
+            OutcomeClass::Infrastructure,
+            Verdict::Pass,
+            Rescue::Cosmetic,
+        );
         record.tests_run = 0;
         record.lines = 0;
-        assert_eq!(record.validate(), Err("Pass requires tests_run > 0".to_string()));
+        assert_eq!(
+            record.validate(),
+            Err("Pass requires tests_run > 0".to_string())
+        );
     }
 
     #[test]
     fn repaired_pass_above_max_rescue_increments_neither_alpha_nor_beta() {
-        let records = [outcome(OutcomeClass::ArmResult, Verdict::Pass, Rescue::Repaired)];
+        let records = [outcome(
+            OutcomeClass::ArmResult,
+            Verdict::Pass,
+            Rescue::Repaired,
+        )];
         assert_eq!(posterior_delta(&records, Rescue::Cosmetic), (0, 0));
     }
 
     #[test]
     fn quota_limited_run_is_absent_from_both_posterior_counts() {
-        let records = [outcome(OutcomeClass::QuotaLimited, Verdict::NoCompile, Rescue::None)];
+        let records = [outcome(
+            OutcomeClass::QuotaLimited,
+            Verdict::NoCompile,
+            Rescue::None,
+        )];
         assert_eq!(posterior_delta(&records, Rescue::Rewritten), (0, 0));
     }
 
@@ -252,7 +271,11 @@ mod tests {
 
     #[test]
     fn non_arm_rescue_fails_validation() {
-        let record = outcome(OutcomeClass::Infrastructure, Verdict::NoOp, Rescue::Cosmetic);
+        let record = outcome(
+            OutcomeClass::Infrastructure,
+            Verdict::NoOp,
+            Rescue::Cosmetic,
+        );
         assert!(record.validate().is_err());
     }
 
@@ -268,25 +291,34 @@ mod tests {
 
     #[test]
     fn clean_success_requires_arm_result_pass_and_allowed_rescue() {
-        assert!(outcome(OutcomeClass::ArmResult, Verdict::Pass, Rescue::None)
-            .is_clean_success(Rescue::None));
-        assert!(!outcome(OutcomeClass::Unknown, Verdict::Pass, Rescue::None)
-            .is_clean_success(Rescue::None));
-        assert!(!outcome(OutcomeClass::ArmResult, Verdict::NoTests, Rescue::None)
-            .is_clean_success(Rescue::None));
-        assert!(!outcome(OutcomeClass::ArmResult, Verdict::Pass, Rescue::Repaired)
-            .is_clean_success(Rescue::Cosmetic));
+        assert!(
+            outcome(OutcomeClass::ArmResult, Verdict::Pass, Rescue::None)
+                .is_clean_success(Rescue::None)
+        );
+        assert!(
+            !outcome(OutcomeClass::Unknown, Verdict::Pass, Rescue::None)
+                .is_clean_success(Rescue::None)
+        );
+        assert!(
+            !outcome(OutcomeClass::ArmResult, Verdict::NoTests, Rescue::None)
+                .is_clean_success(Rescue::None)
+        );
+        assert!(
+            !outcome(OutcomeClass::ArmResult, Verdict::Pass, Rescue::Repaired)
+                .is_clean_success(Rescue::Cosmetic)
+        );
     }
 
     #[test]
     fn census_omits_zero_counts() {
-        let records = [outcome(OutcomeClass::Infrastructure, Verdict::NoOp, Rescue::None)];
+        let records = [outcome(
+            OutcomeClass::Infrastructure,
+            Verdict::NoOp,
+            Rescue::None,
+        )];
         assert_eq!(
             class_census(&records),
-            vec![(
-                "arm".to_string(),
-                vec![(OutcomeClass::Infrastructure, 1)]
-            )]
+            vec![("arm".to_string(), vec![(OutcomeClass::Infrastructure, 1)])]
         );
     }
 
@@ -317,19 +349,29 @@ mod promoted_claims {
     #[test]
     fn claim_negative_zero_usd_is_not_smuggled_past_validation() {
         let o = Outcome {
-            arm: "a".into(), task: "t".into(),
-            verdict: Verdict::Pass, class: OutcomeClass::ArmResult,
-            rescue: Rescue::None, lines: 10, tests_run: 3,
+            arm: "a".into(),
+            task: "t".into(),
+            verdict: Verdict::Pass,
+            class: OutcomeClass::ArmResult,
+            rescue: Rescue::None,
+            lines: 10,
+            tests_run: 3,
             usd: Some(-0.0),
         };
         // -0.0 is a legitimate zero, not a negative cost: it must VALIDATE.
-        assert!(o.validate().is_ok(), "-0.0 should be accepted as zero: {:?}", o.validate());
+        assert!(
+            o.validate().is_ok(),
+            "-0.0 should be accepted as zero: {:?}",
+            o.validate()
+        );
         // and a genuinely negative cost must not be.
-        let neg = Outcome { usd: Some(-1.0), ..o };
+        let neg = Outcome {
+            usd: Some(-1.0),
+            ..o
+        };
         assert!(neg.validate().is_err(), "a negative usd must be rejected");
     }
 }
-
 
 // ESCALATED from cross-examination: codex-luna's suite discriminated on outcome.
 // Not a CLAIM -- cross-examination found it directly. Kept only because it passes

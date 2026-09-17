@@ -73,7 +73,10 @@ mod tests {
     #[test]
     fn an_override_redirects_and_an_absent_one_does_not() {
         let fallback = PathBuf::from("/real/logs");
-        assert_eq!(pick(Some("/tmp/sandbox"), fallback.clone()), PathBuf::from("/tmp/sandbox"));
+        assert_eq!(
+            pick(Some("/tmp/sandbox"), fallback.clone()),
+            PathBuf::from("/tmp/sandbox")
+        );
         assert_eq!(pick(None, fallback.clone()), fallback);
     }
 

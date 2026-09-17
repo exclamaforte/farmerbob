@@ -197,7 +197,8 @@ mod tests {
             Envelope::ok("task", 1, json!({"n": 1})),
             "unknown field must be ignored"
         );
-        let raw_err = r#"{"schema":"task","version":1,"error":{"code":"boom","message":"x"},"another":true}"#;
+        let raw_err =
+            r#"{"schema":"task","version":1,"error":{"code":"boom","message":"x"},"another":true}"#;
         let parsed_err = parse_line(raw_err).expect("unknown fields must parse");
         assert_eq!(parsed_err, Envelope::err("task", 1, "boom", "x"));
     }
@@ -257,10 +258,7 @@ mod tests {
 
     #[test]
     fn schema_returns_name_for_both_variants() {
-        assert_eq!(
-            Envelope::ok("a", 1, json!(null)).schema(),
-            "a"
-        );
+        assert_eq!(Envelope::ok("a", 1, json!(null)).schema(), "a");
         assert_eq!(Envelope::err("b", 1, "c", "d").schema(), "b");
     }
 }
@@ -288,7 +286,10 @@ mod conformance_ux_json {
     #[test]
     fn from_code_is_none_for_unmapped_integers() {
         for c in [5, 9, -1, i32::MAX, i32::MIN] {
-            assert!(ExitCode::from_code(c).is_none(), "code {c} should be unmapped");
+            assert!(
+                ExitCode::from_code(c).is_none(),
+                "code {c} should be unmapped"
+            );
         }
         for c in 0..=4 {
             assert_eq!(ExitCode::from_code(c).map(|e| e.code()), Some(c));
@@ -300,7 +301,11 @@ mod conformance_ux_json {
     fn to_line_is_one_line_even_with_embedded_newlines() {
         let e = Envelope::ok("t", 1, json!({"msg": "a\nb\nc", "nested": {"x": "\n"}}));
         let l = e.to_line().expect("serialises");
-        assert_eq!(l.matches('\n').count(), 1, "exactly one newline, the terminator");
+        assert_eq!(
+            l.matches('\n').count(),
+            1,
+            "exactly one newline, the terminator"
+        );
         assert!(l.ends_with('\n'), "terminated by a newline");
         assert!(!l[..l.len() - 1].contains('\n'), "no interior newline");
     }
@@ -317,9 +322,18 @@ mod conformance_ux_json {
     //  quota_limited, which map to those variants."
     #[test]
     fn error_code_strings_map_to_exit_codes() {
-        assert_eq!(Envelope::err("t", 1, "would_block", "m").exit_code(), ExitCode::WouldBlock);
-        assert_eq!(Envelope::err("t", 1, "quota_limited", "m").exit_code(), ExitCode::QuotaLimited);
-        assert_eq!(Envelope::err("t", 1, "anything_else", "m").exit_code(), ExitCode::Error);
+        assert_eq!(
+            Envelope::err("t", 1, "would_block", "m").exit_code(),
+            ExitCode::WouldBlock
+        );
+        assert_eq!(
+            Envelope::err("t", 1, "quota_limited", "m").exit_code(),
+            ExitCode::QuotaLimited
+        );
+        assert_eq!(
+            Envelope::err("t", 1, "anything_else", "m").exit_code(),
+            ExitCode::Error
+        );
         assert_eq!(Envelope::err("t", 1, "", "m").exit_code(), ExitCode::Error);
         assert_eq!(Envelope::ok("t", 1, json!(null)).exit_code(), ExitCode::Ok);
     }
@@ -344,7 +358,9 @@ mod conformance_ux_json {
     fn parse_line_tolerates_unknown_fields() {
         let ok = parse_line(r#"{"schema":"t","version":1,"data":{"a":1},"added_later":true}"#);
         assert!(ok.is_ok(), "unknown field must not be an error: {ok:?}");
-        let er = parse_line(r#"{"schema":"t","version":1,"error":{"code":"c","message":"m"},"extra":9}"#);
+        let er = parse_line(
+            r#"{"schema":"t","version":1,"error":{"code":"c","message":"m"},"extra":9}"#,
+        );
         assert!(er.is_ok(), "unknown field must not be an error: {er:?}");
     }
 
@@ -357,9 +373,9 @@ mod conformance_ux_json {
             "[]",
             "null",
             "42",
-            r#"{"schema":"t"}"#,                       // no version, no body
-            r#"{"version":1,"data":{}}"#,              // no schema
-            r#"{"schema":"t","version":1}"#,           // neither data nor error
+            r#"{"schema":"t"}"#,             // no version, no body
+            r#"{"version":1,"data":{}}"#,    // no schema
+            r#"{"schema":"t","version":1}"#, // neither data nor error
         ] {
             assert!(parse_line(bad).is_err(), "should reject: {bad:?}");
         }
@@ -375,7 +391,9 @@ mod conformance_ux_json {
     // A terminated line is what to_line produces; parse_line must accept its own output.
     #[test]
     fn parse_line_accepts_a_trailing_newline() {
-        let l = Envelope::ok("t", 1, json!({"k": "v"})).to_line().expect("serialises");
+        let l = Envelope::ok("t", 1, json!({"k": "v"}))
+            .to_line()
+            .expect("serialises");
         assert!(parse_line(&l).is_ok(), "must parse its own output verbatim");
     }
 }

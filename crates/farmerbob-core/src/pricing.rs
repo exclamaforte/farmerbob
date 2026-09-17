@@ -108,7 +108,9 @@ fn price_table_defect(input_per_mtok: f64, output_per_mtok: f64) -> Option<Strin
     ];
     for (name, rate) in fields {
         if rate.is_nan() {
-            return Some(format!("{name} is NaN: the price table entry is corrupt, not a price"));
+            return Some(format!(
+                "{name} is NaN: the price table entry is corrupt, not a price"
+            ));
         }
         if !rate.is_finite() {
             return Some(format!(
@@ -116,7 +118,9 @@ fn price_table_defect(input_per_mtok: f64, output_per_mtok: f64) -> Option<Strin
             ));
         }
         if rate < 0.0 {
-            return Some(format!("{name} is negative: a corrupt price table, not a discount"));
+            return Some(format!(
+                "{name} is negative: a corrupt price table, not a discount"
+            ));
         }
     }
     None
@@ -248,10 +252,7 @@ mod tests {
             price(&r, &usage(1_000_000, 500_000)),
             Measurement::observed(4.0)
         );
-        assert_eq!(
-            price(&r, &usage(0, 1_500_000)),
-            Measurement::observed(3.0)
-        );
+        assert_eq!(price(&r, &usage(0, 1_500_000)), Measurement::observed(3.0));
     }
 
     #[test]
@@ -272,7 +273,10 @@ mod tests {
         let unpriced = route(Billing::MeteredUnpriced);
         let p = price(&unpriced, &usage(10, 10));
         assert!(!p.is_observed());
-        assert!(matches!(p, Measurement::Missing(Absent::InstrumentFailed { .. })));
+        assert!(matches!(
+            p,
+            Measurement::Missing(Absent::InstrumentFailed { .. })
+        ));
         assert_ne!(p, Measurement::observed(0.0));
     }
 
@@ -281,7 +285,10 @@ mod tests {
         let sub = route(Billing::Subscription);
         let p = price(&sub, &usage(10, 10));
         assert!(!p.is_observed());
-        assert!(matches!(p, Measurement::Missing(Absent::NothingToMeasure { .. })));
+        assert!(matches!(
+            p,
+            Measurement::Missing(Absent::NothingToMeasure { .. })
+        ));
     }
 
     #[test]
@@ -431,10 +438,7 @@ mod tests {
             id: "openrouter/qwen/qwen3.8-flash".to_string(),
             billing: Billing::MeteredUnpriced,
         };
-        assert_ne!(
-            price(&free, &usage(1, 1)),
-            price(&unpriced, &usage(1, 1))
-        );
+        assert_ne!(price(&free, &usage(1, 1)), price(&unpriced, &usage(1, 1)));
         // ... yet they are one capability, and must not count twice.
         assert!(same_capability(&free.id, &unpriced.id));
     }
@@ -508,13 +512,19 @@ mod escalated_pricing_case {
             "openrouter/qwen/qwen3.8-flash"
         ));
         assert!(same_capability("OR-Qwen38-Flash", "or-qwen38-flash"));
-        assert!(same_capability("qwen/QWEN3.8-Flash:FREE", "qwen/qwen3.8-flash"));
+        assert!(same_capability(
+            "qwen/QWEN3.8-Flash:FREE",
+            "qwen/qwen3.8-flash"
+        ));
     }
 
     /// The worked examples from the specification still hold after the reordering.
     #[test]
     fn the_specs_worked_examples_are_unchanged() {
-        assert_eq!(canonical_model("openrouter/qwen/qwen3.8-flash:free"), "qwen/qwen3.8-flash");
+        assert_eq!(
+            canonical_model("openrouter/qwen/qwen3.8-flash:free"),
+            "qwen/qwen3.8-flash"
+        );
         assert_eq!(canonical_model("or-qwen38-flash"), "qwen38-flash");
         assert_eq!(canonical_model("qwen/QWEN3.8-Flash"), "qwen/qwen3.8-flash");
         assert_eq!(canonical_model(":free"), "");
@@ -525,9 +535,13 @@ mod escalated_pricing_case {
     /// A `:free` that is not a suffix is still left alone, case notwithstanding.
     #[test]
     fn a_mid_string_free_marker_is_not_stripped() {
-        assert_eq!(canonical_model("vendor/:free-tier-model"), "vendor/:free-tier-model");
-        assert_eq!(canonical_model("vendor/:FREE-tier-model"), "vendor/:free-tier-model");
+        assert_eq!(
+            canonical_model("vendor/:free-tier-model"),
+            "vendor/:free-tier-model"
+        );
+        assert_eq!(
+            canonical_model("vendor/:FREE-tier-model"),
+            "vendor/:free-tier-model"
+        );
     }
 }
-
-

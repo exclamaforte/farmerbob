@@ -149,14 +149,12 @@ pub fn parse(args: &[String]) -> Result<Invocation, ParseError> {
         Some(name) => match name.as_str() {
             "status" => Command::Status,
             "dispatch" => {
-                let task = positionals.get(1).ok_or_else(missing_argument_fn(
-                    "dispatch",
-                    "task",
-                ))?;
-                let arms = positionals.get(2..).ok_or_else(missing_argument_fn(
-                    "dispatch",
-                    "arm",
-                ))?;
+                let task = positionals
+                    .get(1)
+                    .ok_or_else(missing_argument_fn("dispatch", "task"))?;
+                let arms = positionals
+                    .get(2..)
+                    .ok_or_else(missing_argument_fn("dispatch", "arm"))?;
                 if arms.is_empty() {
                     return Err(ParseError::MissingArgument {
                         command: "dispatch".to_string(),
@@ -169,21 +167,18 @@ pub fn parse(args: &[String]) -> Result<Invocation, ParseError> {
                 }
             }
             "score" => {
-                let task = positionals.get(1).ok_or_else(missing_argument_fn(
-                    "score",
-                    "task",
-                ))?;
+                let task = positionals
+                    .get(1)
+                    .ok_or_else(missing_argument_fn("score", "task"))?;
                 Command::Score { task: task.clone() }
             }
             "select" => {
-                let task = positionals.get(1).ok_or_else(missing_argument_fn(
-                    "select",
-                    "task",
-                ))?;
-                let arm = positionals.get(2).ok_or_else(missing_argument_fn(
-                    "select",
-                    "arm",
-                ))?;
+                let task = positionals
+                    .get(1)
+                    .ok_or_else(missing_argument_fn("select", "task"))?;
+                let arm = positionals
+                    .get(2)
+                    .ok_or_else(missing_argument_fn("select", "arm"))?;
                 Command::Select {
                     task: task.clone(),
                     arm: arm.clone(),
@@ -207,10 +202,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, ParseError> {
 }
 
 /// Build the closure that produces a [`ParseError::MissingArgument`].
-fn missing_argument_fn(
-    command: &'static str,
-    argument: &'static str,
-) -> impl Fn() -> ParseError {
+fn missing_argument_fn(command: &'static str, argument: &'static str) -> impl Fn() -> ParseError {
     move || ParseError::MissingArgument {
         command: command.to_string(),
         argument: argument.to_string(),

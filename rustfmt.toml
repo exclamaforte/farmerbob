@@ -1,2 +1,13 @@
 edition = "2024"
 max_width = 100
+# Keep this repo rustfmt-clean, permanently.
+#
+# It was not, for the whole of its life until 2026-09-17: 53 of 77 .rs files had pending
+# rustfmt diffs (489 hunks). Every merge takes ONE file from ONE arm, written in that arm's
+# style, and nothing normalised it afterwards, so the drift only ever grew.
+#
+# That silently disqualified arms. `cargo fmt` is ordinary Rust practice; an arm that ran it
+# reformatted ~51 files it never meant to touch, and the scope gate counted every one as a
+# departure. codex-luna was disqualified from three consecutive tasks that way -- 51, 52 and
+# 51 departures -- and the 51 is not a coincidence: it is exactly the number of rustfmt-dirty
+# files its changes intersected.

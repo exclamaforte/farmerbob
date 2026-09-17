@@ -394,11 +394,14 @@ mod tests {
         // A history that never unblocks counts zero.
         let open = [
             (0, RunState::Running { started_ms: 0 }),
-            (10, RunState::BlockedOnQuota {
-                bucket: String::from("b"),
-                since_ms: 10,
-                resume_at_ms: None,
-            }),
+            (
+                10,
+                RunState::BlockedOnQuota {
+                    bucket: String::from("b"),
+                    since_ms: 10,
+                    resume_at_ms: None,
+                },
+            ),
         ];
         assert_eq!(blocked_ms(&open), 0);
     }
@@ -427,17 +430,28 @@ mod tests {
         assert!(!resumable(&early, 50, 0));
         // Saturating total: adversarial huge segments do not overflow.
         let big = [
-            (0, RunState::BlockedOnQuota {
-                bucket: String::from("b"),
-                since_ms: 0,
-                resume_at_ms: None,
-            }),
-            (u64::MAX, RunState::Running { started_ms: u64::MAX }),
-            (0, RunState::BlockedOnQuota {
-                bucket: String::from("b"),
-                since_ms: 0,
-                resume_at_ms: None,
-            }),
+            (
+                0,
+                RunState::BlockedOnQuota {
+                    bucket: String::from("b"),
+                    since_ms: 0,
+                    resume_at_ms: None,
+                },
+            ),
+            (
+                u64::MAX,
+                RunState::Running {
+                    started_ms: u64::MAX,
+                },
+            ),
+            (
+                0,
+                RunState::BlockedOnQuota {
+                    bucket: String::from("b"),
+                    since_ms: 0,
+                    resume_at_ms: None,
+                },
+            ),
             (u64::MAX, RunState::Done { passed: true }),
         ];
         assert_eq!(blocked_ms(&big), u64::MAX);

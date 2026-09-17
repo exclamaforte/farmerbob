@@ -231,7 +231,11 @@ pub fn reclaim_candidate(p: &Pool) -> Option<String> {
 /// [`reclaim_candidate`].
 pub fn reclaimable(p: &Pool) -> Vec<String> {
     let mut finished: Vec<&Claim> = p.claims.values().filter(|claim| !claim.live).collect();
-    finished.sort_by(|a, b| a.since_ms.cmp(&b.since_ms).then_with(|| a.slot.cmp(&b.slot)));
+    finished.sort_by(|a, b| {
+        a.since_ms
+            .cmp(&b.since_ms)
+            .then_with(|| a.slot.cmp(&b.slot))
+    });
     finished
         .into_iter()
         .map(|claim| claim.slot.clone())
@@ -391,10 +395,7 @@ mod tests {
 
         assert_eq!(reclaim_candidate(&p), Some("old".to_string()));
         // Ordered by since_ms, and the live claim never appears.
-        assert_eq!(
-            reclaimable(&p),
-            vec!["old".to_string(), "new".to_string()]
-        );
+        assert_eq!(reclaimable(&p), vec!["old".to_string(), "new".to_string()]);
     }
 
     #[test]
@@ -454,10 +455,7 @@ mod tests {
         p.allocate("run-c", "s1", 300).unwrap();
         assert_eq!(p.len(), 2);
         assert_eq!(p.live_count(), 2);
-        assert_eq!(
-            p.holder("s1").map(|c| c.run_id.as_str()),
-            Some("run-c")
-        );
+        assert_eq!(p.holder("s1").map(|c| c.run_id.as_str()), Some("run-c"));
     }
 
     #[test]

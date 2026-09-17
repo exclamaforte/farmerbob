@@ -152,7 +152,11 @@ impl LeaseManager {
                 self.order.push(name.clone());
                 self.resources.insert(
                     name,
-                    ResourceState { max_hold, active: None, queue: VecDeque::new() },
+                    ResourceState {
+                        max_hold,
+                        active: None,
+                        queue: VecDeque::new(),
+                    },
                 );
             }
         }
@@ -183,7 +187,9 @@ impl LeaseManager {
             return RequestOutcome::Granted(active.token.clone());
         }
         if let Some(position) = state.queue.iter().position(|queued| queued == &holder) {
-            return RequestOutcome::Queued { position: position + 1 };
+            return RequestOutcome::Queued {
+                position: position + 1,
+            };
         }
         if state.active.is_none() {
             // A free resource always has an empty queue; if that were ever
@@ -196,7 +202,9 @@ impl LeaseManager {
             let _ = Self::grant_next(state, resource, now);
         }
         state.queue.push_back(holder);
-        RequestOutcome::Queued { position: state.queue.len() }
+        RequestOutcome::Queued {
+            position: state.queue.len(),
+        }
     }
 
     /// Releases the lease proved by `token` and grants the resource to the
@@ -277,7 +285,7 @@ impl LeaseManager {
                     held_for: None,
                     queue_depth: 0,
                     waiting: Vec::new(),
-                }
+                };
             }
         };
         let (holder, held_for) = match &state.active {
@@ -299,23 +307,40 @@ impl LeaseManager {
     /// Stamps a fresh lease onto `holder` in the single holder slot at time
     /// `now`, returning its id and token. The caller must have emptied the
     /// slot; invariant 1 is this function's only door.
-    fn activate(state: &mut ResourceState, holder: HolderId, now: DateTime<Utc>) -> (LeaseId, LeaseToken) {
+    fn activate(
+        state: &mut ResourceState,
+        holder: HolderId,
+        now: DateTime<Utc>,
+    ) -> (LeaseId, LeaseToken) {
         let lease_id = LeaseId::new();
         let token = LeaseToken(uuid::Uuid::new_v4().to_string());
-        state.active = Some(ActiveLease { token: token.clone(), holder, acquired_at: now });
+        state.active = Some(ActiveLease {
+            token: token.clone(),
+            holder,
+            acquired_at: now,
+        });
         (lease_id, token)
     }
 
     /// Pops the queue head and grants it at time `now`. `None` when the
     /// queue is empty — or when the slot is somehow still occupied, where
     /// the one-holder invariant wins over the queue.
-    fn grant_next(state: &mut ResourceState, resource: &ResourceName, now: DateTime<Utc>) -> Option<Grant> {
+    fn grant_next(
+        state: &mut ResourceState,
+        resource: &ResourceName,
+        now: DateTime<Utc>,
+    ) -> Option<Grant> {
         if state.active.is_some() {
             return None;
         }
         let holder = state.queue.pop_front()?;
         let (lease, token) = Self::activate(state, holder.clone(), now);
-        Some(Grant { resource: resource.clone(), holder, lease, token })
+        Some(Grant {
+            resource: resource.clone(),
+            holder,
+            lease,
+            token,
+        })
     }
 }
 
@@ -413,7 +438,9 @@ mod lease_manager_tests {
         let to_b = manager.release(&a, at(10)).expect("queue head is promoted");
         assert_eq!(to_b.holder, holder("b"));
 
-        let to_c = manager.release(&to_b.token, at(20)).expect("next head is promoted");
+        let to_c = manager
+            .release(&to_b.token, at(20))
+            .expect("next head is promoted");
         assert_eq!(to_c.holder, holder("c"));
 
         let to_d = manager
@@ -487,9 +514,11 @@ mod lease_manager_tests {
         let gpu = resource("gpu0");
         manager.register_resource(gpu.clone(), Duration::seconds(60));
 
-        assert!(manager
-            .release(&LeaseToken(String::from("no-such-token")), at(0))
-            .is_none());
+        assert!(
+            manager
+                .release(&LeaseToken(String::from("no-such-token")), at(0))
+                .is_none()
+        );
 
         let token = granted_token(manager.request(&gpu, holder("a"), at(0)));
         assert!(queued(manager.request(&gpu, holder("b"), at(0))));
@@ -546,7 +575,10 @@ mod lease_manager_tests {
         let a = granted_token(manager.request(&gpu, holder("a"), at(0)));
         assert!(queued(manager.request(&gpu, holder("b"), at(0))));
         assert!(queued(manager.request(&gpu, holder("c"), at(0))));
-        assert_eq!(manager.status(&gpu, at(0)).waiting, vec![holder("b"), holder("c")]);
+        assert_eq!(
+            manager.status(&gpu, at(0)).waiting,
+            vec![holder("b"), holder("c")]
+        );
 
         // b held nothing, so no grant is reported, but its queue entry is gone.
         assert!(manager.holder_died(&holder("b"), at(1)).is_empty());
@@ -570,7 +602,9 @@ mod lease_manager_tests {
         let a = granted_token(manager.request(&gpu, holder("a"), at(0)));
         assert!(queued(manager.request(&gpu, holder("b"), at(0))));
 
-        let to_b = manager.release(&a, at(1_000)).expect("b is promoted at handover");
+        let to_b = manager
+            .release(&a, at(1_000))
+            .expect("b is promoted at handover");
         assert_ne!(to_b.token, a, "a handover mints a fresh token");
 
         // b has held for 5s, not 1005s: the stamp is the handover, not a's.
@@ -600,7 +634,10 @@ mod lease_manager_tests {
 
         // a lapses one second past its hold; b is stamped at the sweep, t=61.
         assert_eq!(manager.expire(at(61)).len(), 1);
-        assert!(granted(manager.request(&gpu, holder("b"), at(70))), "b holds now");
+        assert!(
+            granted(manager.request(&gpu, holder("b"), at(70))),
+            "b holds now"
+        );
         assert_eq!(
             manager.status(&gpu, at(71)).held_for,
             Some(Duration::seconds(10)),
@@ -619,7 +656,9 @@ mod lease_manager_tests {
 
         // d queued behind c is promoted in order when c's token is released.
         assert!(queued(manager.request(&gpu, holder("d"), at(82))));
-        let to_d = manager.release(&grants[0].token, at(90)).expect("d is promoted");
+        let to_d = manager
+            .release(&grants[0].token, at(90))
+            .expect("d is promoted");
         assert_eq!(to_d.holder, holder("d"));
 
         // d's full hold runs from 90.
@@ -658,7 +697,10 @@ mod lease_manager_tests {
 
         let a = granted_token(manager.request(&gpu, holder("a"), at(0)));
         assert!(manager.expire(at(59)).is_empty());
-        assert!(manager.expire(at(60)).is_empty(), "exactly the limit is not past it");
+        assert!(
+            manager.expire(at(60)).is_empty(),
+            "exactly the limit is not past it"
+        );
         assert_eq!(manager.status(&gpu, at(60)).holder, Some(holder("a")));
         assert_eq!(manager.expire(at(61)), vec![a]);
     }
@@ -675,7 +717,10 @@ mod lease_manager_tests {
         manager.register_resource(gpu.clone(), Duration::seconds(10));
 
         assert_eq!(manager.status(&gpu, at(5)).holder, Some(holder("a")));
-        assert!(manager.expire(at(10)).is_empty(), "held exactly the new limit");
+        assert!(
+            manager.expire(at(10)).is_empty(),
+            "held exactly the new limit"
+        );
         assert_eq!(manager.expire(at(11)), vec![a]);
     }
 
@@ -706,15 +751,3 @@ mod lease_manager_tests {
         assert!(granted(manager.request(&ghost, holder("b"), at(1))));
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-

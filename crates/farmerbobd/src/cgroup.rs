@@ -66,7 +66,11 @@ pub fn build_command(unit: &str, limits: &ResourceLimits, argv: &[String]) -> Ve
     let mut args = Vec::new();
 
     // Systemd-run base options
-    args.extend(["systemd-run".to_string(), "--user".to_string(), "--scope".to_string()]);
+    args.extend([
+        "systemd-run".to_string(),
+        "--user".to_string(),
+        "--scope".to_string(),
+    ]);
     args.push("--quiet".to_string());
     args.push(format!("--unit={}", unit));
 
@@ -152,13 +156,13 @@ pub fn kill_scope(unit: &str) -> std::io::Result<()> {
 
     if output.status.success() {
         Ok(())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(std::io::Error::other(format!(
-                "failed to stop scope: {}",
-                stderr
-            )))
-        }
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(std::io::Error::other(format!(
+            "failed to stop scope: {}",
+            stderr
+        )))
+    }
 }
 
 /// Query the active state of a systemd scope.
@@ -265,18 +269,21 @@ fn get_cgroup_path() -> Option<String> {
 /// Get the current user ID.
 #[allow(dead_code)]
 fn get_uid() -> Option<u32> {
-    std::env::var("UID").ok().and_then(|u| u.parse().ok()).or_else(|| {
-        std::env::var("USER").ok().and_then(|u| {
-            let pass = std::fs::read_to_string("/etc/passwd").ok()?;
-            for line in pass.lines() {
-                let fields: Vec<&str> = line.split(':').collect();
-                if fields.first() == Some(&u.as_str()) && fields.len() > 2 {
-                    return fields[2].parse().ok();
+    std::env::var("UID")
+        .ok()
+        .and_then(|u| u.parse().ok())
+        .or_else(|| {
+            std::env::var("USER").ok().and_then(|u| {
+                let pass = std::fs::read_to_string("/etc/passwd").ok()?;
+                for line in pass.lines() {
+                    let fields: Vec<&str> = line.split(':').collect();
+                    if fields.first() == Some(&u.as_str()) && fields.len() > 2 {
+                        return fields[2].parse().ok();
+                    }
                 }
-            }
-            None
+                None
+            })
         })
-    })
 }
 
 /// Parse a numeric value from a file.
@@ -359,10 +366,7 @@ oom_kill_adj 0";
     fn test_scope_state_mapping() {
         // This test verifies that the state mapping logic works correctly
         // in real scenarios where systemctl would return actual states.
-        assert_eq!(
-            scope_state("nonexistent-unit-12345"),
-            ScopeState::Gone
-        );
+        assert_eq!(scope_state("nonexistent-unit-12345"), ScopeState::Gone);
     }
 
     // Helper function for testing with static strings

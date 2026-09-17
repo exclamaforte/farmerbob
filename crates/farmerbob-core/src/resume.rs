@@ -100,7 +100,10 @@ pub fn plan(parked: &[Parked], p: Policy, now_ms: u64) -> Vec<Decision> {
         if !is_due(run, p.default_window_ms, now_ms) {
             continue;
         }
-        by_bucket.entry(run.bucket.as_str()).or_default().push(index);
+        by_bucket
+            .entry(run.bucket.as_str())
+            .or_default()
+            .push(index);
     }
 
     // Rank within the bucket determines the staggered release instant.
@@ -157,7 +160,11 @@ pub fn due_now(parked: &[Parked], p: Policy, now_ms: u64) -> Vec<String> {
             releases.push((*at_ms, run.since_ms, run_id.clone()));
         }
     }
-    releases.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2)));
+    releases.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
     releases.into_iter().map(|(_, _, id)| id).collect()
 }
 
@@ -256,10 +263,7 @@ mod tests {
     #[test]
     fn the_k_th_release_is_staggered() {
         let p = policy();
-        let runs = vec![
-            parked("a", "x", 0, Some(0)),
-            parked("b", "x", 1, Some(0)),
-        ];
+        let runs = vec![parked("a", "x", 0, Some(0)), parked("b", "x", 1, Some(0))];
         let decisions = plan(&runs, p, 500);
         assert_eq!(
             decisions[0],
@@ -279,7 +283,10 @@ mod tests {
 
     #[test]
     fn oldest_first_ordering_with_a_deterministic_tie_break() {
-        let p = Policy { batch: 1, ..policy() };
+        let p = Policy {
+            batch: 1,
+            ..policy()
+        };
         // Youngest first in the input; oldest must win the single slot.
         let runs = vec![
             parked("young", "x", 200, Some(0)),
@@ -292,10 +299,7 @@ mod tests {
             Decision::Resume { run_id, .. } if run_id == "old"
         ));
         // Equal age breaks by run_id ascending.
-        let tied = vec![
-            parked("b", "x", 50, Some(0)),
-            parked("a", "x", 50, Some(0)),
-        ];
+        let tied = vec![parked("b", "x", 50, Some(0)), parked("a", "x", 50, Some(0))];
         let decisions = plan(&tied, p, 999);
         assert!(matches!(
             &decisions[1],
@@ -390,11 +394,17 @@ mod tests {
             last_at = at;
         }
         for bucket in ["x", "y"] {
-            let in_bucket: Vec<&String> =
-                due.iter().filter(|id| runs.iter().any(|r| &r.run_id == *id && r.bucket == bucket)).collect();
+            let in_bucket: Vec<&String> = due
+                .iter()
+                .filter(|id| runs.iter().any(|r| &r.run_id == *id && r.bucket == bucket))
+                .collect();
             let sinces: Vec<u64> = in_bucket
                 .iter()
-                .map(|id| runs.iter().find(|r| &r.run_id == *id).map_or(0, |r| r.since_ms))
+                .map(|id| {
+                    runs.iter()
+                        .find(|r| &r.run_id == *id)
+                        .map_or(0, |r| r.since_ms)
+                })
                 .collect();
             let mut sorted = sinces.clone();
             sorted.sort();
@@ -419,10 +429,7 @@ mod tests {
             batch: 0,
             ..policy()
         };
-        let runs = vec![
-            parked("a", "x", 0, Some(0)),
-            parked("b", "x", 1, Some(0)),
-        ];
+        let runs = vec![parked("a", "x", 0, Some(0)), parked("b", "x", 1, Some(0))];
         let decisions = plan(&runs, p, 70);
         assert!(matches!(
             &decisions[0],
@@ -438,15 +445,13 @@ mod tests {
             stagger_ms: 0,
             ..policy()
         };
-        let runs = vec![
-            parked("a", "x", 2, Some(0)),
-            parked("b", "x", 1, Some(0)),
-        ];
+        let runs = vec![parked("a", "x", 2, Some(0)), parked("b", "x", 1, Some(0))];
         let decisions = plan(&runs, p, 77);
-        assert!(decisions.iter().all(|d| matches!(
-            d,
-            Decision::Resume { at_ms: 77, .. }
-        )));
+        assert!(
+            decisions
+                .iter()
+                .all(|d| matches!(d, Decision::Resume { at_ms: 77, .. }))
+        );
     }
 
     #[test]
@@ -480,10 +485,7 @@ mod tests {
 
     #[test]
     fn without_removes_handed_out_runs() {
-        let runs = vec![
-            parked("a", "x", 0, Some(0)),
-            parked("b", "x", 1, Some(0)),
-        ];
+        let runs = vec![parked("a", "x", 0, Some(0)), parked("b", "x", 1, Some(0))];
         let rest = without(&runs, &["a".to_string()]);
         assert_eq!(rest, vec![runs[1].clone()]);
         // Planning twice without recording must not hand out the same run again.
@@ -493,7 +495,6 @@ mod tests {
         assert!(due_now(&rest, p, 100).is_empty());
     }
 }
-
 
 // ESCALATED from cross-examination: codex-luna's suite discriminated on resume.
 // Not a CLAIM -- cross-examination found it directly. Kept only because it passes

@@ -21,7 +21,11 @@ pub enum Eligibility {
     /// Not in a dispatchable state (`limited`, unknown status, …).
     NotDispatchable(String),
     /// A paid route to a model that is also available free and healthy.
-    RedundantPaidRoute { free_arm: String, price_in: f64, price_out: f64 },
+    RedundantPaidRoute {
+        free_arm: String,
+        price_in: f64,
+        price_out: f64,
+    },
 }
 
 impl Eligibility {
@@ -35,7 +39,11 @@ impl Eligibility {
             Eligibility::Ok => None,
             Eligibility::Disabled(why) => Some(format!("disabled: {why}")),
             Eligibility::NotDispatchable(st) => Some(format!("status is `{st}`, not dispatchable")),
-            Eligibility::RedundantPaidRoute { free_arm, price_in, price_out } => Some(format!(
+            Eligibility::RedundantPaidRoute {
+                free_arm,
+                price_in,
+                price_out,
+            } => Some(format!(
                 "costs ${price_in}/${price_out} per 1M but `{free_arm}` is the same model, \
                  free and verified"
             )),
@@ -116,7 +124,9 @@ impl Registry {
         };
         if s.status == "disabled" {
             return Eligibility::Disabled(
-                s.disabled_reason.clone().unwrap_or_else(|| "no reason recorded".into()),
+                s.disabled_reason
+                    .clone()
+                    .unwrap_or_else(|| "no reason recorded".into()),
             );
         }
         if s.status != "verified" && s.status != "untested" {
@@ -125,7 +135,11 @@ impl Registry {
         // A paid route must not run while the same model is available free and healthy.
         if let Some(free) = &s.redundant_with {
             let paid = s.price_in.unwrap_or(0.0) > 0.0;
-            let free_ok = self.sources.get(free).map(|f| f.status == "verified").unwrap_or(false);
+            let free_ok = self
+                .sources
+                .get(free)
+                .map(|f| f.status == "verified")
+                .unwrap_or(false);
             if paid && free_ok {
                 return Eligibility::RedundantPaidRoute {
                     free_arm: free.clone(),
@@ -148,7 +162,9 @@ impl Registry {
             .collect();
         v.sort_by(|a, b| {
             let cost = |s: &Source| s.price_in.unwrap_or(0.0) + s.price_out.unwrap_or(0.0);
-            cost(a.1).partial_cmp(&cost(b.1)).unwrap_or(std::cmp::Ordering::Equal)
+            cost(a.1)
+                .partial_cmp(&cost(b.1))
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         v
     }
@@ -230,7 +246,10 @@ model = "vendor/y"
             "[source.free-arm]\nstatus = \"verified\"",
             "[source.free-arm]\nstatus = \"limited\"",
         ));
-        assert!(r.eligible("paid-twin").is_ok(), "no free route is healthy, so paying is correct");
+        assert!(
+            r.eligible("paid-twin").is_ok(),
+            "no free route is healthy, so paying is correct"
+        );
     }
 
     #[test]

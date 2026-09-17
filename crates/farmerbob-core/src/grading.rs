@@ -94,10 +94,9 @@ impl Ledger {
             return Err(Invalid::NoEvidence);
         }
         if g.basis == Basis::Judgement
-            && !self
-                .grades
-                .iter()
-                .any(|live| live.arm == g.arm && live.task == g.task && live.basis > Basis::Judgement)
+            && !self.grades.iter().any(|live| {
+                live.arm == g.arm && live.task == g.task && live.basis > Basis::Judgement
+            })
         {
             return Err(Invalid::UnsupportedJudgement);
         }
@@ -415,5 +414,3 @@ mod tests {
         assert_eq!(err, Invalid::UnsupportedJudgement);
     }
 }
-
-

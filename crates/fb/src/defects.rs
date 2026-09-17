@@ -425,12 +425,12 @@ pub fn classify_run(run: &CargoRun) -> Measurement<Detection> {
         lines_added: Some(run.graft_lines),
         // Checked before the run: the host module exists or there is no cell.
         declared_targets_present: Some(true),
-            // Synthetic observation: `judge` used as a boolean combinator, not to score a
+        // Synthetic observation: `judge` used as a boolean combinator, not to score a
         // run. No worktree, so no scope to depart from. Some(0) rather than None
         // deliberately -- None means "not assessed" and yields Indeterminate, which
         // here would turn a correct answer into a refusal to answer.
         scope_departures: Some(0),
-};
+    };
     verdict_to_detection(judge(&observation))
 }
 
@@ -1901,5 +1901,3 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "clean\n");
     }
 }
-
-

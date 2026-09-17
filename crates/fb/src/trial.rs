@@ -27,7 +27,14 @@ pub enum Stage {
 
 impl Stage {
     pub fn all() -> &'static [Stage] {
-        &[Stage::Dispatch, Stage::Score, Stage::Critique, Stage::Promote, Stage::Prove, Stage::Report]
+        &[
+            Stage::Dispatch,
+            Stage::Score,
+            Stage::Critique,
+            Stage::Promote,
+            Stage::Prove,
+            Stage::Report,
+        ]
     }
 
     pub fn name(self) -> &'static str {
@@ -133,11 +140,14 @@ impl Trial {
             let ok = match stage {
                 Stage::Dispatch => self.dispatch(),
                 Stage::Score => self.sh("fb-score.sh", &[&self.task, &self.krate]),
-                Stage::Critique => self.sh("fb-critique.sh", &[&self.task, &self.krate, &self.target]),
-                Stage::Promote => self.sh("fb-promote.sh", &[&self.task]),
-                Stage::Prove => {
-                    self.sh("fb-prove.sh", &[&self.task, &self.krate, &self.target, &self.prover])
+                Stage::Critique => {
+                    self.sh("fb-critique.sh", &[&self.task, &self.krate, &self.target])
                 }
+                Stage::Promote => self.sh("fb-promote.sh", &[&self.task]),
+                Stage::Prove => self.sh(
+                    "fb-prove.sh",
+                    &[&self.task, &self.krate, &self.target, &self.prover],
+                ),
                 Stage::Report => self.report(),
             };
             let _ = std::fs::OpenOptions::new()
@@ -152,7 +162,11 @@ impl Trial {
                 // A failed stage is reported and the trial stops there rather than pressing on
                 // with missing evidence -- an adjudication table built on a stage that did not
                 // run is worse than no table.
-                eprintln!("  stage `{}` failed; resume with --from {}", stage.name(), stage.name());
+                eprintln!(
+                    "  stage `{}` failed; resume with --from {}",
+                    stage.name(),
+                    stage.name()
+                );
                 return 1;
             }
         }

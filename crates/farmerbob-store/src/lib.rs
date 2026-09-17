@@ -11,16 +11,16 @@ mod error;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde_json::Value;
 
-use farmerbob_core as core;
 use core::agent::{Agent, AgentKind};
 use core::experiment::Experiment;
 use core::grade::Grade;
 use core::ids::{AgentId, RunId, TaskId};
 use core::run::{Run, RunState};
 use core::task::Task;
+use farmerbob_core as core;
 
 pub use error::StoreError;
 
@@ -215,9 +215,9 @@ impl Store {
 
     /// Gets an agent by ID, or `None` if not found.
     pub fn get_agent(&self, id: AgentId) -> Result<Option<Agent>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, kind, model, provider FROM agents WHERE id = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, kind, model, provider FROM agents WHERE id = ?1")?;
         let mut rows = stmt.query_map([id.as_uuid().to_string()], |row| {
             map_agent_row(row).map_err(store_to_rusqlite)
         })?;
@@ -257,9 +257,9 @@ impl Store {
 
     /// Gets a task by ID, or `None` if not found.
     pub fn get_task(&self, id: TaskId) -> Result<Option<Task>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, repo_path, task_dir FROM tasks WHERE id = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, repo_path, task_dir FROM tasks WHERE id = ?1")?;
         let mut rows = stmt.query_map([id.as_uuid().to_string()], |row| {
             map_task_row(row).map_err(store_to_rusqlite)
         })?;
@@ -389,7 +389,9 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, task_id, agent_id, worktree, branch, slot, state, state_data, created_at, started_at, ended_at FROM runs WHERE state = ?1 ORDER BY id",
         )?;
-        let rows = stmt.query_map([state_name], |row| map_run_row(row).map_err(store_to_rusqlite))?;
+        let rows = stmt.query_map([state_name], |row| {
+            map_run_row(row).map_err(store_to_rusqlite)
+        })?;
         let mut runs = Vec::new();
         for row in rows {
             runs.push(row.map_err(StoreError::Database)?);
@@ -485,9 +487,10 @@ impl Store {
 
         for row in grade_rows {
             let (agent_id_str, mean_grade) = row.map_err(StoreError::Database)?;
-            if let Some(entry) = entries.iter_mut().find(|e| {
-                e.agent_id.as_uuid().to_string() == agent_id_str
-            }) {
+            if let Some(entry) = entries
+                .iter_mut()
+                .find(|e| e.agent_id.as_uuid().to_string() == agent_id_str)
+            {
                 entry.mean_grade = Some(mean_grade);
             }
         }
@@ -509,22 +512,18 @@ fn agent_kind_to_str(kind: &AgentKind) -> &'static str {
 
 fn run_state_data_json(state: &RunState) -> Option<String> {
     match state {
-        RunState::BlockedOnQuota { reset_at } => Some(
-            serde_json::json!({ "reset_at": reset_at.to_rfc3339() }).to_string(),
-        ),
-        RunState::Failed { reason } => {
-            Some(serde_json::json!({ "reason": reason }).to_string())
+        RunState::BlockedOnQuota { reset_at } => {
+            Some(serde_json::json!({ "reset_at": reset_at.to_rfc3339() }).to_string())
         }
+        RunState::Failed { reason } => Some(serde_json::json!({ "reason": reason }).to_string()),
         _ => None,
     }
 }
 
 fn map_agent_row(row: &rusqlite::Row) -> Result<Agent, StoreError> {
-    let id: AgentId = serde_json::from_str(&format!(
-        "\"{}\"",
-        row.get::<_, String>("id")?.as_str()
-    ))
-    .map_err(|e| StoreError::InvalidStateData(e.to_string()))?;
+    let id: AgentId =
+        serde_json::from_str(&format!("\"{}\"", row.get::<_, String>("id")?.as_str()))
+            .map_err(|e| StoreError::InvalidStateData(e.to_string()))?;
     Ok(Agent {
         id,
         kind: agent_kind_from_str(row.get::<_, String>("kind")?.as_str())?,
@@ -534,11 +533,8 @@ fn map_agent_row(row: &rusqlite::Row) -> Result<Agent, StoreError> {
 }
 
 fn map_task_row(row: &rusqlite::Row) -> Result<Task, StoreError> {
-    let id: TaskId = serde_json::from_str(&format!(
-        "\"{}\"",
-        row.get::<_, String>("id")?.as_str()
-    ))
-    .map_err(|e| StoreError::InvalidStateData(e.to_string()))?;
+    let id: TaskId = serde_json::from_str(&format!("\"{}\"", row.get::<_, String>("id")?.as_str()))
+        .map_err(|e| StoreError::InvalidStateData(e.to_string()))?;
     Ok(Task {
         id,
         name: row.get::<_, String>("name")?,
@@ -548,11 +544,8 @@ fn map_task_row(row: &rusqlite::Row) -> Result<Task, StoreError> {
 }
 
 fn map_run_row(row: &rusqlite::Row) -> Result<Run, StoreError> {
-    let id: RunId = serde_json::from_str(&format!(
-        "\"{}\"",
-        row.get::<_, String>("id")?.as_str()
-    ))
-    .map_err(|e| StoreError::InvalidStateData(e.to_string()))?;
+    let id: RunId = serde_json::from_str(&format!("\"{}\"", row.get::<_, String>("id")?.as_str()))
+        .map_err(|e| StoreError::InvalidStateData(e.to_string()))?;
     let task_id: TaskId = serde_json::from_str(&format!(
         "\"{}\"",
         row.get::<_, String>("task_id")?.as_str()
@@ -569,16 +562,22 @@ fn map_run_row(row: &rusqlite::Row) -> Result<Run, StoreError> {
     let created_at = DateTime::parse_from_rfc3339(row.get::<_, String>("created_at")?.as_str())
         .map_err(|e| StoreError::InvalidStateData(e.to_string()))?
         .with_timezone(&Utc);
-    let started_at: Option<DateTime<Utc>> = row.get::<_, Option<String>>("started_at")?.map(|s| {
-        DateTime::parse_from_rfc3339(s.as_str())
-            .map_err(|e| StoreError::InvalidStateData(e.to_string()))
-            .map(|dt| dt.with_timezone(&Utc))
-    }).transpose()?;
-    let ended_at: Option<DateTime<Utc>> = row.get::<_, Option<String>>("ended_at")?.map(|s| {
-        DateTime::parse_from_rfc3339(s.as_str())
-            .map_err(|e| StoreError::InvalidStateData(e.to_string()))
-            .map(|dt| dt.with_timezone(&Utc))
-    }).transpose()?;
+    let started_at: Option<DateTime<Utc>> = row
+        .get::<_, Option<String>>("started_at")?
+        .map(|s| {
+            DateTime::parse_from_rfc3339(s.as_str())
+                .map_err(|e| StoreError::InvalidStateData(e.to_string()))
+                .map(|dt| dt.with_timezone(&Utc))
+        })
+        .transpose()?;
+    let ended_at: Option<DateTime<Utc>> = row
+        .get::<_, Option<String>>("ended_at")?
+        .map(|s| {
+            DateTime::parse_from_rfc3339(s.as_str())
+                .map_err(|e| StoreError::InvalidStateData(e.to_string()))
+                .map(|dt| dt.with_timezone(&Utc))
+        })
+        .transpose()?;
 
     Ok(Run {
         id,
@@ -616,15 +615,16 @@ fn run_state_from(name: &str, data: Option<&str>) -> Result<RunState, StoreError
         }
         "Succeeded" => Ok(RunState::Succeeded),
         "Failed" => {
-            let data = data.ok_or_else(|| {
-                StoreError::InvalidStateData("Failed requires state_data".into())
-            })?;
+            let data = data
+                .ok_or_else(|| StoreError::InvalidStateData("Failed requires state_data".into()))?;
             let value: Value = serde_json::from_str(data)
                 .map_err(|e| StoreError::InvalidStateData(e.to_string()))?;
-            let reason = value["reason"].as_str().ok_or_else(|| {
-                StoreError::InvalidStateData("Failed missing reason".to_string())
-            })?;
-            Ok(RunState::Failed { reason: reason.to_string() })
+            let reason = value["reason"]
+                .as_str()
+                .ok_or_else(|| StoreError::InvalidStateData("Failed missing reason".to_string()))?;
+            Ok(RunState::Failed {
+                reason: reason.to_string(),
+            })
         }
         "Killed" => Ok(RunState::Killed),
         "Abandoned" => Ok(RunState::Abandoned),
@@ -781,7 +781,10 @@ mod tests {
             ..make_run(agent.id, bogus_task_id)
         };
         let result = store.insert_run(&run);
-        assert!(result.is_err(), "inserting run with nonexistent task should fail");
+        assert!(
+            result.is_err(),
+            "inserting run with nonexistent task should fail"
+        );
     }
 
     #[test]
@@ -849,5 +852,3 @@ mod tests {
         assert!(entry.mean_grade.is_some());
     }
 }
-
-

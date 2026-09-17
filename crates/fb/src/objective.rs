@@ -117,7 +117,10 @@ pub fn run_cmd(only: Option<String>) -> i32 {
 
     let mut rows: Vec<Row> = Vec::new();
     for (task, entries) in &score {
-        if let Some(o) = &only && !o.is_empty() && task != o {
+        if let Some(o) = &only
+            && !o.is_empty()
+            && task != o
+        {
             continue;
         }
         let Some(entries_arr) = entries.as_array() else {
@@ -289,13 +292,17 @@ fn classify_outcome(
     read_log: &dyn Fn(&Path) -> Option<String>,
 ) -> String {
     // An explicit, non-empty outcome_class is authoritative.
-    if let Some(Value::String(s)) = rec.get("outcome_class") && !s.is_empty() {
+    if let Some(Value::String(s)) = rec.get("outcome_class")
+        && !s.is_empty()
+    {
         return s.clone();
     }
     if score_verdict_is(score_verdict, "TASK-INVALID") {
         return "task_invalid".to_string();
     }
-    if let Some(rc) = rec.get("rc").and_then(Value::as_i64) && (rc == 143 || rc == 137) {
+    if let Some(rc) = rec.get("rc").and_then(Value::as_i64)
+        && (rc == 143 || rc == 137)
+    {
         return "orchestrator_cancelled".to_string();
     }
     // 127 is "command not found". It is always the harness -- a launcher binary that is not
@@ -385,7 +392,10 @@ fn log_head(rec: &Value, read_log: &dyn Fn(&Path) -> Option<String>) -> Option<S
 /// refused before it began. All three are required. The line alone is not enough -- an agent
 /// can legitimately print an error while working -- and the zero-lines condition is what keeps
 /// a genuinely failing arm from being excused.
-fn launcher_refused_before_the_agent_ran(rec: &Value, read_log: &dyn Fn(&Path) -> Option<String>) -> bool {
+fn launcher_refused_before_the_agent_ran(
+    rec: &Value,
+    read_log: &dyn Fn(&Path) -> Option<String>,
+) -> bool {
     let rc = rec.get("rc").and_then(Value::as_i64).unwrap_or(0);
     let lines = rec.get("lines_added").and_then(Value::as_i64).unwrap_or(-1);
     if rc == 0 || lines != 0 {
@@ -492,7 +502,9 @@ fn render_report(rows: &[Row], count: usize, out_path: &Path) -> String {
         "\n{count} candidate-runs -> {}",
         out_path.display()
     ));
-    s.push_str("\n\nwhere the objective tier does NOT separate candidates (subjective tier needed):");
+    s.push_str(
+        "\n\nwhere the objective tier does NOT separate candidates (subjective tier needed):",
+    );
     for (task, n) in non_discriminating(rows) {
         s.push('\n');
         s.push_str(&format!("  {task:<14}{n} candidates pass the gate"));
@@ -508,16 +520,23 @@ fn non_discriminating(rows: &[Row]) -> Vec<(String, usize)> {
             *by_task.entry(r.task.clone()).or_insert(0) += 1;
         }
     }
-    by_task
-        .into_iter()
-        .filter(|(_, n)| *n > 1)
-        .collect()
+    by_task.into_iter().filter(|(_, n)| *n > 1).collect()
 }
 
 fn header_line() -> String {
     format!(
         "{:<14}{:<22}{:<11}{:>6}{:>7}{:>7}{:>7}{:>8}{:>6}{:>6}{:>7}  OUTCOME",
-        "TASK", "ARM", "VERDICT", "TESTS", "CLIPPY", "LINES", "PORT", "DEFECT", "SECS", "MEM", "$/1M"
+        "TASK",
+        "ARM",
+        "VERDICT",
+        "TESTS",
+        "CLIPPY",
+        "LINES",
+        "PORT",
+        "DEFECT",
+        "SECS",
+        "MEM",
+        "$/1M"
     )
 }
 
@@ -642,7 +661,9 @@ fn load_index(dir: &Path, suffix: &str) -> BTreeMap<String, Value> {
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if let Some(task) = name.strip_suffix(suffix) && let Some(value) = load_json(&entry.path()) {
+        if let Some(task) = name.strip_suffix(suffix)
+            && let Some(value) = load_json(&entry.path())
+        {
             map.insert(task.to_string(), value);
         }
     }
@@ -749,7 +770,10 @@ mod tests {
         let line = row_line(&r);
         // verdict None -> "None"; tests missing -> "-"; price None -> "free".
         assert!(line.contains("None"), "got: {line:?}");
-        assert!(line.contains("  -  "), "missing metric must show dash: {line:?}");
+        assert!(
+            line.contains("  -  "),
+            "missing metric must show dash: {line:?}"
+        );
         assert!(line.contains("free"), "missing price shows free: {line:?}");
         assert!(line.contains("7"), "observed lines shown: {line:?}");
     }
@@ -757,31 +781,40 @@ mod tests {
     #[test]
     fn zero_mem_renders_as_dash_like_the_script() {
         let r = row(
-            "t", "a", Some("PASS"),
+            "t",
+            "a",
+            Some("PASS"),
             Measurement::observed(json!(1)),
             Measurement::observed(json!("0")),
             Measurement::observed(json!(1)),
             Some(json!(1)),
-            Some("1/1"), None,
+            Some("1/1"),
+            None,
             Measurement::observed(json!(1)),
             Measurement::observed(json!(0)),
             Some(0.0),
             "arm_result",
         );
         let line = row_line(&r);
-        assert!(line.contains("  -  "), "measured 0 mem shows dash: {line:?}");
+        assert!(
+            line.contains("  -  "),
+            "measured 0 mem shows dash: {line:?}"
+        );
         assert!(line.contains("0.00"), "price 0.0 formatted: {line:?}");
     }
 
     #[test]
     fn crates_field_is_renamed_from_crates_touched() {
         let r = row(
-            "t", "a", Some("PASS"),
+            "t",
+            "a",
+            Some("PASS"),
             Measurement::observed(json!(1)),
             Measurement::observed(json!("0")),
             Measurement::observed(json!(1)),
             Some(json!(3)),
-            None, None,
+            None,
+            None,
             Measurement::observed(json!(1)),
             Measurement::observed(json!(1)),
             Some(2.0),
@@ -790,7 +823,10 @@ mod tests {
         let obj = row_to_json(&r);
         assert!(obj.get("crates").is_some(), "wire field is 'crates'");
         assert_eq!(obj.get("crates"), Some(&json!(3)));
-        assert!(obj.get("crates_touched").is_none(), "original name must not leak");
+        assert!(
+            obj.get("crates_touched").is_none(),
+            "original name must not leak"
+        );
         assert_eq!(obj.get("task"), Some(&json!("t")));
         assert_eq!(obj.get("arm"), Some(&json!("a")));
         assert_eq!(obj.get("outcome"), Some(&json!("arm_result")));
@@ -799,12 +835,15 @@ mod tests {
     #[test]
     fn json_omits_nothing_and_uses_null_for_absent() {
         let r = row(
-            "t", "a", None,
+            "t",
+            "a",
+            None,
             Measurement::not_attempted(),
             Measurement::nothing_to_measure("x"),
             Measurement::observed(json!(1)),
             None,
-            None, None,
+            None,
+            None,
             Measurement::observed(json!(1)),
             Measurement::not_attempted(),
             None,
@@ -815,12 +854,26 @@ mod tests {
         // feature, so we assert the field NAMES (the wire contract) rather than
         // their order; every consumer of objective.json reads it by key.
         for name in [
-            "task", "arm", "verdict", "tests", "clippy", "lines", "crates",
-            "portability", "defect_sens", "secs", "mem_mb", "price", "outcome",
+            "task",
+            "arm",
+            "verdict",
+            "tests",
+            "clippy",
+            "lines",
+            "crates",
+            "portability",
+            "defect_sens",
+            "secs",
+            "mem_mb",
+            "price",
+            "outcome",
         ] {
             assert!(obj.get(name).is_some(), "wire field {name} must be present");
         }
-        assert!(obj.get("crates_touched").is_none(), "original name must not leak");
+        assert!(
+            obj.get("crates_touched").is_none(),
+            "original name must not leak"
+        );
         assert_eq!(obj.get("tests"), Some(&Value::Null));
         assert_eq!(obj.get("crates"), Some(&Value::Null));
         assert_eq!(obj.get("price"), Some(&Value::Null));
@@ -872,7 +925,10 @@ mod tests {
                    \u{1b}[91m\u{1b}[1mError: \u{1b}[0mToken limit exceeded: Tokens per day limit reached (10173826/10000000)\n";
         let rec = json!({"log": "x.log", "verdict": "NO-OP", "rc": 1, "lines_added": 0});
         let reader = |_: &Path| Some(log.to_string());
-        assert_eq!(classify_outcome(&rec, Some(&json!("NO-OP")), &reader), "quota_limited");
+        assert_eq!(
+            classify_outcome(&rec, Some(&json!("NO-OP")), &reader),
+            "quota_limited"
+        );
     }
 
     /// The shape rule must fire on a refusal string NOBODY has enumerated. This is the whole
@@ -902,7 +958,10 @@ mod tests {
         let log = "Error: something went wrong while I was working\n";
         let rec = json!({"log": "x.log", "verdict": "PASS", "rc": 1, "lines_added": 240});
         let reader = |_: &Path| Some(log.to_string());
-        assert_ne!(classify_outcome(&rec, Some(&json!("PASS")), &reader), "quota_limited");
+        assert_ne!(
+            classify_outcome(&rec, Some(&json!("PASS")), &reader),
+            "quota_limited"
+        );
     }
 
     /// A clean exit is not a refusal even with zero lines: that is an ordinary NO-OP, the arm
@@ -912,7 +971,10 @@ mod tests {
         let log = "\u{1b}[0m\n> build x\nError: nothing\n";
         let rec = json!({"log": "x.log", "verdict": "NO-OP", "rc": 0, "lines_added": 0});
         let reader = |_: &Path| Some(log.to_string());
-        assert_eq!(classify_outcome(&rec, Some(&json!("NO-OP")), &reader), "arm_result");
+        assert_eq!(
+            classify_outcome(&rec, Some(&json!("NO-OP")), &reader),
+            "arm_result"
+        );
     }
 
     /// rc=127 is the harness failing to launch, never the model failing to work.
@@ -947,7 +1009,8 @@ mod tests {
     /// Both directions in one test, so neither can be fixed by breaking the other.
     #[test]
     fn a_real_refusal_still_fires_when_it_begins_its_line() {
-        let refusal = "\u{1b}[91m\u{1b}[1mError: \u{1b}[0mRate limit exceeded: free-models-per-day.\n";
+        let refusal =
+            "\u{1b}[91m\u{1b}[1mError: \u{1b}[0mRate limit exceeded: free-models-per-day.\n";
         let rec = json!({"log": "x.log", "verdict": "NO-OP", "rc": 1});
         let reader = |_: &Path| Some(refusal.to_string());
         assert_eq!(
@@ -1003,18 +1066,51 @@ mod tests {
     fn unanimity_reclassifies_only_when_all_wrote_zero() {
         // All three arm_result rows wrote zero lines -> the task is indicted.
         let mut rows = vec![
-            row("gpu-lease", "a", Some("PASS"),
-                Measurement::observed(json!(1)), Measurement::observed(json!("0")),
-                Measurement::observed(json!(0)), Some(json!(1)), None, None,
-                Measurement::observed(json!(1)), Measurement::observed(json!(1)), Some(1.0), "arm_result"),
-            row("gpu-lease", "b", Some("PASS"),
-                Measurement::observed(json!(1)), Measurement::observed(json!("0")),
-                Measurement::observed(json!(0)), Some(json!(1)), None, None,
-                Measurement::observed(json!(1)), Measurement::observed(json!(1)), Some(1.0), "arm_result"),
-            row("gpu-lease", "c", Some("PASS"),
-                Measurement::observed(json!(1)), Measurement::observed(json!("0")),
-                Measurement::observed(json!(0)), Some(json!(1)), None, None,
-                Measurement::observed(json!(1)), Measurement::observed(json!(1)), Some(1.0), "arm_result"),
+            row(
+                "gpu-lease",
+                "a",
+                Some("PASS"),
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!("0")),
+                Measurement::observed(json!(0)),
+                Some(json!(1)),
+                None,
+                None,
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!(1)),
+                Some(1.0),
+                "arm_result",
+            ),
+            row(
+                "gpu-lease",
+                "b",
+                Some("PASS"),
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!("0")),
+                Measurement::observed(json!(0)),
+                Some(json!(1)),
+                None,
+                None,
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!(1)),
+                Some(1.0),
+                "arm_result",
+            ),
+            row(
+                "gpu-lease",
+                "c",
+                Some("PASS"),
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!("0")),
+                Measurement::observed(json!(0)),
+                Some(json!(1)),
+                None,
+                None,
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!(1)),
+                Some(1.0),
+                "arm_result",
+            ),
         ];
         let by_task = unanimity_groups(&rows);
         apply_unanimity(&mut rows, &by_task);
@@ -1024,27 +1120,63 @@ mod tests {
 
         // One arm wrote five lines: unanimity must NOT fire.
         let mut rows = vec![
-            row("gpu-lease", "a", Some("PASS"),
-                Measurement::observed(json!(1)), Measurement::observed(json!("0")),
-                Measurement::observed(json!(0)), Some(json!(1)), None, None,
-                Measurement::observed(json!(1)), Measurement::observed(json!(1)), Some(1.0), "arm_result"),
-            row("gpu-lease", "b", Some("PASS"),
-                Measurement::observed(json!(1)), Measurement::observed(json!("0")),
-                Measurement::observed(json!(5)), Some(json!(1)), None, None,
-                Measurement::observed(json!(1)), Measurement::observed(json!(1)), Some(1.0), "arm_result"),
+            row(
+                "gpu-lease",
+                "a",
+                Some("PASS"),
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!("0")),
+                Measurement::observed(json!(0)),
+                Some(json!(1)),
+                None,
+                None,
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!(1)),
+                Some(1.0),
+                "arm_result",
+            ),
+            row(
+                "gpu-lease",
+                "b",
+                Some("PASS"),
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!("0")),
+                Measurement::observed(json!(5)),
+                Some(json!(1)),
+                None,
+                None,
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!(1)),
+                Some(1.0),
+                "arm_result",
+            ),
         ];
         let by_task = unanimity_groups(&rows);
         apply_unanimity(&mut rows, &by_task);
-        assert_eq!(rows[0].outcome, "arm_result", "a writer of 5 lines breaks unanimity");
+        assert_eq!(
+            rows[0].outcome, "arm_result",
+            "a writer of 5 lines breaks unanimity"
+        );
         assert_eq!(rows[1].outcome, "arm_result");
     }
 
     #[test]
     fn unanimity_does_not_fire_on_single_arm() {
-        let mut rows = vec![row("t", "a", Some("PASS"),
-            Measurement::observed(json!(1)), Measurement::observed(json!("0")),
-            Measurement::observed(json!(0)), Some(json!(1)), None, None,
-            Measurement::observed(json!(1)), Measurement::observed(json!(1)), Some(1.0), "arm_result")];
+        let mut rows = vec![row(
+            "t",
+            "a",
+            Some("PASS"),
+            Measurement::observed(json!(1)),
+            Measurement::observed(json!("0")),
+            Measurement::observed(json!(0)),
+            Some(json!(1)),
+            None,
+            None,
+            Measurement::observed(json!(1)),
+            Measurement::observed(json!(1)),
+            Some(1.0),
+            "arm_result",
+        )];
         let by_task = unanimity_groups(&rows);
         apply_unanimity(&mut rows, &by_task);
         assert_eq!(rows[0].outcome, "arm_result", "one arm cannot be unanimous");
@@ -1055,36 +1187,94 @@ mod tests {
         // The bug this port exists to remove: an unmeasured line count must not
         // be read as zero and falsely indict the task.
         let mut rows = vec![
-            row("t", "a", Some("PASS"),
-                Measurement::observed(json!(1)), Measurement::observed(json!("0")),
-                Measurement::not_attempted(), Some(json!(1)), None, None,
-                Measurement::observed(json!(1)), Measurement::observed(json!(1)), Some(1.0), "arm_result"),
-            row("t", "b", Some("PASS"),
-                Measurement::observed(json!(1)), Measurement::observed(json!("0")),
-                Measurement::not_attempted(), Some(json!(1)), None, None,
-                Measurement::observed(json!(1)), Measurement::observed(json!(1)), Some(1.0), "arm_result"),
+            row(
+                "t",
+                "a",
+                Some("PASS"),
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!("0")),
+                Measurement::not_attempted(),
+                Some(json!(1)),
+                None,
+                None,
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!(1)),
+                Some(1.0),
+                "arm_result",
+            ),
+            row(
+                "t",
+                "b",
+                Some("PASS"),
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!("0")),
+                Measurement::not_attempted(),
+                Some(json!(1)),
+                None,
+                None,
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!(1)),
+                Some(1.0),
+                "arm_result",
+            ),
         ];
         let by_task = unanimity_groups(&rows);
         apply_unanimity(&mut rows, &by_task);
-        assert_eq!(rows[0].outcome, "arm_result", "unmeasured lines are not zero");
+        assert_eq!(
+            rows[0].outcome, "arm_result",
+            "unmeasured lines are not zero"
+        );
         assert_eq!(rows[1].outcome, "arm_result");
     }
 
     #[test]
     fn non_discriminating_lists_tasks_with_several_passers() {
         let rows = vec![
-            row("t1", "a", Some("PASS"),
-                Measurement::observed(json!(1)), Measurement::observed(json!("0")),
-                Measurement::observed(json!(1)), Some(json!(1)), None, None,
-                Measurement::observed(json!(1)), Measurement::observed(json!(1)), Some(1.0), "arm_result"),
-            row("t1", "b", Some("PASS"),
-                Measurement::observed(json!(1)), Measurement::observed(json!("0")),
-                Measurement::observed(json!(1)), Some(json!(1)), None, None,
-                Measurement::observed(json!(1)), Measurement::observed(json!(1)), Some(1.0), "arm_result"),
-            row("t2", "a", Some("PASS"),
-                Measurement::observed(json!(1)), Measurement::observed(json!("0")),
-                Measurement::observed(json!(1)), Some(json!(1)), None, None,
-                Measurement::observed(json!(1)), Measurement::observed(json!(1)), Some(1.0), "arm_result"),
+            row(
+                "t1",
+                "a",
+                Some("PASS"),
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!("0")),
+                Measurement::observed(json!(1)),
+                Some(json!(1)),
+                None,
+                None,
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!(1)),
+                Some(1.0),
+                "arm_result",
+            ),
+            row(
+                "t1",
+                "b",
+                Some("PASS"),
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!("0")),
+                Measurement::observed(json!(1)),
+                Some(json!(1)),
+                None,
+                None,
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!(1)),
+                Some(1.0),
+                "arm_result",
+            ),
+            row(
+                "t2",
+                "a",
+                Some("PASS"),
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!("0")),
+                Measurement::observed(json!(1)),
+                Some(json!(1)),
+                None,
+                None,
+                Measurement::observed(json!(1)),
+                Measurement::observed(json!(1)),
+                Some(1.0),
+                "arm_result",
+            ),
         ];
         let list = non_discriminating(&rows);
         assert_eq!(list, vec![("t1".to_string(), 2)]);
@@ -1112,7 +1302,3 @@ mod tests {
         }
     }
 }
-
-
-
-

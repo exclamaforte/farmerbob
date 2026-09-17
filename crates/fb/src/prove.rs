@@ -121,7 +121,9 @@ pub fn parse_test_count(output: &str, word: &str) -> Measurement<u32> {
                 while j > 0 && bytes[j - 1].is_ascii_digit() {
                     j -= 1;
                 }
-                if j < i - 1 && let Ok(n) = output[j..i - 1].parse::<u32>() {
+                if j < i - 1
+                    && let Ok(n) = output[j..i - 1].parse::<u32>()
+                {
                     return Measurement::observed(n);
                 }
             }
@@ -141,7 +143,9 @@ pub fn parse_test_count(output: &str, word: &str) -> Measurement<u32> {
 fn min_meas(a: &Measurement<u32>, b: &Measurement<u32>) -> Measurement<u32> {
     match (a, b) {
         (Measurement::Observed(x), Measurement::Observed(y)) => Measurement::observed(*x.min(y)),
-        (Measurement::Missing(m), _) | (_, Measurement::Missing(m)) => Measurement::Missing(m.clone()),
+        (Measurement::Missing(m), _) | (_, Measurement::Missing(m)) => {
+            Measurement::Missing(m.clone())
+        }
     }
 }
 
@@ -155,7 +159,9 @@ fn sub_meas(a: &Measurement<u32>, b: &Measurement<u32>) -> Measurement<u32> {
         (Measurement::Observed(x), Measurement::Observed(y)) => {
             Measurement::observed(x.saturating_sub(*y))
         }
-        (Measurement::Missing(m), _) | (_, Measurement::Missing(m)) => Measurement::Missing(m.clone()),
+        (Measurement::Missing(m), _) | (_, Measurement::Missing(m)) => {
+            Measurement::Missing(m.clone())
+        }
     }
 }
 
@@ -316,10 +322,7 @@ pub fn aggregate(rows: &[SubjectResult], claims: &[ClaimRec]) -> Aggregate {
         .iter()
         .filter_map(|r| r.confirmed.value().copied())
         .sum();
-    let refuted_total: u32 = rows
-        .iter()
-        .filter_map(|r| r.refuted.value().copied())
-        .sum();
+    let refuted_total: u32 = rows.iter().filter_map(|r| r.refuted.value().copied()).sum();
 
     Aggregate {
         subjects: rows.to_vec(),
@@ -415,11 +418,13 @@ fn run(bead: &str, krate: &str, target: &str, prover: &str) -> Result<i32> {
     let subjects = subjects_with_testable(&claims);
 
     // `echo "${#SUBJECTS[@]} implementations have claims against them"`
-    println!("{} implementations have claims against them", subjects.len());
+    println!(
+        "{} implementations have claims against them",
+        subjects.len()
+    );
 
     let proofs = logs_dir().join("proofs").join(bead);
-    std::fs::create_dir_all(&proofs)
-        .with_context(|| format!("creating {}", proofs.display()))?;
+    std::fs::create_dir_all(&proofs).with_context(|| format!("creating {}", proofs.display()))?;
 
     let mut rows: Vec<SubjectResult> = Vec::new();
     for subject in &subjects {
@@ -445,7 +450,10 @@ fn run(bead: &str, krate: &str, target: &str, prover: &str) -> Result<i32> {
         critics: &agg.critics,
     };
     write_json_pretty(&out, &report)?;
-    print!("{}", summary_text(agg.confirmed_total, agg.refuted_total, &out));
+    print!(
+        "{}",
+        summary_text(agg.confirmed_total, agg.refuted_total, &out)
+    );
     Ok(0)
 }
 
@@ -508,10 +516,15 @@ fn process_subject(
     let candidate_fail = parse_test_count(&cand_out, "failed");
 
     // The reference veto.
-    let (reference_fail, veto) =
-        reference_veto(&repo, krate, target, &cand_tree, proofs, subject);
+    let (reference_fail, veto) = reference_veto(&repo, krate, target, &cand_tree, proofs, subject);
 
-    let result = prove_subject(subject, candidate_pass, candidate_fail, reference_fail, veto);
+    let result = prove_subject(
+        subject,
+        candidate_pass,
+        candidate_fail,
+        reference_fail,
+        veto,
+    );
     let line = format_subject_line(&result);
     Ok(Some((result, line)))
 }
@@ -583,7 +596,9 @@ fn reference_veto(
             "  {subject}: VETO UNAVAILABLE -- HEAD has no reference for {target}; confirmations are PROVISIONAL"
         );
         return (
-            Measurement::nothing_to_measure("HEAD has no reference implementation for the module under test"),
+            Measurement::nothing_to_measure(
+                "HEAD has no reference implementation for the module under test",
+            ),
             VetoState::Unavailable,
         );
     }
@@ -593,10 +608,7 @@ fn reference_veto(
     std::fs::create_dir_all(&ref_tree).ok();
     copy_worktree(repo, &ref_tree).ok();
 
-    if let Err(e) = graft_proved_module(
-        &cand_tree.join(target),
-        &ref_tree.join(target),
-    ) {
+    if let Err(e) = graft_proved_module(&cand_tree.join(target), &ref_tree.join(target)) {
         eprintln!("warn: reference graft failed for {subject}: {e}");
         return (
             Measurement::instrument_failed("reference graft failed"),
@@ -663,8 +675,7 @@ fn copy_worktree(from: &Path, to: &Path) -> Result<()> {
     for name in ["Cargo.toml", "Cargo.lock", "rustfmt.toml"] {
         let s = from.join(name);
         if s.exists() {
-            std::fs::copy(&s, to.join(name))
-                .with_context(|| format!("copying {name}"))?;
+            std::fs::copy(&s, to.join(name)).with_context(|| format!("copying {name}"))?;
         }
     }
     let from_crates = from.join("crates");
@@ -796,9 +807,11 @@ mod tests {
         assert!(parse_test_count(out, "passed").absent().is_some());
         assert!(parse_test_count(out, "failed").absent().is_some());
         // A bare occurrence of the word with no preceding count must not match.
-        assert!(parse_test_count("the test passed cleanly", "passed")
-            .absent()
-            .is_some());
+        assert!(
+            parse_test_count("the test passed cleanly", "passed")
+                .absent()
+                .is_some()
+        );
     }
 
     #[test]
@@ -824,9 +837,12 @@ mod tests {
             Measurement::nothing_to_measure("no reference"),
             VetoState::Unavailable,
         );
-        assert_eq!(r.vetoed, Measurement::Missing(
-            farmerbob_core::measurement::Absent::NothingToMeasure { reason: "no reference".to_string() }
-        ));
+        assert_eq!(
+            r.vetoed,
+            Measurement::Missing(farmerbob_core::measurement::Absent::NothingToMeasure {
+                reason: "no reference".to_string()
+            })
+        );
         assert!(r.confirmed.absent().is_some());
         assert!(r.veto.is_unavailable());
         assert_eq!(r.refuted, Measurement::observed(5));
@@ -855,14 +871,20 @@ mod tests {
             "  {:<22} proved 10: 2 CONFIRMED, 7 refuted, 1 VETOED (also fail on the reference)\n",
             "sensitivity"
         );
-        assert_eq!(got, want, "per-subject line must match the script's printf exactly");
+        assert_eq!(
+            got, want,
+            "per-subject line must match the script's printf exactly"
+        );
     }
 
     #[test]
     fn summary_format_is_byte_for_byte() {
         let got = summary_text(2, 7, Path::new("/logs/t.proved.json"));
         let want = "\n  2 claims CONFIRMED by execution, 7 refuted\n-> /logs/t.proved.json\n";
-        assert_eq!(got, want, "summary lines must match the script's closing python");
+        assert_eq!(
+            got, want,
+            "summary lines must match the script's closing python"
+        );
     }
 
     #[test]
@@ -885,11 +907,31 @@ mod tests {
             },
         ];
         let claims = vec![
-            ClaimRec { kind: "TESTABLE".to_string(), subject: "alpha".to_string(), critic: "c1".to_string() },
-            ClaimRec { kind: "TESTABLE".to_string(), subject: "alpha".to_string(), critic: "c1".to_string() },
-            ClaimRec { kind: "TESTABLE".to_string(), subject: "beta".to_string(), critic: "c2".to_string() },
-            ClaimRec { kind: "EDITORIAL".to_string(), subject: "alpha".to_string(), critic: "c3".to_string() },
-            ClaimRec { kind: "TESTABLE".to_string(), subject: "ghost".to_string(), critic: "c4".to_string() },
+            ClaimRec {
+                kind: "TESTABLE".to_string(),
+                subject: "alpha".to_string(),
+                critic: "c1".to_string(),
+            },
+            ClaimRec {
+                kind: "TESTABLE".to_string(),
+                subject: "alpha".to_string(),
+                critic: "c1".to_string(),
+            },
+            ClaimRec {
+                kind: "TESTABLE".to_string(),
+                subject: "beta".to_string(),
+                critic: "c2".to_string(),
+            },
+            ClaimRec {
+                kind: "EDITORIAL".to_string(),
+                subject: "alpha".to_string(),
+                critic: "c3".to_string(),
+            },
+            ClaimRec {
+                kind: "TESTABLE".to_string(),
+                subject: "ghost".to_string(),
+                critic: "c4".to_string(),
+            },
         ];
         let agg = aggregate(&rows, &claims);
         // c1 has two TESTABLE claims on "alpha", both on a confirmed subject.
@@ -914,7 +956,10 @@ mod tests {
         let mut critics = BTreeMap::new();
         critics.insert(
             "c1".to_string(),
-            CriticCredit { claims: 1, on_confirmed_subjects: 1 },
+            CriticCredit {
+                claims: 1,
+                on_confirmed_subjects: 1,
+            },
         );
         let report = FinalReport {
             subjects: rows.iter().map(SubjectResult::record).collect(),

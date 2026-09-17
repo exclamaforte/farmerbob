@@ -136,26 +136,12 @@ pub struct Subscribe {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Event {
-    RunStateChanged {
-        run_id: String,
-        state: String,
-    },
-    LeaseGranted {
-        lease_id: String,
-        run_id: String,
-    },
-    LeaseReleased {
-        lease_id: String,
-    },
-    ExperimentFinished {
-        experiment_id: String,
-    },
-    QuotaParked {
-        run_id: String,
-    },
-    Heartbeat {
-        timestamp: String,
-    },
+    RunStateChanged { run_id: String, state: String },
+    LeaseGranted { lease_id: String, run_id: String },
+    LeaseReleased { lease_id: String },
+    ExperimentFinished { experiment_id: String },
+    QuotaParked { run_id: String },
+    Heartbeat { timestamp: String },
 }
 
 /// Serialize a message to a single compact JSON line terminated by `\n`.
@@ -208,7 +194,9 @@ mod tests {
 
     #[test]
     fn hello_handshake() {
-        let hello = Hello { proto_version: PROTO_VERSION };
+        let hello = Hello {
+            proto_version: PROTO_VERSION,
+        };
         let encoded = encode(&hello).unwrap();
         assert!(encoded.ends_with('\n'));
         assert!(!encoded[..encoded.len() - 1].contains('\n'));
@@ -277,7 +265,9 @@ mod tests {
         });
         let encoded = encode(&resp).unwrap();
         let decoded: Response = decode_line(encoded.trim_end()).unwrap();
-        assert!(matches!(decoded, Response::Err(ref err) if err.id == 2 && err.error.code == ErrorCode::NotFound));
+        assert!(
+            matches!(decoded, Response::Err(ref err) if err.id == 2 && err.error.code == ErrorCode::NotFound)
+        );
     }
 
     #[test]
@@ -298,7 +288,9 @@ mod tests {
         };
         let encoded = encode(&evt).unwrap();
         let decoded: Event = decode_line(encoded.trim_end()).unwrap();
-        assert!(matches!(decoded, Event::RunStateChanged { run_id, state } if run_id == "run-1" && state == "Running"));
+        assert!(
+            matches!(decoded, Event::RunStateChanged { run_id, state } if run_id == "run-1" && state == "Running")
+        );
     }
 
     #[test]
@@ -309,7 +301,9 @@ mod tests {
         };
         let encoded = encode(&evt).unwrap();
         let decoded: Event = decode_line(encoded.trim_end()).unwrap();
-        assert!(matches!(decoded, Event::LeaseGranted { lease_id, run_id } if lease_id == "lease-1" && run_id == "run-1"));
+        assert!(
+            matches!(decoded, Event::LeaseGranted { lease_id, run_id } if lease_id == "lease-1" && run_id == "run-1")
+        );
     }
 
     #[test]
@@ -329,7 +323,9 @@ mod tests {
         };
         let encoded = encode(&evt).unwrap();
         let decoded: Event = decode_line(encoded.trim_end()).unwrap();
-        assert!(matches!(decoded, Event::ExperimentFinished { experiment_id } if experiment_id == "exp-1"));
+        assert!(
+            matches!(decoded, Event::ExperimentFinished { experiment_id } if experiment_id == "exp-1")
+        );
     }
 
     #[test]
@@ -349,7 +345,9 @@ mod tests {
         };
         let encoded = encode(&evt).unwrap();
         let decoded: Event = decode_line(encoded.trim_end()).unwrap();
-        assert!(matches!(decoded, Event::Heartbeat { timestamp } if timestamp == "2024-01-01T00:00:00Z"));
+        assert!(
+            matches!(decoded, Event::Heartbeat { timestamp } if timestamp == "2024-01-01T00:00:00Z")
+        );
     }
 
     #[test]

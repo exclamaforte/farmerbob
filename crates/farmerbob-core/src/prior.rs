@@ -160,7 +160,11 @@ pub fn pareto_frontier(arms: &[(String, f64, Posterior)]) -> Vec<String> {
         a_cost
             .partial_cmp(&b_cost)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(b_mean.partial_cmp(&a_mean).unwrap_or(std::cmp::Ordering::Equal))
+            .then(
+                b_mean
+                    .partial_cmp(&a_mean)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
     });
     kept.iter().map(|(name, _, _)| name.clone()).collect()
 }
@@ -182,11 +186,7 @@ fn dominates(cost_a: f64, mean_a: f64, cost_b: f64, mean_b: f64) -> bool {
 /// `a + b`, clamped to `f64::MAX` so finite inputs can never produce infinity.
 fn saturating_add(a: f64, b: f64) -> f64 {
     let sum = a + b;
-    if sum.is_finite() {
-        sum
-    } else {
-        f64::MAX
-    }
+    if sum.is_finite() { sum } else { f64::MAX }
 }
 
 #[cfg(test)]
@@ -212,7 +212,10 @@ mod tests {
     }
 
     fn post(mean: f64) -> Posterior {
-        Posterior { alpha: mean, beta: 1.0 - mean }
+        Posterior {
+            alpha: mean,
+            beta: 1.0 - mean,
+        }
     }
 
     #[test]
@@ -233,7 +236,10 @@ mod tests {
         let q = update(p, 0, 4);
         assert_eq!(q.beta, 5.0);
         assert!(q.beta.is_finite());
-        assert!(q.mean() > 0.0 && q.mean() < 1.0, "evidence must be able to move a certain arm");
+        assert!(
+            q.mean() > 0.0 && q.mean() < 1.0,
+            "evidence must be able to move a certain arm"
+        );
     }
 
     #[test]
@@ -269,7 +275,10 @@ mod tests {
         for i in 0..20 {
             current = update(current, 1, 0);
             let w = evidence_weight(seeded, current);
-            assert!(w > last, "weight must rise with each observation (step {i})");
+            assert!(
+                w > last,
+                "weight must rise with each observation (step {i})"
+            );
             assert!(w <= 1.0);
             last = w;
         }
@@ -283,13 +292,19 @@ mod tests {
             current = update(current, 1, 1);
         }
         let w = evidence_weight(seeded, current);
-        assert!(w > 0.9, "after 10k observations the weight must approach 1.0");
+        assert!(
+            w > 0.9,
+            "after 10k observations the weight must approach 1.0"
+        );
         assert!(w <= 1.0);
     }
 
     #[test]
     fn evidence_weight_is_zero_only_at_the_seed() {
-        let seeded = Posterior { alpha: 1.0, beta: 1.0 };
+        let seeded = Posterior {
+            alpha: 1.0,
+            beta: 1.0,
+        };
         assert_eq!(evidence_weight(seeded, seeded), 0.0);
         let one = update(seeded, 1, 0);
         let w = evidence_weight(seeded, one);
@@ -327,9 +342,15 @@ mod tests {
 
     #[test]
     fn update_saturates_instead_of_overflowing() {
-        let p = Posterior { alpha: f64::MAX, beta: 1.0 };
+        let p = Posterior {
+            alpha: f64::MAX,
+            beta: 1.0,
+        };
         let q = update(p, u32::MAX, u32::MAX);
-        assert!(q.alpha.is_finite(), "alpha must saturate, not overflow to infinity");
+        assert!(
+            q.alpha.is_finite(),
+            "alpha must saturate, not overflow to infinity"
+        );
         assert!(q.beta.is_finite());
         assert_eq!(q.alpha, f64::MAX);
         assert_eq!(q.beta, 4_294_967_296.0);
@@ -396,32 +417,45 @@ mod tests {
             arm("free", 0.0, post(0.4)),
         ]);
         assert!(frontier.iter().any(|n| n == "free"));
-        assert_eq!(frontier[0], "free".to_string(), "free is cheapest and must come first");
+        assert_eq!(
+            frontier[0],
+            "free".to_string(),
+            "free is cheapest and must come first"
+        );
     }
 
     #[test]
     fn dominated_arm_does_not_appear_on_the_frontier() {
-        let frontier = pareto_frontier(&[
-            arm("good", 1.0, post(0.8)),
-            arm("bad", 5.0, post(0.7)),
-        ]);
+        let frontier = pareto_frontier(&[arm("good", 1.0, post(0.8)), arm("bad", 5.0, post(0.7))]);
         assert_eq!(frontier, vec!["good".to_string()]);
     }
 
     #[test]
     fn cost_tie_is_broken_by_posterior_mean() {
-        let frontier = pareto_frontier(&[
-            arm("weak", 2.0, post(0.3)),
-            arm("strong", 2.0, post(0.8)),
-        ]);
+        let frontier =
+            pareto_frontier(&[arm("weak", 2.0, post(0.3)), arm("strong", 2.0, post(0.8))]);
         assert_eq!(frontier, vec!["strong".to_string()]);
     }
 
     #[test]
     fn mean_difference_within_1e9_is_a_tie_not_a_ranking() {
         let frontier = pareto_frontier(&[
-            arm("dear", 2.0, Posterior { alpha: 6.000000002, beta: 4.0 }),
-            arm("cheap", 1.0, Posterior { alpha: 6.000000001, beta: 4.0 }),
+            arm(
+                "dear",
+                2.0,
+                Posterior {
+                    alpha: 6.000000002,
+                    beta: 4.0,
+                },
+            ),
+            arm(
+                "cheap",
+                1.0,
+                Posterior {
+                    alpha: 6.000000001,
+                    beta: 4.0,
+                },
+            ),
         ]);
         assert_eq!(frontier, vec!["cheap".to_string()]);
     }
@@ -442,15 +476,16 @@ mod tests {
             arm("dear", 3.0, post(0.9)),
             arm("cheap", 1.0, post(0.4)),
         ]);
-        assert_eq!(frontier, vec!["cheap".to_string(), "mid".to_string(), "dear".to_string()]);
+        assert_eq!(
+            frontier,
+            vec!["cheap".to_string(), "mid".to_string(), "dear".to_string()]
+        );
     }
 
     #[test]
     fn cheaper_but_less_capable_does_not_dominate() {
-        let frontier = pareto_frontier(&[
-            arm("capable", 3.0, post(0.9)),
-            arm("cheap", 1.0, post(0.4)),
-        ]);
+        let frontier =
+            pareto_frontier(&[arm("capable", 3.0, post(0.9)), arm("cheap", 1.0, post(0.4))]);
         assert_eq!(frontier, vec!["cheap".to_string(), "capable".to_string()]);
     }
 }
@@ -463,13 +498,23 @@ mod promoted_claims {
 
     #[test]
     fn claim_mean_of_a_zero_posterior_is_not_nan() {
-        let p = Posterior { alpha: 0.0, beta: 0.0 };
-        assert!(p.mean().is_finite(), "mean() returned {} for alpha=beta=0", p.mean());
+        let p = Posterior {
+            alpha: 0.0,
+            beta: 0.0,
+        };
+        assert!(
+            p.mean().is_finite(),
+            "mean() returned {} for alpha=beta=0",
+            p.mean()
+        );
     }
 
     #[test]
     fn claim_update_saturates_rather_than_reaching_infinity() {
-        let p = Posterior { alpha: f64::MAX, beta: f64::MAX };
+        let p = Posterior {
+            alpha: f64::MAX,
+            beta: f64::MAX,
+        };
         let q = update(p, u32::MAX, u32::MAX);
         assert!(q.alpha.is_finite(), "alpha became {}", q.alpha);
         assert!(q.beta.is_finite(), "beta became {}", q.beta);

@@ -19,10 +19,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use farmerbob_core::gate::{judge, Observation as GateObs, Verdict};
+use farmerbob_core::gate::{Observation as GateObs, Verdict, judge};
 use farmerbob_core::liveness::{Authority, Liveness, Observation as LiveObs, Tracker};
 use farmerbob_core::measurement::Measurement;
-use farmerbob_core::scope::{assess, is_clean, Change, Declared, Departure, Scope};
+use farmerbob_core::scope::{Change, Declared, Departure, Scope, assess, is_clean};
 
 /// Launcher process names that indicate an agent is working in a worktree.
 const LAUNCHERS: [&str; 4] = ["opencode", "agy", "zcode", "codex"];
@@ -106,7 +106,12 @@ fn run(dir: &Path, args: &[&str]) -> (bool, String) {
 /// instance so far: every earlier one lost a signal, this one manufactures a false
 /// accusation against the arm and feeds it to the bandit.  (bead farmerbob-jd2.2)
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -145,7 +150,11 @@ fn liveness_of(wt: &Path) -> (Liveness, String) {
     let claimed_live = marker.exists();
     t.observe(LiveObs {
         authority: Authority::Lifecycle,
-        liveness: if claimed_live { Liveness::Working } else { Liveness::Gone },
+        liveness: if claimed_live {
+            Liveness::Working
+        } else {
+            Liveness::Gone
+        },
         at_ms: at,
         evidence: if claimed_live {
             format!("{MARKER} is present")
@@ -157,9 +166,15 @@ fn liveness_of(wt: &Path) -> (Liveness, String) {
     let proc = process_in(wt);
     t.observe(LiveObs {
         authority: Authority::Cgroup,
-        liveness: if proc.is_some() { Liveness::Working } else { Liveness::Gone },
+        liveness: if proc.is_some() {
+            Liveness::Working
+        } else {
+            Liveness::Gone
+        },
         at_ms: at,
-        evidence: proc.clone().unwrap_or_else(|| "no launcher process in this worktree".into()),
+        evidence: proc
+            .clone()
+            .unwrap_or_else(|| "no launcher process in this worktree".into()),
     });
 
     if claimed_live && proc.is_none() {
@@ -203,8 +218,14 @@ struct Task<'a> {
 }
 
 fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
-    let (bead, krate, target, creates, base_clippy, log_root) =
-        (t.bead, t.krate, t.target, t.creates, t.base_clippy, t.log_root);
+    let (bead, krate, target, creates, base_clippy, log_root) = (
+        t.bead,
+        t.krate,
+        t.target,
+        t.creates,
+        t.base_clippy,
+        t.log_root,
+    );
     let (live, why) = liveness_of(wt);
     if live == Liveness::Working {
         println!("{src:<22} {:<11} (SKIPPED: {why})", "LIVE");
@@ -214,7 +235,10 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
     // Every line count below depends on git being able to read this worktree. If it cannot,
     // the count is MISSING, and the gate must return Indeterminate rather than blame the arm.
     let numstat = git(wt, &["diff", "--numstat", "HEAD", "--", "crates/"]);
-    let untracked_raw = git(wt, &["ls-files", "--others", "--exclude-standard", "crates/"]);
+    let untracked_raw = git(
+        wt,
+        &["ls-files", "--others", "--exclude-standard", "crates/"],
+    );
     let tracked = git(wt, &["diff", "--name-only", "HEAD", "--", "crates/"]);
     let mut changed_paths: Option<Vec<String>> = None;
 
@@ -226,8 +250,11 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
                     .filter_map(|l| l.split_whitespace().next())
                     .filter_map(|x| x.parse::<u32>().ok())
                     .sum();
-                let untracked: Vec<String> =
-                    ur.lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
+                let untracked: Vec<String> = ur
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect();
                 for f in &untracked {
                     if let Ok(body) = fs::read_to_string(wt.join(f)) {
                         n += body.lines().count() as u32;
@@ -289,16 +316,34 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
     // Deletions: `git diff --name-only` lists a deleted path like any other, so the two are
     // told apart by asking git for the status letters separately. A path git cannot report
     // on at all leaves the whole assessment Missing rather than empty.
-    let deleted: Vec<String> = git(wt, &["diff", "--name-only", "--diff-filter=D", "HEAD", "--", "crates/"])
-        .map(|o| o.lines().map(str::to_string).collect())
-        .unwrap_or_default();
+    let deleted: Vec<String> = git(
+        wt,
+        &[
+            "diff",
+            "--name-only",
+            "--diff-filter=D",
+            "HEAD",
+            "--",
+            "crates/",
+        ],
+    )
+    .map(|o| o.lines().map(str::to_string).collect())
+    .unwrap_or_default();
     let scope: Measurement<Scope> = match (changed_paths.as_ref(), target) {
         (Some(paths), Some(t)) => {
             let changes: Vec<Change> = paths
                 .iter()
-                .map(|p| Change { path: p.clone(), deleted: deleted.contains(p) })
+                .map(|p| Change {
+                    path: p.clone(),
+                    deleted: deleted.contains(p),
+                })
                 .collect();
-            Measurement::observed(assess(&Declared { target: t.to_string() }, &changes))
+            Measurement::observed(assess(
+                &Declared {
+                    target: t.to_string(),
+                },
+                &changes,
+            ))
         }
         (None, _) => Measurement::instrument_failed(
             "git cannot read this worktree, so which files changed is unknown",
@@ -324,7 +369,8 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
         // as a tie rather than as broken.  (bead farmerbob-0fx)
         clippy = Measurement::observed(clippy_warnings(&lint) - base_clippy);
     } else {
-        clippy = Measurement::instrument_failed("the crate does not compile, so it has no lint count");
+        clippy =
+            Measurement::instrument_failed("the crate does not compile, so it has no lint count");
         err = build_log
             .lines()
             .find(|l| l.starts_with("error"))
@@ -353,10 +399,19 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
     println!(
         "{src:<22} {:<11} tests={tests_run:<3} clippy={:<4} {:>5}L crates={:<2} {:>4}s{scope_note}",
         wire(verdict),
-        clippy.value().map(i32::to_string).unwrap_or_else(|| "-".into()),
-        lines.value().map(u32::to_string).unwrap_or_else(|| "?".into()),
+        clippy
+            .value()
+            .map(i32::to_string)
+            .unwrap_or_else(|| "-".into()),
+        lines
+            .value()
+            .map(u32::to_string)
+            .unwrap_or_else(|| "?".into()),
         crates.len(),
-        duration_s.value().map(|d| format!("{d:.0}")).unwrap_or_else(|| "-".into()),
+        duration_s
+            .value()
+            .map(|d| format!("{d:.0}"))
+            .unwrap_or_else(|| "-".into()),
     );
 
     Some(Record {
@@ -447,7 +502,9 @@ fn declared_target(bead: &str) -> (Option<String>, bool) {
         return (None, false);
     };
     for line in spec.lines() {
-        let Some(rest) = line.trim().strip_prefix("<!-- fb:") else { continue };
+        let Some(rest) = line.trim().strip_prefix("<!-- fb:") else {
+            continue;
+        };
         for (verb, creates) in [("creates ", true), ("modifies ", false)] {
             if let Some(r) = rest.strip_prefix(verb)
                 && let Some(path) = r.split_whitespace().next()
@@ -551,7 +608,10 @@ pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
     if records.is_empty() {
         // No candidate measured is NOT "every candidate failed". Say so with an exit code
         // the caller can distinguish, rather than writing an empty array and moving on.
-        eprintln!("no candidate worktrees for {bead} (looked in {})", wt_root.display());
+        eprintln!(
+            "no candidate worktrees for {bead} (looked in {})",
+            wt_root.display()
+        );
         return 3;
     }
     0
@@ -564,11 +624,20 @@ mod tests {
     #[test]
     fn every_verdict_has_a_distinct_wire_spelling() {
         let all = [
-            Verdict::Pass, Verdict::NoOp, Verdict::NoCompile, Verdict::TestsFail,
-            Verdict::NoTests, Verdict::WrongTarget, Verdict::Indeterminate,
+            Verdict::Pass,
+            Verdict::NoOp,
+            Verdict::NoCompile,
+            Verdict::TestsFail,
+            Verdict::NoTests,
+            Verdict::WrongTarget,
+            Verdict::Indeterminate,
         ];
         let spellings: BTreeSet<&str> = all.iter().map(|v| wire(*v)).collect();
-        assert_eq!(spellings.len(), all.len(), "two verdicts share a wire spelling");
+        assert_eq!(
+            spellings.len(),
+            all.len(),
+            "two verdicts share a wire spelling"
+        );
     }
 
     #[test]
@@ -601,9 +670,9 @@ test result: ok. 7 passed; 0 failed; 0 ignored
                 tests_run: Some(0),
                 lines_added: Some(40),
                 declared_targets_present: None,
-            // Pre-existing test of another axis; scope is not what it measures.
-            scope_departures: Some(0),
-        }),
+                // Pre-existing test of another axis; scope is not what it measures.
+                scope_departures: Some(0),
+            }),
             Verdict::NoTests
         );
     }
@@ -613,7 +682,11 @@ test result: ok. 7 passed; 0 failed; 0 ignored
         let m: Measurement<i32> =
             Measurement::instrument_failed("the crate does not compile, so it has no lint count");
         assert!(!m.is_observed());
-        assert_eq!(m.value(), None, "an unmeasured lint count must not read as clean");
+        assert_eq!(
+            m.value(),
+            None,
+            "an unmeasured lint count must not read as clean"
+        );
     }
 
     #[test]
@@ -695,7 +768,9 @@ mod scope_integration {
     /// it was never asked to touch and that registered as "touched 2".  (bead farmerbob-jxp)
     #[test]
     fn a_rewrite_of_another_crate_is_a_departure_not_a_crate_count() {
-        let declared = Declared { target: "crates/farmerbob-core/src/matrix.rs".into() };
+        let declared = Declared {
+            target: "crates/farmerbob-core/src/matrix.rs".into(),
+        };
         let changes: Vec<Change> = [
             "crates/farmerbob-core/src/matrix.rs", // the deliverable
             "crates/farmerbob-core/src/lib.rs",    // the required module declaration
@@ -703,32 +778,52 @@ mod scope_integration {
             "crates/fb/src/doctor.rs",             // out of scope
         ]
         .iter()
-        .map(|p| Change { path: (*p).to_string(), deleted: false })
+        .map(|p| Change {
+            path: (*p).to_string(),
+            deleted: false,
+        })
         .collect();
 
         let sc = assess(&declared, &changes);
         assert!(sc.target_changed);
-        assert_eq!(sc.allowed, vec!["crates/farmerbob-core/src/lib.rs".to_string()]);
-        assert_eq!(sc.departures.len(), 2, "both crates/fb files are departures");
+        assert_eq!(
+            sc.allowed,
+            vec!["crates/farmerbob-core/src/lib.rs".to_string()]
+        );
+        assert_eq!(
+            sc.departures.len(),
+            2,
+            "both crates/fb files are departures"
+        );
         assert!(!is_clean(&sc));
     }
 
     #[test]
     fn declaring_the_new_module_is_not_a_departure() {
-        let declared = Declared { target: "crates/farmerbob-core/src/scope.rs".into() };
+        let declared = Declared {
+            target: "crates/farmerbob-core/src/scope.rs".into(),
+        };
         let changes = [
-            Change { path: "crates/farmerbob-core/src/scope.rs".into(), deleted: false },
-            Change { path: "crates/farmerbob-core/src/lib.rs".into(), deleted: false },
+            Change {
+                path: "crates/farmerbob-core/src/scope.rs".into(),
+                deleted: false,
+            },
+            Change {
+                path: "crates/farmerbob-core/src/lib.rs".into(),
+                deleted: false,
+            },
         ];
-        assert!(is_clean(&assess(&declared, &changes)), "adding `pub mod x;` is required");
+        assert!(
+            is_clean(&assess(&declared, &changes)),
+            "adding `pub mod x;` is required"
+        );
     }
 
     /// An unreadable worktree must not read as "stayed in scope". Same rule as lines_added:
     /// an empty departure list and an unmeasured one are different facts.
     #[test]
     fn an_unreadable_worktree_leaves_scope_missing_not_clean() {
-        let m: Measurement<Scope> =
-            Measurement::instrument_failed("git cannot read this worktree");
+        let m: Measurement<Scope> = Measurement::instrument_failed("git cannot read this worktree");
         assert!(!m.is_observed());
         assert_eq!(m.value().map(is_clean), None, "must not read as clean");
     }
@@ -736,12 +831,18 @@ mod scope_integration {
     /// Both declaration verbs. Six of seven readers in this harness knew only fb:creates.
     #[test]
     fn the_target_reader_accepts_creates_and_modifies() {
-        for (verb, want) in [("creates", "crates/a/src/b.rs"), ("modifies", "crates/a/src/b.rs")] {
+        for (verb, want) in [
+            ("creates", "crates/a/src/b.rs"),
+            ("modifies", "crates/a/src/b.rs"),
+        ] {
             let line = format!("<!-- fb:{verb} {want} -->");
             let got: Option<String> = line
                 .trim()
                 .strip_prefix("<!-- fb:")
-                .and_then(|r| r.strip_prefix("creates ").or_else(|| r.strip_prefix("modifies ")))
+                .and_then(|r| {
+                    r.strip_prefix("creates ")
+                        .or_else(|| r.strip_prefix("modifies "))
+                })
                 .and_then(|r| r.split_whitespace().next())
                 .map(str::to_string);
             assert_eq!(got.as_deref(), Some(want), "verb {verb} must parse");
@@ -804,7 +905,9 @@ mod destroyed_worktree_recovery {
             ("<!-- fb:modifies crates/a/src/b.rs -->", false),
         ] {
             let rest = line.trim().strip_prefix("<!-- fb:").expect("prefix");
-            let got = rest.strip_prefix("creates ").map(|_| true)
+            let got = rest
+                .strip_prefix("creates ")
+                .map(|_| true)
                 .or_else(|| rest.strip_prefix("modifies ").map(|_| false));
             assert_eq!(got, Some(want_creates), "verb in {line}");
         }

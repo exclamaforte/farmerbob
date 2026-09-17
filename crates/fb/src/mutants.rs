@@ -17,7 +17,7 @@
 
 use std::fs;
 
-use farmerbob_core::mutate::{apply, mutants, Mutant};
+use farmerbob_core::mutate::{Mutant, apply, mutants};
 
 /// How many defects to emit. Each one costs a full suite run per candidate, so the whole
 /// field pays `defects x candidates` cargo cycles; thirty is minutes, not hours.

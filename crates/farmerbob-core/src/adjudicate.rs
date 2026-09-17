@@ -284,15 +284,15 @@ pub fn evidence_gaps(candidates: &[Evidence]) -> Vec<Gap> {
 /// prefer [`evidence_gaps`], which also reports what was never measured at all.
 pub fn missing_evidence(candidates: &[Evidence]) -> Vec<Criterion> {
     ORDERED_CRITERIA
-    .into_iter()
-    .filter(|criterion| {
-        let measured = candidates
-            .iter()
-            .filter(|candidate| value(candidate, *criterion).is_some())
-            .count();
-        measured > 0 && measured < candidates.len()
-    })
-    .collect()
+        .into_iter()
+        .filter(|criterion| {
+            let measured = candidates
+                .iter()
+                .filter(|candidate| value(candidate, *criterion).is_some())
+                .count();
+            measured > 0 && measured < candidates.len()
+        })
+        .collect()
 }
 
 fn value(candidate: &Evidence, criterion: Criterion) -> Option<f64> {
@@ -525,7 +525,10 @@ mod overfitted_suites {
     fn an_overfitted_suite_does_not_win_on_its_test_count() {
         // the budget field: glm-53-flash wrote 18 tests to codex-luna's 9, and failed all
         // three rivals, so its count carries no evidence of depth
-        let field = [cand("glm-53-flash", 18, 139, true), cand("codex-luna", 9, 86, false)];
+        let field = [
+            cand("glm-53-flash", 18, 139, true),
+            cand("codex-luna", 9, 86, false),
+        ];
         match adjudicate(&field, 0.001) {
             Ruling::Winner { arm, on, .. } => {
                 assert_eq!(arm, "codex-luna");
@@ -641,7 +644,10 @@ mod never_measured_is_visible {
         let field = [ev("whole"), half];
         let gaps = evidence_gaps(&field);
         assert!(gaps.contains(&Gap::Partial(Criterion::Clippy)), "{gaps:?}");
-        assert!(gaps.contains(&Gap::Absent(Criterion::DefectSensitivity)), "{gaps:?}");
+        assert!(
+            gaps.contains(&Gap::Absent(Criterion::DefectSensitivity)),
+            "{gaps:?}"
+        );
         assert!(
             !gaps.contains(&Gap::Absent(Criterion::Clippy)),
             "a partially measured criterion is not absent: {gaps:?}"

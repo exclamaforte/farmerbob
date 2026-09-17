@@ -136,7 +136,10 @@ mod tests {
     fn distinct_specs_do_not_collide() {
         let mut seen = std::collections::HashSet::new();
         for i in 0..2000 {
-            assert!(seen.insert(task_id(&format!("task number {i}"))), "collision at {i}");
+            assert!(
+                seen.insert(task_id(&format!("task number {i}"))),
+                "collision at {i}"
+            );
         }
     }
 
@@ -145,7 +148,11 @@ mod tests {
         let id = task_id(SPEC);
         assert!(id.starts_with("t-"));
         assert_eq!(id.len(), 12);
-        assert!(id[2..].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(
+            id[2..]
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
     }
 
     #[test]

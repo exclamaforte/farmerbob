@@ -190,7 +190,6 @@ mod tests {
     }
 }
 
-
 // ESCALATED from cross-examination: codex-luna's suite discriminated on budget.
 // Not a CLAIM -- cross-examination found it directly. Kept only because it passes
 // against the merged winner, which is what separates a discovery from an

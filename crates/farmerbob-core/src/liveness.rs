@@ -333,7 +333,7 @@ pub fn cut(belief: &Belief, elapsed_ms: u64, now_ms: u64, budget: &CutBudget) ->
                           evidence of progress and no evidence of a stall, and the two \
                           must not produce the same decision"
                     .to_string(),
-            }
+            };
         }
     };
 
@@ -1023,10 +1023,7 @@ mod cut_tests {
     #[test]
     fn working_from_cgroup_within_the_ceiling_is_kept() {
         let b = belief(Liveness::Working, Some(Authority::Cgroup), NOW - 100);
-        assert!(matches!(
-            cut(&b, 1_000, NOW, &roomy()),
-            Cut::Keep { .. }
-        ));
+        assert!(matches!(cut(&b, 1_000, NOW, &roomy()), Cut::Keep { .. }));
     }
 
     #[test]
@@ -1043,10 +1040,7 @@ mod cut_tests {
         // from the cgroup, standing unchallenged far longer than the idle budget,
         // with no newer observation from any source. That is a keep, not a stall.
         let b = belief(Liveness::Working, Some(Authority::Cgroup), NOW - 10_000);
-        assert!(matches!(
-            cut(&b, 30_000, NOW, &roomy()),
-            Cut::Keep { .. }
-        ));
+        assert!(matches!(cut(&b, 30_000, NOW, &roomy()), Cut::Keep { .. }));
     }
 
     #[test]
@@ -1054,10 +1048,7 @@ mod cut_tests {
         // Staleness is decay's job, composed by the caller; cut does not regrade a
         // standing claim of work into a stall.
         let b = belief(Liveness::Working, Some(Authority::Cgroup), 0);
-        assert!(matches!(
-            cut(&b, NOW, NOW, &roomy()),
-            Cut::Keep { .. }
-        ));
+        assert!(matches!(cut(&b, NOW, NOW, &roomy()), Cut::Keep { .. }));
     }
 
     // --- the real stall (clause 4) ----------------------------------------------
@@ -1078,10 +1069,7 @@ mod cut_tests {
     #[test]
     fn idle_within_the_budget_is_kept() {
         let b = belief(Liveness::Idle, Some(Authority::Cgroup), NOW - 4_999);
-        assert!(matches!(
-            cut(&b, 5_000, NOW, &roomy()),
-            Cut::Keep { .. }
-        ));
+        assert!(matches!(cut(&b, 5_000, NOW, &roomy()), Cut::Keep { .. }));
     }
 
     // --- blocked has its own budget (clause 5) -----------------------------------
@@ -1090,10 +1078,7 @@ mod cut_tests {
     fn blocked_past_the_idle_budget_but_within_its_own_is_kept() {
         // Held 10s: past max_idle_ms (5s), well under max_blocked_ms (20s).
         let b = belief(Liveness::Blocked, Some(Authority::Cgroup), NOW - 10_000);
-        assert!(matches!(
-            cut(&b, 30_000, NOW, &roomy()),
-            Cut::Keep { .. }
-        ));
+        assert!(matches!(cut(&b, 30_000, NOW, &roomy()), Cut::Keep { .. }));
     }
 
     #[test]
@@ -1109,10 +1094,7 @@ mod cut_tests {
     #[test]
     fn blocked_within_both_budgets_is_kept() {
         let b = belief(Liveness::Blocked, Some(Authority::Cgroup), NOW - 1_000);
-        assert!(matches!(
-            cut(&b, 2_000, NOW, &roomy()),
-            Cut::Keep { .. }
-        ));
+        assert!(matches!(cut(&b, 2_000, NOW, &roomy()), Cut::Keep { .. }));
     }
 
     // --- the hard ceiling (clause 6) ----------------------------------------------
@@ -1141,15 +1123,9 @@ mod cut_tests {
         // A newborn run is over a zero ceiling: zero must not be reinterpreted as
         // unlimited, or a config typo silently disarms the wall.
         let newborn = belief(Liveness::Working, Some(Authority::Cgroup), NOW);
-        assert!(matches!(
-            cut(&newborn, 0, NOW, &tight),
-            Cut::Cut { .. }
-        ));
+        assert!(matches!(cut(&newborn, 0, NOW, &tight), Cut::Cut { .. }));
         let aged = belief(Liveness::Working, Some(Authority::Cgroup), NOW - 1_000);
-        assert!(matches!(
-            cut(&aged, 1_000, NOW, &tight),
-            Cut::Cut { .. }
-        ));
+        assert!(matches!(cut(&aged, 1_000, NOW, &tight), Cut::Cut { .. }));
     }
 
     #[test]
@@ -1217,10 +1193,7 @@ mod cut_tests {
     #[test]
     fn a_belief_from_exactly_the_run_start_is_usable() {
         let b = belief(Liveness::Working, Some(Authority::Cgroup), NOW - 1_000);
-        assert!(matches!(
-            cut(&b, 1_000, NOW, &roomy()),
-            Cut::Keep { .. }
-        ));
+        assert!(matches!(cut(&b, 1_000, NOW, &roomy()), Cut::Keep { .. }));
     }
 
     #[test]
@@ -1277,11 +1250,7 @@ mod cut_tests {
 
     #[test]
     fn gone_cuts_from_any_authority_because_there_is_nothing_to_kill() {
-        for authority in [
-            Authority::Output,
-            Authority::Cgroup,
-            Authority::Lifecycle,
-        ] {
+        for authority in [Authority::Output, Authority::Cgroup, Authority::Lifecycle] {
             let b = belief(Liveness::Gone, Some(authority), NOW - 100);
             let decision = cut(&b, 1_000, NOW, &roomy());
             assert!(
@@ -1313,11 +1282,7 @@ mod cut_tests {
 
     #[test]
     fn unknown_is_insufficient_from_every_authority() {
-        for authority in [
-            Authority::Output,
-            Authority::Cgroup,
-            Authority::Lifecycle,
-        ] {
+        for authority in [Authority::Output, Authority::Cgroup, Authority::Lifecycle] {
             let b = belief(Liveness::Unknown, Some(authority), NOW - 100);
             let decision = cut(&b, 1_000, NOW, &roomy());
             assert!(!matches!(decision, Cut::Cut { .. }));
@@ -1349,10 +1314,7 @@ mod cut_tests {
     fn an_idle_claim_from_lifecycle_cuts() {
         // Lifecycle outranks Cgroup: what the authoritative wrapper says stands.
         let b = belief(Liveness::Idle, Some(Authority::Lifecycle), NOW - 6_000);
-        assert!(matches!(
-            cut(&b, 30_000, NOW, &roomy()),
-            Cut::Cut { .. }
-        ));
+        assert!(matches!(cut(&b, 30_000, NOW, &roomy()), Cut::Cut { .. }));
     }
 
     // --- the incident, end to end -----------------------------------------------------------
@@ -1373,10 +1335,7 @@ mod cut_tests {
         // is the newest thing held), CPU climbing two seconds ago.
         let peer = budget(60 * 60 * 1_000, 120 * 1_000, 10 * 60 * 1_000);
         let healthy = belief(Liveness::Working, Some(Authority::Cgroup), now - 2_000);
-        assert!(matches!(
-            cut(&healthy, now, now, &peer),
-            Cut::Keep { .. }
-        ));
+        assert!(matches!(cut(&healthy, now, now, &peer), Cut::Keep { .. }));
     }
 
     // --- every decision carries its reason, across the whole input grid -----------------------

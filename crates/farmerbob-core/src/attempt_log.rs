@@ -75,7 +75,9 @@ pub struct AttemptLog {
 impl AttemptLog {
     /// Create a new empty log.
     pub fn new() -> Self {
-        Self { attempts: Vec::new() }
+        Self {
+            attempts: Vec::new(),
+        }
     }
 
     /// Append an attempt. The log is never mutated in place.
@@ -227,10 +229,18 @@ mod tests {
     fn infrastructure_outcome_does_not_move_posterior_but_counts_toward_spend() {
         let mut log = AttemptLog::new();
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = Some(true);
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::Infrastructure));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::Infrastructure,
+        ));
         log.attempts.last_mut().unwrap().cost_usd = 0.05;
 
         let post = log.posterior("arm1", "feature:routine", 1);
@@ -245,11 +255,19 @@ mod tests {
     fn attempt_number_two_is_excluded_from_posterior() {
         let mut log = AttemptLog::new();
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = Some(true);
         log.attempts.last_mut().unwrap().attempt_number = 1;
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = Some(false);
         log.attempts.last_mut().unwrap().attempt_number = 2;
 
@@ -262,11 +280,19 @@ mod tests {
     fn different_suite_version_is_excluded_from_posterior() {
         let mut log = AttemptLog::new();
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = Some(true);
         log.attempts.last_mut().unwrap().suite_version = 1;
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = Some(false);
         log.attempts.last_mut().unwrap().suite_version = 2;
 
@@ -279,10 +305,18 @@ mod tests {
     fn accepted_none_on_arm_result_is_skipped_not_counted_as_failure() {
         let mut log = AttemptLog::new();
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = Some(true);
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = None;
 
         let post = log.posterior("arm1", "feature:routine", 1);
@@ -310,18 +344,34 @@ mod tests {
     fn mean_latency_only_averages_contributing_attempts() {
         let mut log = AttemptLog::new();
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = Some(true);
         log.attempts.last_mut().unwrap().latency_s = 10;
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = Some(false);
         log.attempts.last_mut().unwrap().latency_s = 20;
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::Infrastructure));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::Infrastructure,
+        ));
         log.attempts.last_mut().unwrap().latency_s = 100; // excluded
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = None;
         log.attempts.last_mut().unwrap().latency_s = 50; // excluded (accepted is None)
 
@@ -333,10 +383,26 @@ mod tests {
     fn excluded_counts_by_outcome_class_for_an_arm() {
         let mut log = AttemptLog::new();
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::Infrastructure));
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::Infrastructure));
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::TaskInvalid));
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::Infrastructure,
+        ));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::Infrastructure,
+        ));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::TaskInvalid,
+        ));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = Some(true);
 
         let excluded = log.excluded("arm1");
@@ -352,13 +418,25 @@ mod tests {
     fn spend_includes_all_attempts_regardless_of_outcome() {
         let mut log = AttemptLog::new();
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().cost_usd = 0.10;
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::Infrastructure));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::Infrastructure,
+        ));
         log.attempts.last_mut().unwrap().cost_usd = 0.05;
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::OrchestratorCancelled));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::OrchestratorCancelled,
+        ));
         log.attempts.last_mut().unwrap().cost_usd = 0.02;
 
         let spend = log.spend("arm1");
@@ -369,10 +447,18 @@ mod tests {
     fn posterior_filters_by_bucket() {
         let mut log = AttemptLog::new();
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = Some(true);
 
-        log.record(base_attempt("arm1", "feature:complex", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:complex",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = Some(false);
 
         let post_routine = log.posterior("arm1", "feature:routine", 1);
@@ -388,13 +474,25 @@ mod tests {
     fn posterior_n_returns_effective_sample_size() {
         let mut log = AttemptLog::new();
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = Some(true);
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = Some(true);
 
-        log.record(base_attempt("arm1", "feature:routine", OutcomeClass::ArmResult));
+        log.record(base_attempt(
+            "arm1",
+            "feature:routine",
+            OutcomeClass::ArmResult,
+        ));
         log.attempts.last_mut().unwrap().accepted = Some(false);
 
         let post = log.posterior("arm1", "feature:routine", 1);

@@ -102,11 +102,8 @@ fn sanitize_ref_segment(raw: &str) -> String {
     let mut out = String::new();
     let mut pending_sep = false;
     for ch in raw.chars() {
-        let bad = ch.is_control()
-            || matches!(
-                ch,
-                ' ' | '~' | '^' | ':' | '?' | '*' | '\\' | '[' | ']'
-            );
+        let bad =
+            ch.is_control() || matches!(ch, ' ' | '~' | '^' | ':' | '?' | '*' | '\\' | '[' | ']');
         if bad {
             if !pending_sep && !out.is_empty() {
                 out.push('-');
@@ -281,10 +278,7 @@ mod tests {
         let d = archive_ref(task, &CandidateRef("trailing/".to_string()));
         assert_eq!(d.0, "refs/fb/archive/T1/trailing");
 
-        let e = archive_ref(
-            task,
-            &CandidateRef("bad~^:?*\\[x].lock".to_string()),
-        );
+        let e = archive_ref(task, &CandidateRef("bad~^:?*\\[x].lock".to_string()));
         assert_eq!(e.0, "refs/fb/archive/T1/bad-x-");
     }
 
@@ -297,10 +291,7 @@ mod tests {
 
     #[test]
     fn sweep_list_winner_absent_errors() {
-        let candidates = vec![
-            CandidateRef("a".to_string()),
-            CandidateRef("b".to_string()),
-        ];
+        let candidates = vec![CandidateRef("a".to_string()), CandidateRef("b".to_string())];
         let winner = CandidateRef("missing".to_string());
         match sweep_list(&candidates, &winner) {
             Err(SelectionError::UnknownCandidate { candidate }) => {

@@ -124,12 +124,16 @@ pub fn load_dir(dir: &Path) -> Result<Vec<(PathBuf, RunRecord)>, String> {
             continue;
         }
         // aggregates, not runs
-        if name.contains(".score.") || name.contains(".compare.") || name.contains(".crossx.")
+        if name.contains(".score.")
+            || name.contains(".compare.")
+            || name.contains(".crossx.")
             || name.contains(".verify.")
         {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         match serde_json::from_str::<RunRecord>(&text) {
             Ok(r) => out.push((path, r)),
             // a malformed record is a harness fault; skip it rather than abort the import
@@ -197,9 +201,16 @@ mod tests {
 
     #[test]
     fn a_record_with_no_verdict_is_unknown_not_a_failure() {
-        let r = RunRecord { verdict: None, ..rec("PASS", 0, None) };
+        let r = RunRecord {
+            verdict: None,
+            ..rec("PASS", 0, None)
+        };
         assert_eq!(r.classify(), OutcomeClass::Unknown);
-        assert_eq!(r.accepted(), None, "an incomplete record is not evidence of anything");
+        assert_eq!(
+            r.accepted(),
+            None,
+            "an incomplete record is not evidence of anything"
+        );
     }
 
     #[test]

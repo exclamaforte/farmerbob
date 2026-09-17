@@ -104,9 +104,17 @@ fn run(bead: &str, krate: &str, file: &str) -> Result<i32> {
 
     // 3. Collect each arm's test sources into graft files.
     for a in &arms {
-        let (lines, tests, files) =
-            collect_suites(&root, &repo_root(), bead, krate, file, a, tmp.path(), &srcdir)
-                .with_context(|| format!("collecting suites for {a}"))?;
+        let (lines, tests, files) = collect_suites(
+            &root,
+            &repo_root(),
+            bead,
+            krate,
+            file,
+            a,
+            tmp.path(),
+            &srcdir,
+        )
+        .with_context(|| format!("collecting suites for {a}"))?;
         println!("  suite {a:<22} {lines} lines, {tests} tests, {files} file(s)");
     }
 
@@ -126,7 +134,10 @@ fn run(bead: &str, krate: &str, file: &str) -> Result<i32> {
     let diag_bad = diagonal_bad(&arms, &cells);
     if !diag_bad.is_empty() {
         println!();
-        println!("VOID: the diagonal is not all-pass -- {}", diag_bad.join(" "));
+        println!(
+            "VOID: the diagonal is not all-pass -- {}",
+            diag_bad.join(" ")
+        );
         println!("A suite that cannot run against the code it shipped with is a grafting failure.");
         println!("Scores are NOT written; fix the transplant before trusting any cell.");
         return Ok(3);
@@ -137,7 +148,9 @@ fn run(bead: &str, krate: &str, file: &str) -> Result<i32> {
     if let Some(part) = detect_partition(&arms, &cells) {
         println!();
         println!("SPEC-AMBIGUOUS: the field partitions into self-consistent camps -- {part}");
-        println!("Each camp passes within itself and fails across, which is neither a defect (1-of-N)");
+        println!(
+            "Each camp passes within itself and fails across, which is neither a defect (1-of-N)"
+        );
         println!("nor an over-fitted suite (N-1-of-N). Two readings of the spec, both implemented");
         println!("correctly. Treat every cross-camp failure as vetoed and fix the specification.");
     }
@@ -337,7 +350,10 @@ pub fn compute_stats(arms: &[String], cells: &Matrix) -> Vec<ArmRow> {
             .filter(|s| *s != a && cell(a, s) != Some(Cell::Error))
             .cloned()
             .collect();
-        let survived = rel.iter().filter(|s| cell(a, s) == Some(Cell::Pass)).count();
+        let survived = rel
+            .iter()
+            .filter(|s| cell(a, s) == Some(Cell::Pass))
+            .count();
         let survival = if rel.is_empty() {
             Measurement::nothing_to_measure(
                 "no discriminating foreign suite ran against this implementation",
@@ -547,7 +563,7 @@ fn load_passed(bead: &str) -> Measurement<BTreeSet<String>> {
             return Measurement::instrument_failed(&format!(
                 "score file {} unreadable: {e}",
                 path.display()
-            ))
+            ));
         }
     };
     let value: serde_json::Value = match serde_json::from_str(&txt) {
@@ -668,7 +684,10 @@ fn parse_declared(txt: &str) -> Vec<String> {
             continue;
         }
         let after = rest["fb:".len()..].trim_start();
-        let kind_end = after.find(char::is_whitespace).map(|i| i + 1).unwrap_or(after.len());
+        let kind_end = after
+            .find(char::is_whitespace)
+            .map(|i| i + 1)
+            .unwrap_or(after.len());
         let path_part = after[kind_end..].trim();
         if let Some(path) = path_part.strip_suffix("-->") {
             let p = path.trim().to_string();
@@ -699,7 +718,12 @@ fn read_changed(wt: &Path, srcdir: &str) -> Vec<String> {
     }
     let untracked = Command::new("git")
         .args([
-            "-C", &wt_s, "ls-files", "--others", "--exclude-standard", srcdir,
+            "-C",
+            &wt_s,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            srcdir,
         ])
         .output();
     if let Ok(o) = untracked {
@@ -1175,7 +1199,10 @@ mod tests {
             + &format!("{:<10}", " nocomp")
             + &format!("{:<10}", " .")
             + "\n";
-        assert_eq!(got, want, "matrix table must match the script's printf exactly");
+        assert_eq!(
+            got, want,
+            "matrix table must match the script's printf exactly"
+        );
     }
 
     #[test]
@@ -1219,10 +1246,22 @@ mod tests {
         ];
         // Camp {A,B} passes within, fails across; {C,D} likewise.
         let cells = vec![
-            Cell::Pass, Cell::Pass, Cell::Fail, Cell::Fail,
-            Cell::Pass, Cell::Pass, Cell::Fail, Cell::Fail,
-            Cell::Fail, Cell::Fail, Cell::Pass, Cell::Pass,
-            Cell::Fail, Cell::Fail, Cell::Pass, Cell::Pass,
+            Cell::Pass,
+            Cell::Pass,
+            Cell::Fail,
+            Cell::Fail,
+            Cell::Pass,
+            Cell::Pass,
+            Cell::Fail,
+            Cell::Fail,
+            Cell::Fail,
+            Cell::Fail,
+            Cell::Pass,
+            Cell::Pass,
+            Cell::Fail,
+            Cell::Fail,
+            Cell::Pass,
+            Cell::Pass,
         ];
         let m = Matrix::new(arms.clone(), arms.clone(), cells).unwrap();
         assert_eq!(
@@ -1242,7 +1281,12 @@ mod tests {
     #[test]
     fn detect_partition_is_none_when_single_camp() {
         // All four arms pass every suite: one camp, so no partition.
-        let arms = vec!["A".to_string(), "B".to_string(), "C".to_string(), "D".to_string()];
+        let arms = vec![
+            "A".to_string(),
+            "B".to_string(),
+            "C".to_string(),
+            "D".to_string(),
+        ];
         let cells = vec![Cell::Pass; 16];
         let m = Matrix::new(arms.clone(), arms.clone(), cells).unwrap();
         assert_eq!(detect_partition(&arms, &m), None);
@@ -1256,7 +1300,10 @@ mod tests {
         let m = Matrix::new(arms.clone(), arms.clone(), cells).unwrap();
         let stats = compute_stats(&arms, &m);
         for r in &stats {
-            assert!(r.survival.absent().is_some(), "no discrimination => survival absent");
+            assert!(
+                r.survival.absent().is_some(),
+                "no discrimination => survival absent"
+            );
             assert!(!r.suite_discriminating);
             assert_eq!(r.discovery, 0);
         }
@@ -1267,9 +1314,15 @@ mod tests {
         // a's suite fails only b; b's suite fails only a.
         let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let cells = vec![
-            Cell::Pass, Cell::Fail, Cell::Pass,
-            Cell::Fail, Cell::Pass, Cell::Pass,
-            Cell::Pass, Cell::Pass, Cell::Pass,
+            Cell::Pass,
+            Cell::Fail,
+            Cell::Pass,
+            Cell::Fail,
+            Cell::Pass,
+            Cell::Pass,
+            Cell::Pass,
+            Cell::Pass,
+            Cell::Pass,
         ];
         let m = Matrix::new(arms.clone(), arms.clone(), cells).unwrap();
         let stats = compute_stats(&arms, &m);
@@ -1291,9 +1344,15 @@ mod tests {
         // a's suite breaks every other impl it compiles against -> over-fitted.
         let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let cells = vec![
-            Cell::Pass, Cell::Pass, Cell::Pass,
-            Cell::Fail, Cell::Pass, Cell::Pass,
-            Cell::Fail, Cell::Pass, Cell::Pass,
+            Cell::Pass,
+            Cell::Pass,
+            Cell::Pass,
+            Cell::Fail,
+            Cell::Pass,
+            Cell::Pass,
+            Cell::Fail,
+            Cell::Pass,
+            Cell::Pass,
         ];
         let m = Matrix::new(arms.clone(), arms.clone(), cells).unwrap();
         let stats = compute_stats(&arms, &m);
@@ -1307,9 +1366,15 @@ mod tests {
         // a's suite compiles only against c (b is nocompile). a fails c.
         let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let cells = vec![
-            Cell::Pass, Cell::Error, Cell::Fail,
-            Cell::Pass, Cell::Pass, Cell::Pass,
-            Cell::Pass, Cell::Pass, Cell::Pass,
+            Cell::Pass,
+            Cell::Error,
+            Cell::Fail,
+            Cell::Pass,
+            Cell::Pass,
+            Cell::Pass,
+            Cell::Pass,
+            Cell::Pass,
+            Cell::Pass,
         ];
         let m = Matrix::new(arms.clone(), arms.clone(), cells).unwrap();
         let stats = compute_stats(&arms, &m);
@@ -1334,10 +1399,20 @@ mod tests {
         //        => survival absent, api_incompatible_with = 1.
         // beta: its suite breaks every impl it compiles against (only alpha) => over-fitted,
         //       discovery discounted to 0.
-        let want = format!("{:<24}{:>10}{:>11}{:>14}  SUITE\n", "ARM", "SURVIVAL", "DISCOVERY", "API-INCOMPAT")
-            + &format!("{:<24}{:>10}{:>11}{:>14}  {}\n", "alpha", "n/a", 0, 1, "no signal")
-            + &format!("{:<24}{:>10}{:>11}{:>14}  {}\n", "beta", "n/a", 0, 0, "OVER-FITTED");
-        assert_eq!(got, want, "summary table must match the script's python format");
+        let want = format!(
+            "{:<24}{:>10}{:>11}{:>14}  SUITE\n",
+            "ARM", "SURVIVAL", "DISCOVERY", "API-INCOMPAT"
+        ) + &format!(
+            "{:<24}{:>10}{:>11}{:>14}  {}\n",
+            "alpha", "n/a", 0, 1, "no signal"
+        ) + &format!(
+            "{:<24}{:>10}{:>11}{:>14}  {}\n",
+            "beta", "n/a", 0, 0, "OVER-FITTED"
+        );
+        assert_eq!(
+            got, want,
+            "summary table must match the script's python format"
+        );
     }
 
     #[test]
@@ -1349,7 +1424,10 @@ mod tests {
         write_json(&p, &stats).unwrap();
         let txt = std::fs::read_to_string(&p).unwrap();
         assert!(txt.starts_with("{\n \""), "top level indented by one space");
-        assert!(txt.contains("\"survival\": null"), "absent survival serialises as null");
+        assert!(
+            txt.contains("\"survival\": null"),
+            "absent survival serialises as null"
+        );
         let _: serde_json::Value = serde_json::from_str(&txt).unwrap();
     }
 
@@ -1387,7 +1465,10 @@ mod tests {
         assert_eq!(uses.len(), 1);
         let body = test_body(src, 0);
         let pruned = prune_uses(uses, &body);
-        assert!(pruned.is_empty(), "duplicate explicit import must be dropped (E0252)");
+        assert!(
+            pruned.is_empty(),
+            "duplicate explicit import must be dropped (E0252)"
+        );
     }
 
     #[test]
@@ -1426,5 +1507,3 @@ text
         );
     }
 }
-
-

@@ -14,7 +14,7 @@
 //! objective tier already enforces everywhere else: a check that did not run must say so
 //! rather than be silently skipped.
 
-use farmerbob_core::adjudicate::{adjudicate, evidence_gaps, Evidence, Gap, Ruling};
+use farmerbob_core::adjudicate::{Evidence, Gap, Ruling, adjudicate, evidence_gaps};
 
 /// The repository root. Was hardcoded to one absolute path in two places, so `fb brief` only
 /// worked on this machine -- found by or-inkling reviewing a different arm's port.
@@ -47,14 +47,26 @@ struct Judgement {
 fn judgements(task: &str) -> Vec<Judgement> {
     let dir = logs().join("critiques").join(task);
     let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir(&dir) else { return out };
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return out;
+    };
     let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
     paths.sort();
     for p in paths {
-        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
-        let Some(stem) = name.strip_suffix(".md") else { continue };
-        let Some((critic, subject)) = stem.split_once(".on.") else { continue };
-        let Ok(body) = fs::read_to_string(&p) else { continue };
+        let name = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        let Some(stem) = name.strip_suffix(".md") else {
+            continue;
+        };
+        let Some((critic, subject)) = stem.split_once(".on.") else {
+            continue;
+        };
+        let Ok(body) = fs::read_to_string(&p) else {
+            continue;
+        };
         // keep only the JUDGEMENTS section; CLAIMS are executed elsewhere and must not be
         // re-read as opinion here
         let text = body
@@ -70,7 +82,11 @@ fn judgements(task: &str) -> Vec<Judgement> {
                 s.split("\n## ").next().unwrap_or(s).trim().to_string()
             })
             .unwrap_or_default();
-        out.push(Judgement { critic: critic.into(), subject: subject.into(), text });
+        out.push(Judgement {
+            critic: critic.into(),
+            subject: subject.into(),
+            text,
+        });
     }
     out
 }
@@ -101,17 +117,14 @@ fn has_frozen_suite(task: &str) -> bool {
 /// a near-tie for every task and pushes the decision down to Simplicity, which is how this
 /// command first disagreed with every adjudication made by hand.
 fn tests_written(task: &str, arm: &str) -> Option<u32> {
-    let spec = fs::read_to_string(format!(
-        "{}/.fb/prompts/{task}.md",
-        repo_root()
-    ))
-    .ok()?;
+    let spec = fs::read_to_string(format!("{}/.fb/prompts/{task}.md", repo_root())).ok()?;
     let rel = spec
         .lines()
         .find(|l| l.contains("fb:creates"))
         .and_then(|l| l.split_whitespace().nth(2))?;
     let src = fs::read_to_string(format!(
-        "{}/{task}--{arm}/{rel}", crate::paths::worktrees().display()
+        "{}/{task}--{arm}/{rel}",
+        crate::paths::worktrees().display()
     ))
     .ok()?;
     Some(src.matches("#[test]").count() as u32)
@@ -122,9 +135,15 @@ fn evidence(task: &str) -> Vec<Evidence> {
     let cx = load(&logs().join(format!("{task}.crossx.json")));
     let defects_json = load(&logs().join(format!("{task}.defects.json")));
     let mut out = Vec::new();
-    let Some(Value::Array(rows)) = score else { return out };
+    let Some(Value::Array(rows)) = score else {
+        return out;
+    };
     for r in rows {
-        let arm = r.get("source").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let arm = r
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         if r.get("verdict").and_then(|v| v.as_str()) != Some("PASS") {
             continue;
         }
@@ -144,8 +163,12 @@ fn evidence(task: &str) -> Vec<Evidence> {
             .and_then(|d| d.get("arms"))
             .and_then(|a| a.get(&arm))
             .and_then(|v| {
-                let of = v.get("beyond_reference_of").and_then(serde_json::Value::as_u64);
-                let caught = v.get("beyond_reference_caught").and_then(serde_json::Value::as_u64);
+                let of = v
+                    .get("beyond_reference_of")
+                    .and_then(serde_json::Value::as_u64);
+                let caught = v
+                    .get("beyond_reference_caught")
+                    .and_then(serde_json::Value::as_u64);
                 match (caught, of) {
                     (Some(c), Some(n)) if n > 0 => Some(c as f64 / n as f64),
                     _ => {
@@ -176,8 +199,14 @@ fn evidence(task: &str) -> Vec<Evidence> {
             // reporting agreement, not quality, and will tie.  (bead farmerbob-jd2.11)
             defect_sensitivity,
             survival,
-            clippy: r.get("clippy").and_then(|v| v.as_str()).and_then(|s| s.parse().ok()),
-            crates_touched: r.get("crates_touched").and_then(|v| v.as_u64()).map(|n| n as u32),
+            clippy: r
+                .get("clippy")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok()),
+            crates_touched: r
+                .get("crates_touched")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32),
             tests,
             lines: r.get("lines").and_then(|v| v.as_u64()).map(|n| n as u32),
             cost_usd: None,
@@ -204,11 +233,21 @@ pub fn run(task: &str, epsilon: f64, allow_missing_critique: bool) -> i32 {
         println!(
             "  {:<22} survival={:<6} defect={:<6} clippy={:<4} tests={:<5} lines={}",
             c.arm,
-            c.survival.map(|v| format!("{v:.2}")).unwrap_or_else(|| "n/a".into()),
-            c.defect_sensitivity.map(|v| format!("{v:.2}")).unwrap_or_else(|| "n/a".into()),
-            c.clippy.map(|v| v.to_string()).unwrap_or_else(|| "n/a".into()),
-            c.tests.map(|v| v.to_string()).unwrap_or_else(|| "n/a".into()),
-            c.lines.map(|v| v.to_string()).unwrap_or_else(|| "n/a".into()),
+            c.survival
+                .map(|v| format!("{v:.2}"))
+                .unwrap_or_else(|| "n/a".into()),
+            c.defect_sensitivity
+                .map(|v| format!("{v:.2}"))
+                .unwrap_or_else(|| "n/a".into()),
+            c.clippy
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "n/a".into()),
+            c.tests
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "n/a".into()),
+            c.lines
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "n/a".into()),
         );
     }
 
@@ -233,16 +272,24 @@ pub fn run(task: &str, epsilon: f64, allow_missing_critique: bool) -> i32 {
     // two -- it usually means the instrument was never run -- and the old call silently
     // dropped exactly those.  (bead farmerbob-jd2.11)
     let gaps = evidence_gaps(&cands);
-    let absent: Vec<String> = gaps.iter()
-        .filter_map(|g| match g { Gap::Absent(c) => Some(format!("{c:?}")), _ => None })
+    let absent: Vec<String> = gaps
+        .iter()
+        .filter_map(|g| match g {
+            Gap::Absent(c) => Some(format!("{c:?}")),
+            _ => None,
+        })
         .collect();
     if !absent.is_empty() {
         println!("\nNEVER MEASURED for any candidate: {}", absent.join(", "));
         println!("  These criteria cannot rank this field. If an instrument for one exists but");
         println!("  is not in the pipeline, that is a harness gap, not a property of the field.");
     }
-    let missing: Vec<_> = gaps.iter()
-        .filter_map(|g| match g { Gap::Partial(c) => Some(*c), _ => None })
+    let missing: Vec<_> = gaps
+        .iter()
+        .filter_map(|g| match g {
+            Gap::Partial(c) => Some(*c),
+            _ => None,
+        })
         .collect();
     if !missing.is_empty() {
         println!("\n== not measured: {missing:?}");
@@ -284,13 +331,17 @@ mod frozen_suite_is_not_mere_existence {
 
     #[test]
     fn a_file_with_a_test_is_a_frozen_suite() {
-        assert!(counts_as_suite("#[cfg(test)]\nmod c { #[test] fn t() {} }\n"));
+        assert!(counts_as_suite(
+            "#[cfg(test)]\nmod c { #[test] fn t() {} }\n"
+        ));
     }
 
     /// A module that declares tests but contains none is the same empty-suite trap wearing a
     /// module wrapper, and must not count either.
     #[test]
     fn a_test_module_with_no_tests_is_not_a_frozen_suite() {
-        assert!(!counts_as_suite("#[cfg(test)]\nmod conformance_x {\n    use super::*;\n}\n"));
+        assert!(!counts_as_suite(
+            "#[cfg(test)]\nmod conformance_x {\n    use super::*;\n}\n"
+        ));
     }
 }

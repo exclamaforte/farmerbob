@@ -131,18 +131,10 @@ pub fn rank(rows: &[Row], col: Column, epsilon: f64) -> Vec<&Row> {
 /// order. An empty `rows` yields an empty vector.
 pub fn discriminating_columns(rows: &[Row], epsilon: f64) -> Vec<Column> {
     use Column::*;
-    [
-        Conformance,
-        Survival,
-        ClippyDelta,
-        Tests,
-        Lines,
-        Usd,
-        Secs,
-    ]
-    .into_iter()
-    .filter(|&col| is_discriminating(rows, col, epsilon))
-    .collect()
+    [Conformance, Survival, ClippyDelta, Tests, Lines, Usd, Secs]
+        .into_iter()
+        .filter(|&col| is_discriminating(rows, col, epsilon))
+        .collect()
 }
 
 /// A one-line-per-row table of stringified cells.
@@ -340,8 +332,14 @@ mod tests {
         a.conformance = Some(f64::NAN);
         let mut b = row("b");
         b.conformance = Some(0.9);
-        assert_eq!(compare_on(&a, &b, Column::Conformance, 1e-9), Cmp::Incomparable);
-        assert_eq!(compare_on(&b, &a, Column::Conformance, 1e-9), Cmp::Incomparable);
+        assert_eq!(
+            compare_on(&a, &b, Column::Conformance, 1e-9),
+            Cmp::Incomparable
+        );
+        assert_eq!(
+            compare_on(&b, &a, Column::Conformance, 1e-9),
+            Cmp::Incomparable
+        );
 
         // And it sorts last, like any absent value.
         let arr = [a.clone(), b.clone()];
@@ -423,10 +421,7 @@ mod tests {
         a.conformance = Some(0.900);
         let mut b = row("b");
         b.conformance = Some(0.9001);
-        assert_eq!(
-            compare_on(&a, &b, Column::Conformance, 1e-2),
-            Cmp::Tied
-        );
+        assert_eq!(compare_on(&a, &b, Column::Conformance, 1e-2), Cmp::Tied);
         assert_eq!(
             compare_on(&a, &b, Column::Conformance, 1e-9),
             Cmp::Worse // a slightly lower => worse on higher-is-better
@@ -464,5 +459,3 @@ mod tests {
         assert!(cols.contains(&Column::Tests));
     }
 }
-
-

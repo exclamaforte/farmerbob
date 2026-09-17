@@ -313,7 +313,14 @@ mod unmeasured_spend {
     use super::*;
 
     fn arm_of(name: &str, usd: Option<f64>) -> ArmCost {
-        ArmCost { arm: name.into(), runs: 3, completed: 2, usd, tokens: None, unmeasured_runs: 0 }
+        ArmCost {
+            arm: name.into(),
+            runs: 3,
+            completed: 2,
+            usd,
+            tokens: None,
+            unmeasured_runs: 0,
+        }
     }
 
     /// Instance twelve of this project's recurring failure, found inside the module written
@@ -337,7 +344,11 @@ mod unmeasured_spend {
     /// One measured arm among unmeasured ones yields that arm's spend, not a padded sum.
     #[test]
     fn partial_measurement_sums_only_what_was_measured() {
-        let mixed = [arm_of("a", Some(1.5)), arm_of("b", None), arm_of("c", Some(0.25))];
+        let mixed = [
+            arm_of("a", Some(1.5)),
+            arm_of("b", None),
+            arm_of("c", Some(0.25)),
+        ];
         assert_eq!(totals(&mixed).0, Some(1.75));
     }
 }
@@ -383,12 +394,18 @@ mod partial_total_tests {
         let a = &result[0];
         assert_eq!(a.arm, "a");
         assert_eq!(a.runs, 3);
-        assert_eq!(a.unmeasured_runs, 2, "only counted runs with usd None are counted");
+        assert_eq!(
+            a.unmeasured_runs, 2,
+            "only counted runs with usd None are counted"
+        );
         assert_eq!(a.usd, Some(1.0));
         let b = &result[1];
         assert_eq!(b.arm, "b");
         assert_eq!(b.runs, 2);
-        assert_eq!(b.unmeasured_runs, 0, "fully priced arms report zero unmeasured");
+        assert_eq!(
+            b.unmeasured_runs, 0,
+            "fully priced arms report zero unmeasured"
+        );
     }
 
     // Rule 2: fully_measured iff unmeasured_runs == 0 AND runs > 0.
@@ -414,7 +431,10 @@ mod partial_total_tests {
         assert_eq!(hand("a", Some(6.0), 4, 0, 1).usd_per_completion(), None);
         assert_eq!(hand("a", None, 4, 3, 1).usd_per_completion(), None);
         // Existing conditions still hold for complete totals.
-        assert_eq!(hand("a", Some(6.0), 3, 3, 0).usd_per_completion(), Some(2.0));
+        assert_eq!(
+            hand("a", Some(6.0), 3, 3, 0).usd_per_completion(),
+            Some(2.0)
+        );
         assert_eq!(hand("a", None, 3, 3, 0).usd_per_completion(), None);
         assert_eq!(hand("a", Some(6.0), 3, 0, 0).usd_per_completion(), None);
     }
@@ -456,10 +476,7 @@ mod partial_total_tests {
     // Boundary: every counted run unmeasured.
     #[test]
     fn boundary_all_counted_runs_unmeasured() {
-        let result = aggregate(&[
-            run("a", None, true, true),
-            run("a", None, false, true),
-        ]);
+        let result = aggregate(&[run("a", None, true, true), run("a", None, false, true)]);
         let a = &result[0];
         assert_eq!(a.usd, None);
         assert_eq!(a.unmeasured_runs, 2);
@@ -476,7 +493,10 @@ mod partial_total_tests {
         let b = &result[0];
         assert_eq!(b.runs, 0);
         assert_eq!(b.unmeasured_runs, 0);
-        assert!(!fully_measured(b), "runs == 0 means unmeasured, not fully measured");
+        assert!(
+            !fully_measured(b),
+            "runs == 0 means unmeasured, not fully measured"
+        );
         assert!(!frontier(&result, 0.0).contains(&"b".to_string()));
     }
 

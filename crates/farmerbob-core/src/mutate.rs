@@ -61,31 +61,60 @@ fn is_delimited(bytes: &[u8], start: usize, end: usize) -> bool {
     ok(predel) && ok(postdel)
 }
 
-fn find_site(line_bytes: &[u8], line: &str, pos: usize, end: usize) -> Option<(MutationKind, String, String)> {
+fn find_site(
+    line_bytes: &[u8],
+    line: &str,
+    pos: usize,
+    end: usize,
+) -> Option<(MutationKind, String, String)> {
     let remaining = &line_bytes[pos..end];
 
     // ComparisonBoundary — longer matches first
     if remaining.len() >= 2 {
         if remaining[0] == b'<' && remaining[1] == b'=' {
-            return Some((MutationKind::ComparisonBoundary, "<=".to_string(), "<".to_string()));
+            return Some((
+                MutationKind::ComparisonBoundary,
+                "<=".to_string(),
+                "<".to_string(),
+            ));
         }
         if remaining[0] == b'>' && remaining[1] == b'=' {
-            return Some((MutationKind::ComparisonBoundary, ">=".to_string(), ">".to_string()));
+            return Some((
+                MutationKind::ComparisonBoundary,
+                ">=".to_string(),
+                ">".to_string(),
+            ));
         }
     }
     if !remaining.is_empty() {
         if remaining[0] == b'<' {
-            let next = if remaining.len() >= 2 { remaining[1] } else { 0 };
+            let next = if remaining.len() >= 2 {
+                remaining[1]
+            } else {
+                0
+            };
             let prev = if pos > 0 { line_bytes[pos - 1] } else { 0 };
             if next != b'<' && next != b'=' && prev != b'<' {
-                return Some((MutationKind::ComparisonBoundary, "<".to_string(), "<=".to_string()));
+                return Some((
+                    MutationKind::ComparisonBoundary,
+                    "<".to_string(),
+                    "<=".to_string(),
+                ));
             }
         }
         if remaining[0] == b'>' {
-            let next = if remaining.len() >= 2 { remaining[1] } else { 0 };
+            let next = if remaining.len() >= 2 {
+                remaining[1]
+            } else {
+                0
+            };
             let prev = if pos > 0 { line_bytes[pos - 1] } else { 0 };
             if next != b'>' && next != b'=' && prev != b'-' && prev != b'=' && prev != b'>' {
-                return Some((MutationKind::ComparisonBoundary, ">".to_string(), ">=".to_string()));
+                return Some((
+                    MutationKind::ComparisonBoundary,
+                    ">".to_string(),
+                    ">=".to_string(),
+                ));
             }
         }
     }
@@ -93,20 +122,36 @@ fn find_site(line_bytes: &[u8], line: &str, pos: usize, end: usize) -> Option<(M
     // ComparisonNegate
     if remaining.len() >= 2 {
         if remaining[0] == b'=' && remaining[1] == b'=' {
-            return Some((MutationKind::ComparisonNegate, "==".to_string(), "!=".to_string()));
+            return Some((
+                MutationKind::ComparisonNegate,
+                "==".to_string(),
+                "!=".to_string(),
+            ));
         }
         if remaining[0] == b'!' && remaining[1] == b'=' {
-            return Some((MutationKind::ComparisonNegate, "!=".to_string(), "==".to_string()));
+            return Some((
+                MutationKind::ComparisonNegate,
+                "!=".to_string(),
+                "==".to_string(),
+            ));
         }
     }
 
     // BooleanConnective
     if remaining.len() >= 2 {
         if remaining[0] == b'&' && remaining[1] == b'&' {
-            return Some((MutationKind::BooleanConnective, "&&".to_string(), "||".to_string()));
+            return Some((
+                MutationKind::BooleanConnective,
+                "&&".to_string(),
+                "||".to_string(),
+            ));
         }
         if remaining[0] == b'|' && remaining[1] == b'|' {
-            return Some((MutationKind::BooleanConnective, "||".to_string(), "&&".to_string()));
+            return Some((
+                MutationKind::BooleanConnective,
+                "||".to_string(),
+                "&&".to_string(),
+            ));
         }
     }
 
@@ -118,7 +163,11 @@ fn find_site(line_bytes: &[u8], line: &str, pos: usize, end: usize) -> Option<(M
         && remaining[3] == b'e'
         && is_delimited(line_bytes, pos, pos + 4)
     {
-        return Some((MutationKind::BooleanLiteral, "true".to_string(), "false".to_string()));
+        return Some((
+            MutationKind::BooleanLiteral,
+            "true".to_string(),
+            "false".to_string(),
+        ));
     }
     if remaining.len() >= 5
         && remaining[0] == b'f'
@@ -128,7 +177,11 @@ fn find_site(line_bytes: &[u8], line: &str, pos: usize, end: usize) -> Option<(M
         && remaining[4] == b'e'
         && is_delimited(line_bytes, pos, pos + 5)
     {
-        return Some((MutationKind::BooleanLiteral, "false".to_string(), "true".to_string()));
+        return Some((
+            MutationKind::BooleanLiteral,
+            "false".to_string(),
+            "true".to_string(),
+        ));
     }
 
     // IntegerLiteral
@@ -138,7 +191,11 @@ fn find_site(line_bytes: &[u8], line: &str, pos: usize, end: usize) -> Option<(M
             run_end += 1;
         }
         let predel = if pos > 0 { line_bytes[pos - 1] } else { 0 };
-        let postdel = if run_end < line_bytes.len() { line_bytes[run_end] } else { 0 };
+        let postdel = if run_end < line_bytes.len() {
+            line_bytes[run_end]
+        } else {
+            0
+        };
 
         let delim_ok = |c: u8| c == 0 || (!c.is_ascii_alphanumeric() && c != b'_' && c != b'.');
         if !delim_ok(predel) || !delim_ok(postdel) {
@@ -147,7 +204,11 @@ fn find_site(line_bytes: &[u8], line: &str, pos: usize, end: usize) -> Option<(M
 
         let digit_str = &line[pos..run_end];
         let replacement = if digit_str == "0" { "1" } else { "0" };
-        return Some((MutationKind::IntegerLiteral, digit_str.to_string(), replacement.to_string()));
+        return Some((
+            MutationKind::IntegerLiteral,
+            digit_str.to_string(),
+            replacement.to_string(),
+        ));
     }
 
     None

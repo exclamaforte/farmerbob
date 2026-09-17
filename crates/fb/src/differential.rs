@@ -90,7 +90,7 @@ pub fn parse_spec(spec: &str) -> Measurement<(String, String, Vec<Case>)> {
                 _ => {
                     return Measurement::instrument_failed(
                         "fb:differential needs both a script and a subcommand",
-                    )
+                    );
                 }
             }
         } else if let Some(rest) = tag(line, "fb:case") {
@@ -235,7 +235,9 @@ fn build_arm(wt: &Path) -> Measurement<PathBuf> {
             if bin.exists() {
                 Measurement::observed(bin)
             } else {
-                Measurement::instrument_failed("cargo build succeeded but target/debug/fb is absent")
+                Measurement::instrument_failed(
+                    "cargo build succeeded but target/debug/fb is absent",
+                )
             }
         }
         Measurement::Observed(o) => Measurement::instrument_failed(&format!(
@@ -413,7 +415,10 @@ mod tests {
         // Declared but unrunnable. If this returned `Agrees` it would be the exact bug the
         // whole gate exists to catch, committed by the gate itself.
         let m = parse_spec("<!-- fb:differential fb-eligible.sh eligible -->");
-        assert!(matches!(m, Measurement::Missing(Absent::InstrumentFailed { .. })));
+        assert!(matches!(
+            m,
+            Measurement::Missing(Absent::InstrumentFailed { .. })
+        ));
     }
 
     #[test]
@@ -460,7 +465,11 @@ mod tests {
         // Regression for the first real run: three arms exited 2 because clap rejected the
         // argument vector, and the table said only "candidate exits 2".
         let want = out(0, "rows\n", "");
-        let got = out(2, "", "error: the following required arguments were not provided:\n  <WTROOT>");
+        let got = out(
+            2,
+            "",
+            "error: the following required arguments were not provided:\n  <WTROOT>",
+        );
         let d = compare(0, &["port-defects".into()], &want, &got).expect("must diverge");
         assert!(d.contains("candidate stderr"), "{d}");
         assert!(d.contains("required arguments"), "{d}");
@@ -722,8 +731,16 @@ mod exit_code_tests {
             Measurement::Missing(Absent::NothingToMeasure { .. }) => 3,
             Measurement::Missing(_) => 2,
         };
-        assert_eq!(code(&none), 3, "a task that is not a port has nothing to check");
-        assert_eq!(code(&broken), 2, "a declared oracle that cannot run is a gap");
+        assert_eq!(
+            code(&none),
+            3,
+            "a task that is not a port has nothing to check"
+        );
+        assert_eq!(
+            code(&broken),
+            2,
+            "a declared oracle that cannot run is a gap"
+        );
         assert_ne!(code(&none), code(&broken));
     }
 }
@@ -754,7 +771,10 @@ mod stability_tests {
         assert!(drifted, "differing stdout must count as drift");
 
         let mut report: Report = [
-            ("agreed".to_string(), Measurement::observed(ArmVerdict::Agrees)),
+            (
+                "agreed".to_string(),
+                Measurement::observed(ArmVerdict::Agrees),
+            ),
             (
                 "diverged".to_string(),
                 Measurement::observed(ArmVerdict::Diverges {

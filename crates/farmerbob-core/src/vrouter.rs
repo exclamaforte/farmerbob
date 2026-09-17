@@ -648,7 +648,10 @@ mod tests {
         let ev = ev_with(
             vec![
                 (Check::ExecutedGate, clean()),
-                (Check::BehaviouralVerifier(vid("b")), unable("sandbox refused to run it")),
+                (
+                    Check::BehaviouralVerifier(vid("b")),
+                    unable("sandbox refused to run it"),
+                ),
             ],
             vec![],
         );

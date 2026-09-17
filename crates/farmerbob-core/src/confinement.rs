@@ -40,7 +40,11 @@ pub enum Confinement {
     /// Processes were observed, none inside the requested unit. The refactor case.
     Absent { unit: String, found_in: Vec<String> },
     /// Some inside, some outside. Worse than Absent: the budget applied to part of the run.
-    Partial { unit: String, inside: usize, outside: usize },
+    Partial {
+        unit: String,
+        inside: usize,
+        outside: usize,
+    },
     /// Nothing was observed at all, so nothing can be concluded.
     Unobserved,
 }
@@ -163,10 +167,13 @@ mod tests {
     fn fb_a_does_not_match_fb_abc_scope() {
         let req = req("fb-a");
         let seen = [seen(1, "/system.slice/fb-abc.scope")];
-        assert_eq!(verify(&req, &seen), Confinement::Absent {
-            unit: "fb-a".to_string(),
-            found_in: vec!["/system.slice/fb-abc.scope".to_string()],
-        });
+        assert_eq!(
+            verify(&req, &seen),
+            Confinement::Absent {
+                unit: "fb-a".to_string(),
+                found_in: vec!["/system.slice/fb-abc.scope".to_string()],
+            }
+        );
     }
 
     #[test]
@@ -175,10 +182,13 @@ mod tests {
         let ends_string = [seen(1, "/sys/fs/cgroup/fb-a")];
         let after_leading_slash = [seen(2, "/fb-a")];
         let mid_path = [seen(3, "/user.slice/fb-a/workload")];
-        assert_eq!(verify(&req, &ends_string), Confinement::Verified {
-            unit: "fb-a".to_string(),
-            pids: 1,
-        });
+        assert_eq!(
+            verify(&req, &ends_string),
+            Confinement::Verified {
+                unit: "fb-a".to_string(),
+                pids: 1,
+            }
+        );
         assert!(verify(&req, &after_leading_slash).is_verified());
         assert!(verify(&req, &mid_path).is_verified());
         // Substrings inside a larger component are not whole components.
@@ -204,11 +214,14 @@ mod tests {
             seen(4, "/system.slice/stray.service"),
             seen(5, CALLER),
         ];
-        assert_eq!(verify(&req(UNIT), &seen), Confinement::Partial {
-            unit: UNIT.to_string(),
-            inside: 2,
-            outside: 3,
-        });
+        assert_eq!(
+            verify(&req(UNIT), &seen),
+            Confinement::Partial {
+                unit: UNIT.to_string(),
+                inside: 2,
+                outside: 3,
+            }
+        );
     }
 
     #[test]
@@ -234,10 +247,13 @@ mod tests {
     #[test]
     fn verified_reports_unit_and_pid_count() {
         let seen = [seen(7, INSIDE), seen(8, INSIDE), seen(9, INSIDE)];
-        assert_eq!(verify(&req(UNIT), &seen), Confinement::Verified {
-            unit: UNIT.to_string(),
-            pids: 3,
-        });
+        assert_eq!(
+            verify(&req(UNIT), &seen),
+            Confinement::Verified {
+                unit: UNIT.to_string(),
+                pids: 3,
+            }
+        );
     }
 
     #[test]
@@ -245,10 +261,13 @@ mod tests {
         // The refactor case: the wrapper never materialised, so the run sat in the
         // caller's cgroup. One distinct foreign cgroup, so dedup cannot matter here.
         let seen = [seen(10, CALLER), seen(11, CALLER)];
-        assert_eq!(verify(&req(UNIT), &seen), Confinement::Absent {
-            unit: UNIT.to_string(),
-            found_in: vec![CALLER.to_string()],
-        });
+        assert_eq!(
+            verify(&req(UNIT), &seen),
+            Confinement::Absent {
+                unit: UNIT.to_string(),
+                found_in: vec![CALLER.to_string()],
+            }
+        );
     }
 
     #[test]
@@ -257,10 +276,13 @@ mod tests {
         let request = req(UNIT);
         let seen = [seen(1, CALLER)];
         let verdict = verify(&request, &seen);
-        assert_eq!(verdict, Confinement::Absent {
-            unit: UNIT.to_string(),
-            found_in: vec![CALLER.to_string()],
-        });
+        assert_eq!(
+            verdict,
+            Confinement::Absent {
+                unit: UNIT.to_string(),
+                found_in: vec![CALLER.to_string()],
+            }
+        );
         assert!(!verdict.may_attribute_resources());
     }
 
@@ -272,11 +294,14 @@ mod tests {
             seen(3, CALLER),
             seen(4, "/system.slice/another.service"),
         ];
-        assert_eq!(foreign_cgroups(&req(UNIT), &seen), vec![
-            "/system.slice/another.service".to_string(),
-            "/system.slice/stray.service".to_string(),
-            CALLER.to_string(),
-        ]);
+        assert_eq!(
+            foreign_cgroups(&req(UNIT), &seen),
+            vec![
+                "/system.slice/another.service".to_string(),
+                "/system.slice/stray.service".to_string(),
+                CALLER.to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -288,11 +313,10 @@ mod tests {
 
     #[test]
     fn uncapped_lists_omissions_in_stated_order() {
-        assert_eq!(uncapped(&uncapped_req()), vec![
-            "memory_max_mib",
-            "cpu_quota_pct",
-            "tasks_max"
-        ]);
+        assert_eq!(
+            uncapped(&uncapped_req()),
+            vec!["memory_max_mib", "cpu_quota_pct", "tasks_max"]
+        );
         let partial = Request {
             memory_max_mib: Some(1024),
             cpu_quota_pct: None,
@@ -310,10 +334,13 @@ mod tests {
     #[test]
     fn empty_unit_with_processes_seen_is_absent() {
         let seen = [seen(1, INSIDE), seen(2, CALLER)];
-        assert_eq!(verify(&req(""), &seen), Confinement::Absent {
-            unit: String::new(),
-            found_in: vec![INSIDE.to_string(), CALLER.to_string()],
-        });
+        assert_eq!(
+            verify(&req(""), &seen),
+            Confinement::Absent {
+                unit: String::new(),
+                found_in: vec![INSIDE.to_string(), CALLER.to_string()],
+            }
+        );
         assert_eq!(verify(&req(""), &[]), Confinement::Unobserved);
     }
 }

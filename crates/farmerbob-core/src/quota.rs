@@ -71,17 +71,18 @@ impl QuotaTracker {
         now: u64,
     ) -> Option<LimitHit> {
         let lowered = output.to_lowercase();
-        let evidence = markers.iter().filter(|marker| !marker.is_empty()).find_map(|marker| {
-            let marker_lower = marker.to_lowercase();
-            lowered
-                .find(&marker_lower)
-                .map(|index| {
+        let evidence = markers
+            .iter()
+            .filter(|marker| !marker.is_empty())
+            .find_map(|marker| {
+                let marker_lower = marker.to_lowercase();
+                lowered.find(&marker_lower).map(|index| {
                     output
                         .get(index..)
                         .and_then(|tail| tail.get(..marker_lower.len()))
                         .map_or_else(|| marker.clone(), ToOwned::to_owned)
                 })
-        })?;
+            })?;
         let reset_at = parse_reset_seconds(&lowered).map(|seconds| now.saturating_add(seconds));
         Some(LimitHit {
             bucket: bucket.clone(),
@@ -97,9 +98,9 @@ impl QuotaTracker {
         match entry {
             std::collections::hash_map::Entry::Vacant(slot) => {
                 let attempts = 1;
-                let until = hit
-                    .reset_at
-                    .unwrap_or_else(|| now.saturating_add(backoff(self.default_window_secs, attempts)));
+                let until = hit.reset_at.unwrap_or_else(|| {
+                    now.saturating_add(backoff(self.default_window_secs, attempts))
+                });
                 slot.insert(ParkedBucket {
                     until,
                     attempts,
@@ -111,15 +112,16 @@ impl QuotaTracker {
             std::collections::hash_map::Entry::Occupied(mut slot) => {
                 let parked = slot.get_mut();
                 if now >= parked.until {
-                    parked.parked_total = parked
-                        .parked_total
-                        .saturating_add(now.saturating_sub(parked.parked_since).min(parked.until.saturating_sub(parked.parked_since)));
+                    parked.parked_total = parked.parked_total.saturating_add(
+                        now.saturating_sub(parked.parked_since)
+                            .min(parked.until.saturating_sub(parked.parked_since)),
+                    );
                     parked.parked_since = now;
                 }
                 parked.attempts = parked.attempts.saturating_add(1);
-                let desired = hit
-                    .reset_at
-                    .unwrap_or_else(|| now.saturating_add(backoff(self.default_window_secs, parked.attempts)));
+                let desired = hit.reset_at.unwrap_or_else(|| {
+                    now.saturating_add(backoff(self.default_window_secs, parked.attempts))
+                });
                 parked.until = if now >= parked.until {
                     desired
                 } else {
@@ -153,11 +155,9 @@ impl QuotaTracker {
             .into_iter()
             .filter_map(|bucket| {
                 self.buckets.remove(&bucket).map(|parked| {
-                    let elapsed = parked.parked_total.saturating_add(
-                        parked
-                            .until
-                            .saturating_sub(parked.parked_since),
-                    );
+                    let elapsed = parked
+                        .parked_total
+                        .saturating_add(parked.until.saturating_sub(parked.parked_since));
                     let total = self.parked_totals.entry(bucket.clone()).or_default();
                     *total = total.saturating_add(elapsed);
                     (bucket, parked.handles)
@@ -205,7 +205,11 @@ fn parse_reset_seconds(output: &str) -> Option<u64> {
             .chars()
             .take_while(|character| character.is_ascii_digit())
             .collect::<String>();
-        if digits.is_empty() { None } else { digits.parse().ok() }
+        if digits.is_empty() {
+            None
+        } else {
+            digits.parse().ok()
+        }
     })
 }
 
@@ -213,47 +217,100 @@ fn parse_reset_seconds(output: &str) -> Option<u64> {
 mod tests {
     use super::*;
 
-    fn bucket() -> Bucket { Bucket("shared".into()) }
-    fn handle(id: &str) -> ResumeHandle { ResumeHandle { session_id: id.into(), worktree: "w".into() } }
+    fn bucket() -> Bucket {
+        Bucket("shared".into())
+    }
+    fn handle(id: &str) -> ResumeHandle {
+        ResumeHandle {
+            session_id: id.into(),
+            worktree: "w".into(),
+        }
+    }
 
     #[test]
     fn retry_after_sets_reset_at() {
         let tracker = QuotaTracker::new(10);
-        let hit = tracker.detect(&bucket(), "RATE LIMIT; retry after 30", &["rate limit".into()], 100);
+        let hit = tracker.detect(
+            &bucket(),
+            "RATE LIMIT; retry after 30",
+            &["rate limit".into()],
+            100,
+        );
         assert_eq!(hit.and_then(|h| h.reset_at), Some(130));
     }
 
     #[test]
     fn no_stated_reset_uses_window() {
         let tracker = QuotaTracker::new(10);
-        let hit = tracker.detect(&bucket(), "rate limit", &["RATE LIMIT".into()], 100).unwrap();
+        let hit = tracker
+            .detect(&bucket(), "rate limit", &["RATE LIMIT".into()], 100)
+            .unwrap();
         let mut tracker = tracker;
         tracker.park(&hit, handle("a"), 100);
-        assert_eq!(tracker.state(&bucket(), 109), BucketState::Parked { until: 110, attempts: 1 });
+        assert_eq!(
+            tracker.state(&bucket(), 109),
+            BucketState::Parked {
+                until: 110,
+                attempts: 1
+            }
+        );
     }
 
     #[test]
     fn backoff_doubles_then_saturates() {
         let mut tracker = QuotaTracker::new(30_000);
-        for i in 0..4 { tracker.park(&LimitHit { bucket: bucket(), detected_at: 0, reset_at: None, evidence: "x".into() }, handle(&i.to_string()), 0); }
-        assert_eq!(tracker.state(&bucket(), 0), BucketState::Parked { until: 86_400, attempts: 4 });
+        for i in 0..4 {
+            tracker.park(
+                &LimitHit {
+                    bucket: bucket(),
+                    detected_at: 0,
+                    reset_at: None,
+                    evidence: "x".into(),
+                },
+                handle(&i.to_string()),
+                0,
+            );
+        }
+        assert_eq!(
+            tracker.state(&bucket(), 0),
+            BucketState::Parked {
+                until: 86_400,
+                attempts: 4
+            }
+        );
     }
 
     #[test]
     fn succeeded_resets_attempts() {
         let mut tracker = QuotaTracker::new(10);
-        let hit = LimitHit { bucket: bucket(), detected_at: 0, reset_at: None, evidence: "x".into() };
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: None,
+            evidence: "x".into(),
+        };
         tracker.park(&hit, handle("a"), 0);
         tracker.due(10);
         tracker.succeeded(&bucket());
         tracker.park(&hit, handle("b"), 0);
-        assert_eq!(tracker.state(&bucket(), 0), BucketState::Parked { until: 10, attempts: 1 });
+        assert_eq!(
+            tracker.state(&bucket(), 0),
+            BucketState::Parked {
+                until: 10,
+                attempts: 1
+            }
+        );
     }
 
     #[test]
     fn due_delivers_once() {
         let mut tracker = QuotaTracker::new(10);
-        let hit = LimitHit { bucket: bucket(), detected_at: 0, reset_at: Some(5), evidence: "x".into() };
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: Some(5),
+            evidence: "x".into(),
+        };
         tracker.park(&hit, handle("a"), 0);
         assert_eq!(tracker.due(5).len(), 1);
         assert!(tracker.due(5).is_empty());
@@ -262,9 +319,17 @@ mod tests {
     #[test]
     fn shared_bucket_parks_both_arms() {
         let mut tracker = QuotaTracker::new(10);
-        let hit = LimitHit { bucket: bucket(), detected_at: 0, reset_at: Some(5), evidence: "x".into() };
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: Some(5),
+            evidence: "x".into(),
+        };
         tracker.park(&hit, handle("a"), 0);
         tracker.park(&hit, handle("b"), 0);
-        assert_eq!(tracker.due(5).into_iter().next().map(|(_, h)| h.len()), Some(2));
+        assert_eq!(
+            tracker.due(5).into_iter().next().map(|(_, h)| h.len()),
+            Some(2)
+        );
     }
 }

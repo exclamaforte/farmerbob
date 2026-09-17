@@ -131,9 +131,7 @@ impl SlotTable {
 
     /// Which run holds a slot, if any.
     pub fn holder(&self, slot: SlotIndex) -> Option<&RunRef> {
-        self.slots
-            .get(slot.0 as usize)
-            .and_then(|s| s.as_ref())
+        self.slots.get(slot.0 as usize).and_then(|s| s.as_ref())
     }
 }
 

@@ -125,10 +125,7 @@ pub fn check_history(available: &[Migration], applied: &[u32]) -> Result<(), Pla
         && !known.contains(db)
     {
         let binary = target_version(available).unwrap_or(0);
-        return Err(PlanError::DatabaseIsNewer {
-            db: *db,
-            binary,
-        });
+        return Err(PlanError::DatabaseIsNewer { db: *db, binary });
     }
 
     let mut expected: u32 = 1;
@@ -178,7 +175,13 @@ mod tests {
 
     #[test]
     fn unsorted_input_plans_in_ascending_order() {
-        let available = vec![mig(3, "c"), mig(1, "a"), mig(5, "e"), mig(2, "b"), mig(4, "d")];
+        let available = vec![
+            mig(3, "c"),
+            mig(1, "a"),
+            mig(5, "e"),
+            mig(2, "b"),
+            mig(4, "d"),
+        ];
         let p = plan(&available, 0).unwrap();
         assert_eq!(versions(&p.steps), vec![1, 2, 3, 4, 5]);
         assert_eq!(p.from_version, 0);
@@ -225,8 +228,17 @@ mod tests {
 
     #[test]
     fn duplicate_version_errors_deterministically() {
-        let available = vec![mig(5, "e"), mig(3, "c"), mig(1, "a"), mig(3, "c-again"), mig(5, "e-again")];
-        assert_eq!(plan(&available, 0).unwrap_err(), PlanError::DuplicateVersion(3));
+        let available = vec![
+            mig(5, "e"),
+            mig(3, "c"),
+            mig(1, "a"),
+            mig(3, "c-again"),
+            mig(5, "e-again"),
+        ];
+        assert_eq!(
+            plan(&available, 0).unwrap_err(),
+            PlanError::DuplicateVersion(3)
+        );
     }
 
     #[test]
@@ -237,7 +249,10 @@ mod tests {
 
     #[test]
     fn zero_version_rejected_even_when_alone() {
-        assert_eq!(plan(&[mig(0, "zero")], 0).unwrap_err(), PlanError::ZeroVersion);
+        assert_eq!(
+            plan(&[mig(0, "zero")], 0).unwrap_err(),
+            PlanError::ZeroVersion
+        );
     }
 
     #[test]
@@ -317,7 +332,10 @@ mod tests {
 
     #[test]
     fn invalid_available_set_is_rejected_by_check_history_too() {
-        assert_eq!(check_history(&[mig(0, "zero")], &[]), Err(PlanError::ZeroVersion));
+        assert_eq!(
+            check_history(&[mig(0, "zero")], &[]),
+            Err(PlanError::ZeroVersion)
+        );
         assert_eq!(
             check_history(&[mig(2, "b"), mig(2, "b-again")], &[]),
             Err(PlanError::DuplicateVersion(2))

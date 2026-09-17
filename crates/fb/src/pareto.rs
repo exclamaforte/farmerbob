@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use farmerbob_core::cost::{aggregate, frontier, totals, ArmCost, RunCost};
+use farmerbob_core::cost::{ArmCost, RunCost, aggregate, frontier, totals};
 use farmerbob_core::pricing::canonical_model;
 
 /// One run's measured spend, read from that run's own isolated opencode store.
@@ -62,10 +62,10 @@ fn measured(base: &Path, run: &str) -> Option<(f64, u64)> {
 /// Rows of `logs/objective.json`, the per-run record the scoring pipeline writes.
 fn load_runs(base: &Path) -> Result<Vec<RunCost>, String> {
     let path = base.join("logs/objective.json");
-    let body = fs::read_to_string(&path)
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    let rows: Vec<serde_json::Value> =
-        serde_json::from_str(&body).map_err(|e| format!("{} is not valid JSON: {e}", path.display()))?;
+    let body =
+        fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&body)
+        .map_err(|e| format!("{} is not valid JSON: {e}", path.display()))?;
 
     Ok(rows
         .iter()
@@ -152,7 +152,9 @@ fn shared_store_spend(repo: &Path) -> BTreeMap<String, (f64, u64)> {
             .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
             .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string))
             .unwrap_or_default();
-        let Some(arm) = by_model.get(&id) else { continue };
+        let Some(arm) = by_model.get(&id) else {
+            continue;
+        };
         let e = out.entry(arm.clone()).or_insert((0.0, 0));
         e.0 += cost.unwrap_or(0.0);
         e.1 += u64::try_from(tin.unwrap_or(0)).unwrap_or(0)
@@ -270,17 +272,36 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
         }
         let (p, n) = priced.get(&a.arm).copied().unwrap_or((0, 0));
         // Never print a dollar figure for an arm nothing measured. "$0.0000" is a claim.
-        let usd = a.usd.map(|v| format!("{v:.4}")).unwrap_or_else(|| "n/a".into());
+        let usd = a
+            .usd
+            .map(|v| format!("{v:.4}"))
+            .unwrap_or_else(|| "n/a".into());
         // usd_per_completion now returns None itself when any counted run was unmeasured.
-        let per = a.usd_per_completion().map(|v| format!("{v:.4}")).unwrap_or_else(|| "n/a".into());
-        let rate = a.completion_rate().map(|r| format!("{:.0}%", r * 100.0)).unwrap_or_else(|| "n/a".into());
-        let unp = if n > p { format!("{}/{}", n - p, n) } else { "-".into() };
-        let mark = if front.contains(&a.arm) { "  <= pareto" } else { "" };
+        let per = a
+            .usd_per_completion()
+            .map(|v| format!("{v:.4}"))
+            .unwrap_or_else(|| "n/a".into());
+        let rate = a
+            .completion_rate()
+            .map(|r| format!("{:.0}%", r * 100.0))
+            .unwrap_or_else(|| "n/a".into());
+        let unp = if n > p {
+            format!("{}/{}", n - p, n)
+        } else {
+            "-".into()
+        };
+        let mark = if front.contains(&a.arm) {
+            "  <= pareto"
+        } else {
+            ""
+        };
         println!(
             "{:<24}{rate:>10}{:>5}{usd:>11}{per:>12}{:>11}{unp:>10}{mark}",
             a.arm,
             a.runs,
-            a.tokens.map(|t| t.to_string()).unwrap_or_else(|| "n/a".into()),
+            a.tokens
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "n/a".into()),
         );
     }
 
@@ -290,7 +311,10 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
         .map(|(k, _)| k.as_str())
         .collect();
     if !never.is_empty() {
-        println!("\n  NOT PRICED AT ALL, and therefore NOT on the frontier: {}", never.join(", "));
+        println!(
+            "\n  NOT PRICED AT ALL, and therefore NOT on the frontier: {}",
+            never.join(", ")
+        );
         println!("  Their launchers write no cost store. Absence of a bill is not a bill of zero.");
     }
     if shared_total > 0.0 {

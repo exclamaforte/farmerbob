@@ -13,7 +13,6 @@
 pub mod adapter;
 pub mod adjudicate;
 pub mod agent;
-pub mod slots;
 pub mod attempt_log;
 pub mod budget;
 pub mod compare;
@@ -30,8 +29,8 @@ pub mod grade;
 pub mod grading;
 pub mod ids;
 pub mod lease;
-pub mod limit_signal;
 pub mod lease_manager;
+pub mod limit_signal;
 pub mod liveness;
 pub mod matrix;
 pub mod measurement;
@@ -51,9 +50,10 @@ pub mod runstate;
 pub mod scope;
 pub mod selection;
 pub mod sensitivity;
+pub mod slots;
 pub mod task;
-pub mod taskid;
 pub mod task_contract;
+pub mod taskid;
 pub mod timing;
 pub mod verifier;
 pub mod vrouter;
@@ -66,8 +66,8 @@ pub use grade::{Grade, RubricScores};
 pub use ids::{AgentId, ExperimentId, LeaseId, RunId, TaskId};
 pub use lease::{Lease, LeaseClass};
 pub use proto::{
-    check_version, decode_line, encode, ErrorCode, Event, FrameReader, Hello, Method, ProtoError,
-    PROTO_VERSION, Request, Response, ResponseErr, ResponseOk, Subscribe, Topic,
+    ErrorCode, Event, FrameReader, Hello, Method, PROTO_VERSION, ProtoError, Request, Response,
+    ResponseErr, ResponseOk, Subscribe, Topic, check_version, decode_line, encode,
 };
 pub use resource::{ResourceSpec, Slot};
 pub use run::{Run, RunState};

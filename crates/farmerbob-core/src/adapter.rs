@@ -105,11 +105,19 @@ impl AdapterSpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ExitKind {
     Completed,
-    UsageLimit { marker: String },
-    AuthFailure { marker: String },
+    UsageLimit {
+        marker: String,
+    },
+    AuthFailure {
+        marker: String,
+    },
     /// Terminated by a signal. `signal` is the raw signal number.
-    Signalled { signal: i32 },
-    Crashed { code: i32 },
+    Signalled {
+        signal: i32,
+    },
+    Crashed {
+        code: i32,
+    },
 }
 
 /// Only `Completed` may update an arm's success statistics. Everything else is an
@@ -126,11 +134,19 @@ mod tests {
         AdapterSpec {
             arm: ArmId("test-arm".to_string()),
             program: "test-agent".to_string(),
-            args: vec!["--prompt".to_string(), "{prompt}".to_string(), "--dir".to_string(), "{worktree}".to_string()],
+            args: vec![
+                "--prompt".to_string(),
+                "{prompt}".to_string(),
+                "--dir".to_string(),
+                "{worktree}".to_string(),
+            ],
             cwd_honored: true,
             env: vec![],
             limit_markers: vec!["rate limit exceeded".to_string(), "usage limit".to_string()],
-            auth_markers: vec!["authentication failed".to_string(), "unauthorized".to_string()],
+            auth_markers: vec![
+                "authentication failed".to_string(),
+                "unauthorized".to_string(),
+            ],
         }
     }
 
@@ -178,8 +194,12 @@ mod tests {
     #[test]
     fn counts_for_posterior_only_completed() {
         assert!(counts_for_posterior(&ExitKind::Completed));
-        assert!(!counts_for_posterior(&ExitKind::UsageLimit { marker: "x".into() }));
-        assert!(!counts_for_posterior(&ExitKind::AuthFailure { marker: "x".into() }));
+        assert!(!counts_for_posterior(&ExitKind::UsageLimit {
+            marker: "x".into()
+        }));
+        assert!(!counts_for_posterior(&ExitKind::AuthFailure {
+            marker: "x".into()
+        }));
         assert!(!counts_for_posterior(&ExitKind::Signalled { signal: 15 }));
         assert!(!counts_for_posterior(&ExitKind::Crashed { code: 1 }));
     }

@@ -83,7 +83,11 @@ fn resolve_commit(repo: &Path, base: &str) -> Result<String> {
         .context("failed to execute git rev-parse")?;
 
     if !output.status.success() {
-        anyhow::bail!("failed to resolve base '{}': {}", base, String::from_utf8_lossy(&output.stderr));
+        anyhow::bail!(
+            "failed to resolve base '{}': {}",
+            base,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
@@ -98,7 +102,10 @@ pub fn create(spec: WorktreeSpec) -> Result<Worktree> {
     let path = spec.root.join(&branch);
 
     // Ensure the path is within the allowed root
-    let canonical_root = spec.root.canonicalize().context("failed to canonicalize root")?;
+    let canonical_root = spec
+        .root
+        .canonicalize()
+        .context("failed to canonicalize root")?;
     let canonical_path = path.canonicalize().or_else(|_| {
         // Path doesn't exist yet, canonicalize parent
         path.parent()
@@ -118,14 +125,23 @@ pub fn create(spec: WorktreeSpec) -> Result<Worktree> {
 
     // Create the worktree
     let output = Command::new("git")
-        .args(["worktree", "add", "-b", &branch, &path.to_string_lossy(), &base_commit])
+        .args([
+            "worktree",
+            "add",
+            "-b",
+            &branch,
+            &path.to_string_lossy(),
+            &base_commit,
+        ])
         .current_dir(&spec.repo)
         .output()
         .context("failed to execute git worktree add")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("already exists") || stderr.contains("branch") && stderr.contains("exists") {
+        if stderr.contains("already exists")
+            || stderr.contains("branch") && stderr.contains("exists")
+        {
             anyhow::bail!("branch '{}' already exists", branch);
         }
         anyhow::bail!("git worktree add failed: {}", stderr);
@@ -165,7 +181,10 @@ pub fn remove(repo: &Path, path: &Path, force: bool) -> Result<()> {
         .context("failed to execute git worktree remove")?;
 
     if !output.status.success() {
-        anyhow::bail!("git worktree remove failed: {}", String::from_utf8_lossy(&output.stderr));
+        anyhow::bail!(
+            "git worktree remove failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     // Prune stale worktree entries
@@ -176,7 +195,10 @@ pub fn remove(repo: &Path, path: &Path, force: bool) -> Result<()> {
         .context("failed to execute git worktree prune")?;
 
     if !output.status.success() {
-        anyhow::bail!("git worktree prune failed: {}", String::from_utf8_lossy(&output.stderr));
+        anyhow::bail!(
+            "git worktree prune failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     Ok(())
@@ -185,17 +207,28 @@ pub fn remove(repo: &Path, path: &Path, force: bool) -> Result<()> {
 #[allow(dead_code)]
 /// Archive a branch before deletion.
 pub fn archive_branch(repo: &Path, branch: &str, task: &str, run_id: &str) -> Result<String> {
-    let archive_ref = format!("refs/fb/archive/{}/{}", sanitize_ref_component(task), sanitize_ref_component(run_id));
+    let archive_ref = format!(
+        "refs/fb/archive/{}/{}",
+        sanitize_ref_component(task),
+        sanitize_ref_component(run_id)
+    );
 
     // Create the archive ref pointing to the same commit as the branch
     let output = Command::new("git")
-        .args(["update-ref", &archive_ref, &format!("refs/heads/{}", branch)])
+        .args([
+            "update-ref",
+            &archive_ref,
+            &format!("refs/heads/{}", branch),
+        ])
         .current_dir(repo)
         .output()
         .context("failed to execute git update-ref")?;
 
     if !output.status.success() {
-        anyhow::bail!("git update-ref failed: {}", String::from_utf8_lossy(&output.stderr));
+        anyhow::bail!(
+            "git update-ref failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     Ok(archive_ref)
@@ -225,7 +258,10 @@ pub fn list(repo: &Path) -> Result<Vec<WorktreeEntry>> {
         .context("failed to execute git worktree list")?;
 
     if !output.status.success() {
-        anyhow::bail!("git worktree list failed: {}", String::from_utf8_lossy(&output.stderr));
+        anyhow::bail!(
+            "git worktree list failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     let stdout = String::from_utf8(output.stdout)?;
@@ -302,7 +338,10 @@ pub fn diffstat(repo: &Path, branch: &str, base: &str) -> Result<DiffStat> {
         .context("failed to execute git diff")?;
 
     if !output.status.success() {
-        anyhow::bail!("git diff failed: {}", String::from_utf8_lossy(&output.stderr));
+        anyhow::bail!(
+            "git diff failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     let stdout = String::from_utf8(output.stdout)?;
@@ -340,37 +379,58 @@ mod tests {
 
     #[test]
     fn branch_name_basic() {
-        assert_eq!(branch_name("task1", "agent1", "run1"), "fb/task1/agent1/run1");
+        assert_eq!(
+            branch_name("task1", "agent1", "run1"),
+            "fb/task1/agent1/run1"
+        );
     }
 
     #[test]
     fn branch_name_spaces() {
-        assert_eq!(branch_name("my task", "my agent", "run 1"), "fb/my-task/my-agent/run-1");
+        assert_eq!(
+            branch_name("my task", "my agent", "run 1"),
+            "fb/my-task/my-agent/run-1"
+        );
     }
 
     #[test]
     fn branch_name_special_chars() {
-        assert_eq!(branch_name("task~", "agent^", "run:"), "fb/task-/agent-/run-");
+        assert_eq!(
+            branch_name("task~", "agent^", "run:"),
+            "fb/task-/agent-/run-"
+        );
     }
 
     #[test]
     fn branch_name_control_chars() {
-        assert_eq!(branch_name("task\x00", "agent\x1f", "run\x7f"), "fb/task-/agent-/run-");
+        assert_eq!(
+            branch_name("task\x00", "agent\x1f", "run\x7f"),
+            "fb/task-/agent-/run-"
+        );
     }
 
     #[test]
     fn branch_name_dots_and_slashes() {
-        assert_eq!(branch_name(".task.", "/agent/", "./run/."), "fb/task/agent/run");
+        assert_eq!(
+            branch_name(".task.", "/agent/", "./run/."),
+            "fb/task/agent/run"
+        );
     }
 
     #[test]
     fn branch_name_double_dots() {
-        assert_eq!(branch_name("ta..sk", "ag..ent", "ru..n"), "fb/ta.sk/ag.ent/ru.n");
+        assert_eq!(
+            branch_name("ta..sk", "ag..ent", "ru..n"),
+            "fb/ta.sk/ag.ent/ru.n"
+        );
     }
 
     #[test]
     fn branch_name_lock_suffix() {
-        assert_eq!(branch_name("task", "agent", "run.lock"), "fb/task/agent/run");
+        assert_eq!(
+            branch_name("task", "agent", "run.lock"),
+            "fb/task/agent/run"
+        );
     }
 
     #[test]

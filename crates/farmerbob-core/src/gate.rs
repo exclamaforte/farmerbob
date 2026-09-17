@@ -683,7 +683,6 @@ mod tests {
     }
 }
 
-
 /// The scope axis and the incident it closes: a run that left its declared
 /// deliverable must not be able to read PASS, and scope that was never
 /// measured must not be read as clean.
@@ -892,7 +891,6 @@ mod scope_gate {
         assert!(!text.contains('\n'), "{text}");
     }
 }
-
 
 // ESCALATED from cross-examination: or-muse-spark's suite discriminated on gate.
 // Not a CLAIM -- cross-examination found it directly. Kept only because it passes

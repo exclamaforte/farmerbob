@@ -107,8 +107,18 @@ fn print_table(checks: &[Check]) {
 
 impl Check {
     /// Create a check result with an optional fix.
-    fn new(name: &'static str, status: Status, message: impl Into<String>, fix: Option<String>) -> Self {
-        Check { name, status, message: message.into(), fix }
+    fn new(
+        name: &'static str,
+        status: Status,
+        message: impl Into<String>,
+        fix: Option<String>,
+    ) -> Self {
+        Check {
+            name,
+            status,
+            message: message.into(),
+            fix,
+        }
     }
 }
 
@@ -147,7 +157,9 @@ fn check_delegated_controllers() -> Check {
             None,
         );
     };
-    let path = PathBuf::from(format!("/sys/fs/cgroup/user.slice/user-{uid}.slice/cgroup.controllers"));
+    let path = PathBuf::from(format!(
+        "/sys/fs/cgroup/user.slice/user-{uid}.slice/cgroup.controllers"
+    ));
     let contents = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) => {
@@ -164,7 +176,10 @@ fn check_delegated_controllers() -> Check {
         return Check::new(
             "delegated controllers",
             Status::Fail,
-            format!("controllers not delegated to your cgroup: {}", missing.join(", ")),
+            format!(
+                "controllers not delegated to your cgroup: {}",
+                missing.join(", ")
+            ),
             Some(delegate_fix()),
         );
     }
@@ -190,14 +205,23 @@ fn check_systemd() -> Check {
         Ok(out) if out.status.success() => {
             let version = String::from_utf8_lossy(&out.stdout);
             let first = version.lines().next().unwrap_or("").trim();
-            Check::new("systemd", Status::Ok, format!("systemd-run available: {first}"), None)
+            Check::new(
+                "systemd",
+                Status::Ok,
+                format!("systemd-run available: {first}"),
+                None,
+            )
         }
         Ok(out) => {
             let err = String::from_utf8_lossy(&out.stderr);
             Check::new(
                 "systemd",
                 Status::Fail,
-                format!("systemd-run --version exited {}: {}", out.status, err.trim()),
+                format!(
+                    "systemd-run --version exited {}: {}",
+                    out.status,
+                    err.trim()
+                ),
                 Some("install systemd".to_string()),
             )
         }
@@ -237,7 +261,12 @@ fn check_nvidia() -> Check {
     }
     let text = String::from_utf8_lossy(&output.stdout);
     match text.lines().next().and_then(parse_gpu_line) {
-        Some((name, driver)) => Check::new("nvidia", Status::Ok, format!("{name} (driver {driver})"), None),
+        Some((name, driver)) => Check::new(
+            "nvidia",
+            Status::Ok,
+            format!("{name} (driver {driver})"),
+            None,
+        ),
         None => Check::new(
             "nvidia",
             Status::Warn,
@@ -262,13 +291,19 @@ fn check_git_worktree() -> Check {
     };
     let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
     match parse_git_version(&version) {
-        Some((major, minor)) if (major, minor) >= (2, GIT_WORKTREE_MINOR) => {
-            Check::new("git worktree", Status::Ok, format!("git {major}.{minor} supports worktree"), None)
-        }
+        Some((major, minor)) if (major, minor) >= (2, GIT_WORKTREE_MINOR) => Check::new(
+            "git worktree",
+            Status::Ok,
+            format!("git {major}.{minor} supports worktree"),
+            None,
+        ),
         Some((major, minor)) => Check::new(
             "git worktree",
             Status::Fail,
-            format!("git {major}.{minor} is too old; worktree requires >= 2.{}", GIT_WORKTREE_MINOR),
+            format!(
+                "git {major}.{minor} is too old; worktree requires >= 2.{}",
+                GIT_WORKTREE_MINOR
+            ),
             Some("upgrade git to 2.5 or newer".to_string()),
         ),
         None => Check::new(
@@ -317,7 +352,10 @@ fn check_disk_headroom() -> Check {
                         human_bytes(free),
                         home.display()
                     ),
-                    Some("free up disk space or move the worktree to a larger filesystem".to_string()),
+                    Some(
+                        "free up disk space or move the worktree to a larger filesystem"
+                            .to_string(),
+                    ),
                 )
             } else {
                 Check::new(
@@ -352,7 +390,16 @@ fn check_agent_clis() -> Check {
     }
     let report = AGENTS
         .iter()
-        .map(|a| format!("{a}: {}", if found.contains(a) { "found" } else { "missing" }))
+        .map(|a| {
+            format!(
+                "{a}: {}",
+                if found.contains(a) {
+                    "found"
+                } else {
+                    "missing"
+                }
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
     if missing.is_empty() {
@@ -362,7 +409,10 @@ fn check_agent_clis() -> Check {
             "agent CLIs",
             Status::Warn,
             format!("{report}; install: {}", missing.join(", ")),
-            Some(format!("install missing agent CLIs: {}", missing.join(", "))),
+            Some(format!(
+                "install missing agent CLIs: {}",
+                missing.join(", ")
+            )),
         )
     }
 }
@@ -393,7 +443,11 @@ fn parse_controllers(contents: &str) -> Vec<&str> {
 /// Return the required controllers missing from a `cgroup.controllers` file.
 fn missing_controllers<'a>(contents: &str, required: &[&'a str]) -> Vec<&'a str> {
     let present = parse_controllers(contents);
-    required.iter().copied().filter(|c| !present.contains(c)).collect()
+    required
+        .iter()
+        .copied()
+        .filter(|c| !present.contains(c))
+        .collect()
 }
 
 /// The fix for missing delegated controllers.
@@ -543,7 +597,10 @@ mod tests {
     #[test]
     fn git_version_modern_parses() {
         assert_eq!(parse_git_version("git version 2.43.0"), Some((2, 43)));
-        assert_eq!(parse_git_version("git version 2.43.0.windows.1"), Some((2, 43)));
+        assert_eq!(
+            parse_git_version("git version 2.43.0.windows.1"),
+            Some((2, 43))
+        );
     }
 
     #[test]
@@ -569,7 +626,10 @@ mod tests {
 
     #[test]
     fn df_header_and_bad_lines_are_skipped() {
-        assert_eq!(parse_df_available_kb("Filesystem 1024-blocks Used Available Capacity Mounted on"), None);
+        assert_eq!(
+            parse_df_available_kb("Filesystem 1024-blocks Used Available Capacity Mounted on"),
+            None
+        );
         assert_eq!(parse_df_available_kb("/dev/sda1 1 2 nope 40% /"), None);
         assert_eq!(parse_df_available_kb(""), None);
         assert_eq!(parse_df_available_kb("/dev/sda1 1 2 3"), None);
@@ -585,7 +645,10 @@ mod tests {
     fn gpu_line_parses() {
         assert_eq!(
             parse_gpu_line("NVIDIA GeForce RTX 4090, 550.54.07"),
-            Some(("NVIDIA GeForce RTX 4090".to_string(), "550.54.07".to_string()))
+            Some((
+                "NVIDIA GeForce RTX 4090".to_string(),
+                "550.54.07".to_string()
+            ))
         );
         assert_eq!(parse_gpu_line(", 550.54"), None);
         assert_eq!(parse_gpu_line("NVIDIA GeForce RTX 4090"), None);
