@@ -281,6 +281,15 @@ fn classify_outcome(
     if let Some(rc) = rec.get("rc").and_then(Value::as_i64) && (rc == 143 || rc == 137) {
         return "orchestrator_cancelled".to_string();
     }
+    // 127 is "command not found". It is always the harness -- a launcher binary that is not
+    // installed, or an arm with no branch in fb-dispatch's launcher table -- and never the
+    // model, which was not reached. claude-sonnet was re-enabled on 2026-09-17, dispatched,
+    // and came back rc=127 "unknown source" in 0 seconds because fb-dispatch has its own
+    // hardcoded launcher table that does not include it. That was recorded as the ARM
+    // producing nothing.
+    if let Some(127) = rec.get("rc").and_then(Value::as_i64) {
+        return "infrastructure".to_string();
+    }
     if quota_blocked(rec, read_log) {
         return "quota_limited".to_string();
     }
@@ -307,8 +316,7 @@ fn quota_blocked(rec: &Value, read_log: &dyn Fn(&Path) -> Option<String>) -> boo
     // a capitalised refusal never matched any pattern here. The unit tests all passed because
     // they were written with lowercase fixtures, which is how a check can be wrong for months
     // while its tests are green -- the fixture agreed with the code instead of with the logs.
-    let head = first_lines(&text, 5).to_lowercase();
-    LIMIT_PATTERNS.iter().any(|p| head.contains(p))
+    head_starts_with_any(&text, 5, LIMIT_PATTERNS)
 }
 
 /// True when the harness (credential, endpoint, request shape) killed the run.
@@ -319,8 +327,7 @@ fn harness_failed(rec: &Value, read_log: &dyn Fn(&Path) -> Option<String>) -> bo
     // Lowercased for the same reason as quota_blocked: these patterns are lowercase and
     // launchers capitalise. "Incorrect API key provided" never matched
     // "incorrect api key provided".
-    let head = first_lines(&text, 12).to_lowercase();
-    INFRA_PATTERNS.iter().any(|p| head.contains(p))
+    head_starts_with_any(&text, 12, INFRA_PATTERNS)
 }
 
 /// True when the launcher refused a tool call touching an external directory.
@@ -338,6 +345,36 @@ fn permission_killed(rec: &Value, read_log: &dyn Fn(&Path) -> Option<String>) ->
 fn log_head(rec: &Value, read_log: &dyn Fn(&Path) -> Option<String>) -> Option<String> {
     let path = rec.get("log").and_then(Value::as_str)?;
     read_log(Path::new(path))
+}
+
+/// True when any of the first `n` lines BEGINS with one of `patterns`, after ANSI stripping,
+/// trimming and lowercasing.
+///
+/// `starts_with` on a line, not `contains` on the whole head. The difference is the entire
+/// guard, and it was learned twice:
+///
+/// The patterns are anchored on a launcher's `error: ` prefix so that an agent DISCUSSING
+/// quotas in a task about quotas is not read as one being refused. That anchoring turned out
+/// to be worth nothing on its own. On 2026-09-17 an arm completed the task of FIXING refusal
+/// detection, and opened its summary with
+///
+///     Done. Provider-refusal detection ... the anchored pattern that missed the
+///     2026-09-17 OpenRouter incident (`error: rate limit exceeded`) ...
+///
+/// which contains the anchor, quoted. A passing run with 396 new lines was recorded as
+/// `quota_limited` and dropped out of the arm results entirely.
+///
+/// It could not fire before, only because of a second bug: nothing lowercased the haystack, so
+/// no capitalised launcher error matched either. Fixing the casing switched on the true
+/// positives and this false one together.
+///
+/// A real refusal is the launcher's own first utterance and BEGINS its line. A quotation sits
+/// inside a sentence. That is the distinction with actual force, and it is positional.
+fn head_starts_with_any(text: &str, n: usize, patterns: &[&str]) -> bool {
+    text.lines().take(n).any(|line| {
+        let flat = strip_ansi(line).trim().to_lowercase();
+        patterns.iter().any(|p| flat.starts_with(p))
+    })
 }
 
 fn first_lines(text: &str, n: usize) -> String {
@@ -771,6 +808,47 @@ mod tests {
         let reader = |_: &Path| Some(log.to_string());
         let out = classify_outcome(&rec, Some(&json!("PASS")), &reader);
         assert_eq!(out, "quota_limited");
+    }
+
+    /// rc=127 is the harness failing to launch, never the model failing to work.
+    #[test]
+    fn command_not_found_is_infrastructure_not_an_arm_producing_nothing() {
+        let rec = json!({"rc": 127, "verdict": "NO-OP", "log": "x.log"});
+        let reader = |_: &Path| Some("unknown source claude-sonnet\n".to_string());
+        assert_eq!(
+            classify_outcome(&rec, Some(&json!("NO-OP")), &reader),
+            "infrastructure"
+        );
+    }
+
+    /// The false positive that line-anchoring exists to stop. Verbatim first line of
+    /// refusal-norm--glm-53-flash.log, 2026-09-17: an arm REPORTING that it fixed refusal
+    /// detection, quoting the pattern it fixed. A passing run with 396 new lines was recorded
+    /// as quota_limited and dropped out of the arm results.
+    #[test]
+    fn an_arm_quoting_a_refusal_pattern_is_not_a_refusal() {
+        let log = "Done. Provider-refusal detection in `limit_signal.rs` now survives colour: \
+                   the anchored pattern that missed the 2026-09-17 OpenRouter incident \
+                   (`error: rate limit exceeded`) now matches.\nmore output\n";
+        let rec = json!({"log": "x.log", "verdict": "PASS", "rc": 0});
+        let reader = |_: &Path| Some(log.to_string());
+        assert_eq!(
+            classify_outcome(&rec, Some(&json!("PASS")), &reader),
+            "arm_result",
+            "a pattern quoted mid-sentence is discussion, not a provider refusing"
+        );
+    }
+
+    /// Both directions in one test, so neither can be fixed by breaking the other.
+    #[test]
+    fn a_real_refusal_still_fires_when_it_begins_its_line() {
+        let refusal = "\u{1b}[91m\u{1b}[1mError: \u{1b}[0mRate limit exceeded: free-models-per-day.\n";
+        let rec = json!({"log": "x.log", "verdict": "NO-OP", "rc": 1});
+        let reader = |_: &Path| Some(refusal.to_string());
+        assert_eq!(
+            classify_outcome(&rec, Some(&json!("NO-OP")), &reader),
+            "quota_limited"
+        );
     }
 
     /// Verbatim from the head of port-status--or-hy3.log, 2026-09-17. The marker sits on the
