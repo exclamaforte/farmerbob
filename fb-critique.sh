@@ -50,8 +50,73 @@ for critic in "${ARMS[@]}"; do
   (
     cw="$WT/$BEAD--$critic"                 # critic works in its OWN worktree: warm context
     sw="$WT/$BEAD--$subject"
-    patch=$(cd "$sw" && git diff HEAD -- "crates/$CRATE" 2>/dev/null)
-    [ -z "$patch" ] && patch=$(sed -n '1,400p' "$sw/$TARGET" 2>/dev/null)
+    # Show the DELIVERABLE, not "whatever git happens to call a change".
+    #
+    # This used to be `git diff HEAD -- crates/$CRATE`, with a fallback to reading $TARGET
+    # if that came back empty. For a `creates` task the deliverable is UNTRACKED, so the
+    # diff never contained it -- what it contained was the single tracked line the arm added
+    # to lib.rs:
+    #
+    #     +pub mod matrix;
+    #
+    # The fallback existed for exactly this case and never fired, because it tested for an
+    # EMPTY patch and one worthless line is not empty. The guard was defeated by the very
+    # line that made the patch useless. On `matrix` this produced four reviews of which
+    # three were worthless and two were fabricated: one critic invented line numbers for a
+    # file it had never seen, another asserted a defect that the code plainly does not have.
+    # Only glm-53-flash produced anything real, and only because it ignored the prompt and
+    # read the file from disk itself.  (bead farmerbob-4ur)
+    #
+    # Rule: the patch is the declared target. If the target is tracked, its diff; if it is
+    # untracked, its contents. Anything else the arm changed is reported separately as a
+    # scope violation, because that is what it is.
+    target_diff=$(cd "$sw" && git diff HEAD -- "$TARGET" 2>/dev/null)
+    if [ -n "$target_diff" ]; then
+      patch="$target_diff"
+    elif [ -f "$sw/$TARGET" ]; then
+      patch="=== NEW FILE: $TARGET ($(wc -l < "$sw/$TARGET") lines) ===
+$(cat "$sw/$TARGET")"
+    else
+      patch=""
+    fi
+
+    # Files the arm changed that are NOT its deliverable. The critic should know: a review
+    # of a one-file task by an arm that rewrote thirty-six files is reviewing the wrong
+    # thing, and the scope violation is itself the finding.  (bead farmerbob-jxp)
+    # Declaring the new module in its own crate's lib.rs is REQUIRED for a creates-task,
+    # not a scope violation. Excluding it keeps the flag meaningful: every clean arm would
+    # otherwise be reported as having strayed, and a warning that fires on everyone is
+    # read by no one.
+    own_lib="$(dirname "$TARGET")/lib.rs"
+    # git may refuse the worktree entirely -- 103 of them have lost their admin directory
+    # (farmerbob-13p). An empty `outside` would then read as "this arm stayed in scope",
+    # which is a claim nobody measured. Say which it is.
+    scope_readable=yes
+    (cd "$sw" && git rev-parse --git-dir >/dev/null 2>&1) || scope_readable=no
+    outside=$( { cd "$sw" && git diff --name-only HEAD -- crates/ 2>/dev/null
+                 cd "$sw" && git ls-files --others --exclude-standard crates/ 2>/dev/null; } \
+               | grep -vxF "$TARGET" | grep -vxF "$own_lib" | sort -u )
+    if [ "$scope_readable" = no ]; then
+      patch="$patch
+
+=== Scope could not be checked: git cannot read this worktree, so whether the arm stayed
+=== within $TARGET is UNKNOWN, not confirmed."
+    elif [ -n "$outside" ]; then
+      patch="$patch
+
+=== THIS ARM ALSO CHANGED $(printf '%s' "$outside" | grep -c .) FILE(S) OUTSIDE ITS DECLARED
+=== DELIVERABLE ($TARGET). The task asked for that file only. The changes below are
+=== out of scope and are shown as names, not content:
+$outside"
+    fi
+
+    # An instrument that cannot perform its check must say so rather than produce a value.
+    # A critique written against no patch is not a weak critique, it is a fabricated one,
+    # and it costs a cycle and pollutes the critic's precision record.
+    if [ -z "$patch" ]; then
+      echo "  $critic: REFUSING -- $subject has no readable deliverable at $TARGET" >&2
+      exit 3
+    fi
     handoff=$(cat "$sw/.fb/handoff.md" 2>/dev/null || echo "(no handoff written)")
 
     p="$LOGS/critiques/$BEAD/$critic.prompt.md"
