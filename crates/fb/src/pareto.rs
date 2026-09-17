@@ -139,18 +139,14 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
 
     let arms: Vec<ArmCost> = aggregate(&runs);
     let priced = unpriced(&runs);
-    // An arm with ANY unmeasured counted run cannot be placed on a cost frontier: its total
-    // is a lower bound, not a cost. core::frontier cannot know this, so the field is filtered
-    // before it is asked.
-    let comparable: Vec<ArmCost> = arms
-        .iter()
-        .filter(|a| {
-            let (p, n) = priced.get(&a.arm).copied().unwrap_or((0, 0));
-            n > 0 && p == n
-        })
-        .cloned()
-        .collect();
-    let front = frontier(&comparable, epsilon);
+    // `frontier` now excludes a partially measured arm itself: ArmCost carries
+    // `unmeasured_runs` and `cost::fully_measured` reads it. This used to pre-filter the field
+    // here, which was a caller compensating for a type that could not express what it knew.
+    // Two critics pointed out the duplication survives as drift risk if it is left in place --
+    // "any divergence between the two mechanisms will produce silent double-filtering or
+    // unfiltered partial arms reaching the frontier" -- so it is gone rather than merely
+    // redundant.  (bead farmerbob-jd2.9)
+    let front = frontier(&arms, epsilon);
     let (spend, completed, counted) = totals(&arms);
 
     if json_only {
@@ -204,16 +200,8 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
         let (p, n) = priced.get(&a.arm).copied().unwrap_or((0, 0));
         // Never print a dollar figure for an arm nothing measured. "$0.0000" is a claim.
         let usd = a.usd.map(|v| format!("{v:.4}")).unwrap_or_else(|| "n/a".into());
-        // $/success only when EVERY counted run was priced. `ArmCost::usd` is the sum of the
-        // MEASURED runs, so dividing it by all completions understates cost by exactly the
-        // unmeasured fraction, and there is no honest way to scale it up without knowing what
-        // the missing runs cost. core's usd_per_completion does not yet know this; it has no
-        // unmeasured-run count to check.  (bead farmerbob-jd2.5)
-        let per = if n > p {
-            "n/a".to_string()
-        } else {
-            a.usd_per_completion().map(|v| format!("{v:.4}")).unwrap_or_else(|| "n/a".into())
-        };
+        // usd_per_completion now returns None itself when any counted run was unmeasured.
+        let per = a.usd_per_completion().map(|v| format!("{v:.4}")).unwrap_or_else(|| "n/a".into());
         let rate = a.completion_rate().map(|r| format!("{:.0}%", r * 100.0)).unwrap_or_else(|| "n/a".into());
         let unp = if n > p { format!("{}/{}", n - p, n) } else { "-".into() };
         let mark = if front.contains(&a.arm) { "  <= pareto" } else { "" };

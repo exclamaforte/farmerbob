@@ -1,0 +1,13 @@
+MERGED or-qwen38-flash
+Adjudicated 2026-09-17. 20 tests to the others' 19, clippy 0, scope clean. The deciding
+difference is verified, not asserted: its suite has composition_one_entry_per_distinct_arm_
+sorted, testing the PINNED composition rule that no other suite probes -- a gap or-qwen38-flash
+itself named in its critique of glm-53-flash, and which I checked by diffing the test names.
+Second consecutive full-consensus matrix, 16/16. Unlike pricing's consensus, this one survived
+an adversarial probe written afterwards against the hardest clause (totals and frontier
+deliberately disagreeing about a partial arm); all four passed it.
+Three critics independently found rules 3 and 4 specify two mechanisms for one behaviour, and
+two found that fully_measured promises less than its name. Both now recorded in the spec.
+The caller-side compensation in pareto.rs is deleted; the board is byte-identical after,
+which is the proof the type now says what the caller was computing.
+Credited: glm-53-flash, or-qwen38-flash, or-ling-30-flash, or-hy3.

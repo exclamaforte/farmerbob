@@ -52,7 +52,13 @@ pub fn fully_measured(arm: &ArmCost) -> bool;
    count exactly as they are excluded from `runs`, `completed`, `usd` and `tokens` today.
 
 2. `fully_measured(arm)` is `true` if and only if `arm.unmeasured_runs == 0` **and**
-   `arm.runs > 0`. An arm with no counted runs at all is not "fully measured"; it is
+   `arm.runs > 0`. It reports that no counted run was left unmeasured; it does **not** promise
+   that `usd` is `Some`. Those differ, and two critics found the gap: an `ArmCost` with
+   `usd: None, unmeasured_runs: 0, runs: 3` is not constructible by `aggregate` but is
+   constructible by hand, and an arm whose every run is `Some(f64::NAN)` reaches
+   `unmeasured_runs == 0` with `usd` dropped to `None` by the summing helper. In both cases
+   `fully_measured` returns `true` about an arm with no known spend. Callers needing "spend is
+   known" must check `usd` as well, and the doc comment must say so. An arm with no counted runs at all is not "fully measured"; it is
    unmeasured, and returning `true` for it would put an empty arm on a frontier.
 
 3. `ArmCost::usd_per_completion` returns `None` when `unmeasured_runs > 0`, whatever `usd` and
@@ -60,7 +66,15 @@ pub fn fully_measured(arm: &ArmCost) -> bool;
    there is no correct way to scale it without knowing what the missing runs cost. Its
    existing conditions — unmeasured spend, or zero completions — still return `None` too.
 
-4. `frontier` considers only arms for which `fully_measured` is `true`. An arm with a partial
+4. `frontier` considers only arms for which `fully_measured` is `true`.
+
+   **Be aware this is deliberately redundant with rule 3 and say so in a comment.** Rule 3
+   already makes `usd_per_completion` return `None` for a partial arm, and `frontier` already
+   drops arms with no comparable figure, so an implementation that omits this filter is
+   indistinguishable by any test. Three critics on the first round of this task found exactly
+   that and were right to. Keep the filter as a backstop against rule 3 being relaxed later,
+   and mark it as one — an undocumented redundancy is how a rule quietly stops being enforced
+   by the thing that appears to enforce it. An arm with a partial
    total has a spend that is a lower bound, and a lower bound cannot be shown not to dominate.
    Arms excluded this way never appear in the returned `Vec`, whatever their completion rate.
 
