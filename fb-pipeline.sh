@@ -10,6 +10,13 @@
 #
 #   fb-pipeline.sh <task> <crate> <target-rel>
 set -uo pipefail
+# cargo lives only in ~/.cargo/bin. fb-dispatch and fb-score both export this; fb-pipeline
+# never did, and nothing noticed until `fb differential` became a stage and tried to build a
+# candidate. Every arm came back "could not spawn: No such file or directory" -- which the
+# gate correctly reported as NOT MEASURED and a gap rather than a pass, so the defect
+# announced itself instead of silently passing. That is the whole reason for the
+# unrunnable-is-not-Ok rule.
+export PATH="$HOME/.cargo/bin:$PATH"
 . /home/gabe/Documents/farmerbob/fb-target.sh
 cd /home/gabe/Documents/farmerbob
 T="${1:?task}"; CRATE="${2:-farmerbob-core}"; TARGET="${3:-}"
