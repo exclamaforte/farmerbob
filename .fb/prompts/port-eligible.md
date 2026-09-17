@@ -1,5 +1,11 @@
 <!-- fb:creates crates/fb/src/eligible.rs -->
 <!-- fb:reads fb-eligible.sh -->
+<!-- fb:differential fb-eligible.sh eligible -->
+<!-- fb:case or-hy3 -->
+<!-- fb:case or-mercury-25 -->
+<!-- fb:case or-gemini-38-flash -->
+<!-- fb:case claude-sonnet -->
+<!-- fb:case no-such-arm -->
 # Task: port fb-eligible.sh to Rust, behaviour-for-behaviour
 
 Rust workspace, already builds. Work only inside `crates/fb`.
