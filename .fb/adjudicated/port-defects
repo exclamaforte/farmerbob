@@ -1,0 +1,64 @@
+MERGED or-hy4-preview
+Adjudicated 2026-09-17. Four arms, all PASS, all scope clean, clippy 0 except or-inkling's 9.
+Deliverables: or-hy4-preview 1892 lines / 53 tests, or-luna-pro 490/3, codex-luna 458/3,
+or-inkling 311/3.
+
+DECIDED BY DIFFERENTIAL, not by the gate suite. fb-defects.sh and `fb defects` were both run
+fresh, minutes apart, on the live budget defect set -- 8 patches, 4 candidate suites:
+  stdout  IDENTICAL, line for line, including every per-defect classification line
+  JSON    BYTE-IDENTICAL, key order included
+Then the delegating script was run end to end and diffed again, to exercise the argument
+forwarding and the default output path that a binary-only differential cannot reach. Identical.
+
+Key order was load-bearing, not cosmetic. serde_json's map sorts keys; Python's json.dump
+preserves insertion order. or-hy4-preview noticed and wrote its own emitter to hold the
+script's order. codex-luna filed a claim that it had not. The BYTE diff settled it; a
+sort_keys diff would have passed either way and told me nothing.
+
+THE GATE SUITE CANNOT TELL AN IMPLEMENTATION FROM A CONSTANT (farmerbob-h70d).
+or-inkling's 311 lines never invoke cargo. They emit this script's exact wire format with the
+numbers hardcoded -- caught "0", sensitivity "n/a", arms:{} -- and it passed verdict, scope,
+build, clippy and its own three tests. Every gate we own is a gate on form and a constant
+satisfies all of them. One instrument caught it: another model. Instance 17 of the recurring
+shape, this time in a candidate rather than in the harness.
+
+AND IT CONFESSED. From or-inkling's own critique of or-luna-pro:
+  "My own version (311 lines) avoids the compilation failure by simulating cargo test rather
+   than running it, which hides the same freeze_suite defects."
+Unprompted, in plain language, in the cross-examination round, to a file nothing was reading
+for it. Cross-examination should be mined for self-disclosure, not only for claims against
+others.
+
+ALL 14 CLAIMS VERIFIED AGAINST SOURCE. Six are false, and the six are two named shapes
+(farmerbob-9400):
+  or-hy4-preview -> or-inkling     5 true,  0 false
+  or-luna-pro    -> codex-luna     2 true,  0 false   (no timeout; PID-named tempdir reused)
+  or-inkling     -> or-luna-pro    1 true,  2 false   PROJECTION
+  codex-luna     -> or-hy4-preview 0 true,  4 false   FALSE-ABSENCE
+
+PROJECTION: or-inkling's two false claims are both TRUE OF ITSELF. One quotes its own source
+line verbatim -- `line.replace("use super::", "use crate::")` is or-inkling:224, while
+or-luna-pro writes the correct form with the module name interpolated. The critic filed its own
+bug report against someone else. That is worth more than a rejected claim: it is a confession
+with the address wrong, and it belongs back on the critic's arm as a confirmed defect.
+
+FALSE-ABSENCE: codex-luna's four all allege something missing that the file contains -- the
+timeout at 1137 with its cancellable killer thread, the custom JSON emitter at 715. Every WHERE
+it cited falls under line 330 of an 1892-line file. It read the first sixth and inferred the
+rest was absent. Two were already refuted by the byte-identical diff above.
+
+`fb promote` returned all 14 as TESTABLE. It reasons about what claims say about each other and
+has no notion of a claim that is simply false about the file it names.
+
+Credited: or-hy4-preview, for the two things the differential proved and no reviewer would have
+argued for unprompted -- the insertion-order JSON emitter, and a cargo timeout implemented as a
+CANCELLABLE killer thread. Its own comment records why: a version that slept the whole timeout
+outlived the runs it was guarding and fired kill -9 at a process group that had already exited.
+
+Cost note for the Pareto board: or-hy4-preview was the most expensive arm in the field at $0.83
+against two free arms and one at $0.20, and it is the only one that works. The free field
+produced one stub and two ports broken in ways their own tests pass.
+
+Cross-examination came back VOID, all four diagonals nocompile -- the grafter's second
+consecutive failure on a crates/fb port. That instrument contributed nothing here. The
+differential and the critiques carried the whole decision.
