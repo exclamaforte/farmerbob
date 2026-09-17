@@ -89,6 +89,78 @@ fn load_runs(base: &Path) -> Result<Vec<RunCost>, String> {
         .collect())
 }
 
+/// Critic and prover spend, which lands in the SHARED opencode store.
+///
+/// fb_launch does not give critics and provers the per-run XDG_DATA_HOME that fb-dispatch
+/// gives implementers, so their sessions all land in one store and carry no run identity --
+/// only a model id. They are therefore attributed BY MODEL, which is coarser than the
+/// per-run attribution above and is why they are summed separately and labelled.
+///
+/// It is not a rounding difference. This board reported $9.02 while the shell reported
+/// $15.50, and the whole $5.53 gap was critic and prover work this function was not counting.
+/// Two boards disagreeing by two thirds on the project's headline number is worse than one
+/// board being wrong, because neither can be cited.  (bead farmerbob-jd2.9)
+fn shared_store_spend(repo: &Path) -> BTreeMap<String, (f64, u64)> {
+    let mut out: BTreeMap<String, (f64, u64)> = BTreeMap::new();
+    let db = crate::paths::state()
+        .parent()
+        .map(|p| p.join("opencode/opencode.db"))
+        .unwrap_or_default();
+    if !db.exists() {
+        return out;
+    }
+    // model id -> arm, from the registry. The session row carries the model, not the arm.
+    let mut by_model: BTreeMap<String, String> = BTreeMap::new();
+    if let Ok(body) = fs::read_to_string(repo.join("sources.toml"))
+        && let Ok(doc) = toml::from_str::<toml::Value>(&body)
+        && let Some(t) = doc.get("source").and_then(|s| s.as_table())
+    {
+        for (name, v) in t {
+            if let Some(m) = v.get("model").and_then(|m| m.as_str()) {
+                // Everything after the FIRST slash, not the last. The registry writes
+                // "openrouter/thinkingmachines/inkling:free" and the session row carries
+                // "thinkingmachines/inkling:free" -- so rsplit_once gives "inkling:free" and
+                // matches nothing, which is how this returned $0.00 of shared spend against
+                // the shell's $5.53 on its first run.
+                let id = m.split_once('/').map_or(m, |(_, tail)| tail).to_string();
+                by_model.insert(id, name.clone());
+            }
+        }
+    }
+    let Ok(conn) = rusqlite::Connection::open_with_flags(
+        &db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    ) else {
+        return out;
+    };
+    let Ok(mut stmt) = conn.prepare("select model, cost, tokens_input, tokens_output from session")
+    else {
+        return out;
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, Option<String>>(0)?,
+            r.get::<_, Option<f64>>(1)?,
+            r.get::<_, Option<i64>>(2)?,
+            r.get::<_, Option<i64>>(3)?,
+        ))
+    });
+    let Ok(rows) = rows else { return out };
+    for (model_json, cost, tin, tout) in rows.flatten() {
+        let id = model_json
+            .as_deref()
+            .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+            .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string))
+            .unwrap_or_default();
+        let Some(arm) = by_model.get(&id) else { continue };
+        let e = out.entry(arm.clone()).or_insert((0.0, 0));
+        e.0 += cost.unwrap_or(0.0);
+        e.1 += u64::try_from(tin.unwrap_or(0)).unwrap_or(0)
+            + u64::try_from(tout.unwrap_or(0)).unwrap_or(0);
+    }
+    out
+}
+
 /// Arms whose every counted run was unmeasured. They cannot sit on a cost frontier.
 fn unpriced(runs: &[RunCost]) -> BTreeMap<String, (u32, u32)> {
     let mut seen: BTreeMap<String, (u32, u32)> = BTreeMap::new();
@@ -133,6 +205,20 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
     // redundant.  (bead farmerbob-jd2.9)
     let front = frontier(&arms, epsilon);
     let (spend, completed, counted) = totals(&arms);
+    // Fold in critic and prover spend, kept separate in the report because it is attributed
+    // by MODEL rather than per run and must never be mistaken for per-run attribution.
+    let shared = shared_store_spend(&crate::paths::repo());
+    let shared_total: f64 = shared.values().map(|(c, _)| c).sum();
+    // Money spent on runs that do NOT count as arm results -- infrastructure faults, quota
+    // refusals, orchestrator kills. It is real spend and belongs in a total; it is not
+    // attributable to any arm's capability and must never enter a posterior or a $/success.
+    // fb-pareto.sh folds it into its total silently, which is most of why that board reads
+    // $15.50 where this one reads $14.55.
+    let excluded_spend: f64 = runs
+        .iter()
+        .filter(|r| !r.counts_for_arm)
+        .filter_map(|r| r.usd)
+        .sum();
 
     if json_only {
         let rows: Vec<serde_json::Value> = arms
@@ -207,9 +293,38 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
         println!("\n  NOT PRICED AT ALL, and therefore NOT on the frontier: {}", never.join(", "));
         println!("  Their launchers write no cost store. Absence of a bill is not a bill of zero.");
     }
+    if shared_total > 0.0 {
+        println!(
+            "\n  ${shared_total:.2} of critic and prover spend from the shared store, \
+             attributed by model across {} arm(s)",
+            shared.len()
+        );
+        println!("  It is coarser than the per-run figures above and is summed separately.");
+    }
     match spend {
-        Some(s) => println!("\n  {counted} counted runs, {completed} completed, ${s:.4} measured spend"),
-        None => println!("\n  {counted} counted runs, {completed} completed, spend UNMEASURED"),
+        Some(s) => {
+            println!(
+                "  {counted} counted runs, {completed} completed, ${:.4} attributable spend \
+                 (${s:.4} per-run + ${shared_total:.4} shared)",
+                s + shared_total
+            );
+            if excluded_spend > 0.0 {
+                println!(
+                    "  ${excluded_spend:.4} more was spent on runs that do not count as arm \
+                     results, for ${:.4} total.",
+                    s + shared_total + excluded_spend
+                );
+                println!(
+                    "  That is real money and belongs in a total; it is not evidence about \
+                     any arm, so it stays out of every per-arm figure above."
+                );
+            }
+        }
+        None if shared_total > 0.0 => println!(
+            "  {counted} counted runs, {completed} completed, per-run spend UNMEASURED, \
+             ${shared_total:.4} shared"
+        ),
+        None => println!("  {counted} counted runs, {completed} completed, spend UNMEASURED"),
     }
     0
 }
