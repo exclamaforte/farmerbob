@@ -35,6 +35,24 @@
    "critic": "codex-luna",
    "found_on": "crossx",
    "tests": 9
+  },
+  {
+   "task": "probe",
+   "critic": "or-deepseek-v4-latest",
+   "found_on": "or-deepseek-v4-pro",
+   "tests": 1
+  },
+  {
+   "task": "probe",
+   "critic": "or-deepseek-v4-pro",
+   "found_on": "or-glm-53",
+   "tests": 1
+  },
+  {
+   "task": "probe",
+   "critic": "or-glm-53",
+   "found_on": "or-hy3",
+   "tests": 1
   }
  ]
 }

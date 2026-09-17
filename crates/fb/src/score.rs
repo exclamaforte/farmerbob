@@ -231,7 +231,7 @@ fn measure(wt: &Path, bead: &str, src: &str, krate: &str, base_clippy: i32, log_
     let (built, build_log) = run(wt, &["build", "-p", krate]);
     let mut tests_ok = false;
     let mut tests_run = 0;
-    let mut clippy = Measurement::not_attempted();
+    let clippy: Measurement<i32>;
     let mut err = None;
 
     if built {
