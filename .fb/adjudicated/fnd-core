@@ -1,0 +1,9 @@
+SUPERSEDED (crate-scoped, pre-convention)
+Adjudicated 2026-09-16. fnd-core predates the <!-- fb:creates|modifies PATH --> convention
+and declares no target because its deliverable is a whole crate, not a file: "implement the
+farmerbob domain model". Its result was merged at the bootstrap commit (1772266) and has
+since been superseded by 44 modules of later work. There is no single file to freeze a
+suite against, so it cannot be cross-examined by the current pipeline and its 11 candidates
+cannot be re-ranked. Marked finished so the board stops demanding critique of a task
+completed before the machinery that would critique it existed.
+The general gap is bead farmerbob-6mc: a crate-scoped deliverable has no declaration verb.
