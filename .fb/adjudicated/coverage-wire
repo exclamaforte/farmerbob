@@ -1,0 +1,45 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. Four arms, three PASS, all scope clean.
+
+  codex-luna     +342 lines  28 tests
+  claude-sonnet  +450 lines  35 tests
+  glm-53-flash   +690 lines  36 tests
+  ifm-k2-horizon refused, 8s -- OpenRouter daily token cap
+
+VERIFIED END TO END on the incident that motivated the whole series. `fb promote port-defects`:
+
+    HEAD-ONLY codex-luna on or-hy4-preview: deepest cited line 310 of 1892 lines
+
+Those are the numbers I derived by hand this morning, now produced automatically. And alongside
+it, PROMOTED 14 / REFUSED-BY-VERIFICATION 0: the coverage signal reports and removes nothing,
+which is clause 7 and the point of the design. A partial read can still find a real defect.
+
+CLAUDE-SONNET IS OUT, on the clause the spec called "the case that makes a naive implementation
+wrong". `cited_line` must accept a number only in a `path:line` position. All three handle the
+six shapes the spec listed. On two shapes I added beyond them:
+
+    "see section 2: 300"    codex-luna None   glm None   claude-sonnet Some(300)
+    "EXPECT: 45 minutes"    codex-luna None   glm None   claude-sonnet Some(45)
+
+claude-sonnet takes the digits after the FIRST colon with no path validation. `EXPECT:` is a line
+in literally every critique this harness writes, so a malformed WHERE would be read as a citation
+of line 45 and would corrupt the coverage judgement in the safe-looking direction -- more
+citations, shallower apparent reading. It passed every example the spec gave and failed the rule
+the spec stated, which is the distinction between testing the letter and the intent.
+
+Between the two survivors, thin as usual: both correct on all eight probes, both call
+critic_coverage once, and both pin a test that promotion is unchanged
+(`coverage_does_not_change_promotion_results`, `coverage_never_changes_what_is_promoted`).
+glm-53-flash has 36 tests to 28, validates the path with a named `looks_like_path` helper, and
+handles `path:line:column` by popping segments rather than by position. It is also the free arm.
+
+The only critique, codex-luna on glm-53-flash: NO MATERIAL DEFECTS, plus a real judgement that
+`run_cmd` loads claims and reads subjects twice -- once through `critic_coverage`, again through
+`coverage_rows` to recover the subject name for the report -- which is read-only but leaves a
+window where the map and the printed line could disagree. Worth fixing, not worth blocking.
+
+CROSSX VOIDED, and I spent most of this tick on it before concluding it is not the strip.
+Filed separately with what was eliminated. The short version: crossx works on farmerbob-core and
+fails on crates/fb, the strip is provably not responsible, and the graft is what is left.
+
+1248 tests, clippy 9.
