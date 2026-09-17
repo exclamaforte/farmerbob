@@ -1,0 +1,4 @@
+@@@
+    pub declared_targets_present: Option<bool>,
+--->
+    pub declared_targets_present: Option<bool>=,

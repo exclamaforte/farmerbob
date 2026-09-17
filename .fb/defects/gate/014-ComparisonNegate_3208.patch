@@ -1,0 +1,4 @@
+@@@
+    if o.built == Some(false) {
+--->
+    if o.built != Some(false) {

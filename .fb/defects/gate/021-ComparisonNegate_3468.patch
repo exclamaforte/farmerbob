@@ -1,0 +1,4 @@
+@@@
+    if o.tests_passed == Some(false) {
+--->
+    if o.tests_passed != Some(false) {

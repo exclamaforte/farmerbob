@@ -39,6 +39,28 @@ Wherever the script computes a number from a command that can fail, the Rust mus
 swallowing an error, every `${x:-0}` in the script below is a place where a failure currently
 becomes a zero. Find them and make each one `Missing` with a stated reason.
 
+## Two things the previous attempt got wrong
+
+This task has been attempted once. The single candidate built clean, stayed in scope and
+passed its tests, and still failed, on two counts. Both are pinned here so they are not
+rediscovered:
+
+1. **The `crates` field is RENAMED on the way out.** fb-objective.sh line 123 writes
+   `"crates": e.get("crates_touched")` -- it reads `crates_touched` from the score record and
+   emits it as `crates`. The previous port passed the raw name straight through, and
+   `objective.json` is what `fb pareto`, `fb select` and the bandit's posteriors all read, so
+   a renamed field is a silent wire-format break. Reproduce every field name the script emits,
+   exactly.
+
+2. **The ROW SET must match.** The previous port emitted 220 rows where the script emits 137.
+   Whatever the script filters, filter it. A row count that differs by 60% moves every
+   downstream metric, and neither number is self-evidently right from reading the code -- so
+   compare against the script's actual output rather than reasoning about what it ought to do.
+
+You can check both without touching anything real: every path this harness uses honours
+`FB_LOGS`, so `FB_LOGS=/tmp/somewhere fb objective` writes there and leaves the live artefact
+alone. Do that, and diff.
+
 ## Required: a differential test
 
 Add `#[cfg(test)]` tests, and include at least one that pins the OUTPUT FORMAT byte-for-byte

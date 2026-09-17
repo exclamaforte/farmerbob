@@ -1,0 +1,4 @@
+@@@
+    if o.built.is_none() || o.tests_passed.is_none() || o.tests_run.is_none() {
+--->
+    if o.built.is_none() || o.tests_passed.is_none() && o.tests_run.is_none() {

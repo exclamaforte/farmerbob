@@ -1,0 +1,4 @@
+@@@
+    if o.declared_targets_present == Some(false) && lines_positive {
+--->
+    if o.declared_targets_present == Some(true) && lines_positive {

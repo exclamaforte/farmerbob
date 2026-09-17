@@ -1,0 +1,4 @@
+@@@
+    let lines_positive = matches!(o.lines_added, Some(n) if n > 0);
+--->
+    let lines_positive = matches!(o.lines_added, Some(n) if n > 1);

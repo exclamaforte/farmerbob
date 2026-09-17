@@ -1,0 +1,4 @@
+@@@
+    if o.lines_added == Some(0) {
+--->
+    if o.lines_added != Some(0) {

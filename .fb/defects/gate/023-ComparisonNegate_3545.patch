@@ -1,0 +1,4 @@
+@@@
+    if o.tests_run == Some(0) {
+--->
+    if o.tests_run != Some(0) {
