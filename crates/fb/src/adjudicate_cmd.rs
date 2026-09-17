@@ -80,11 +80,18 @@ fn judgements(task: &str) -> Vec<Judgement> {
 /// this, every task without a frozen suite reports NoCandidate -- which is technically what
 /// the spec says and useless in practice.
 fn has_frozen_suite(task: &str) -> bool {
-    std::path::Path::new(&format!(
-        "{}/.fb/conformance/{task}.rs",
-        repo_root()
-    ))
-    .exists()
+    // EXISTENCE IS NOT A SUITE. This tested `.exists()`, so an empty file counted as a frozen
+    // conformance suite and the brief stopped saying "no frozen conformance suite; gate-PASS
+    // stands in" -- claiming a conformance measurement from a file with no tests in it.
+    //
+    // A stray empty .fb/conformance/port-objective.rs appeared during a differential run and
+    // would have done exactly that. It is the same trap as `cargo test` reporting
+    // "ok. 0 passed" for a filter that matched nothing, which is the first bug ever filed
+    // here, one level up: at the file rather than at the run.
+    //
+    // A suite is a suite when it contains at least one test.
+    let path = format!("{}/.fb/conformance/{task}.rs", repo_root());
+    std::fs::read_to_string(path).is_ok_and(|body| body.contains("#[test]"))
 }
 
 /// Tests the candidate WROTE, counted in its own module file.
@@ -258,4 +265,33 @@ pub fn run(task: &str, epsilon: f64, allow_missing_critique: bool) -> i32 {
     }
     println!("\nThis is a brief, not a verdict. Weigh the critiques above against it.");
     0
+}
+
+#[cfg(test)]
+mod frozen_suite_is_not_mere_existence {
+    /// The predicate under test, in the form it must keep: a file is a suite only when it
+    /// holds at least one test. Exercised on strings rather than the filesystem so it says
+    /// something about the rule instead of about a temp directory.
+    fn counts_as_suite(body: &str) -> bool {
+        body.contains("#[test]")
+    }
+
+    #[test]
+    fn an_empty_file_is_not_a_frozen_suite() {
+        assert!(!counts_as_suite(""));
+        assert!(!counts_as_suite("\n"));
+        assert!(!counts_as_suite("// a comment and nothing else\n"));
+    }
+
+    #[test]
+    fn a_file_with_a_test_is_a_frozen_suite() {
+        assert!(counts_as_suite("#[cfg(test)]\nmod c { #[test] fn t() {} }\n"));
+    }
+
+    /// A module that declares tests but contains none is the same empty-suite trap wearing a
+    /// module wrapper, and must not count either.
+    #[test]
+    fn a_test_module_with_no_tests_is_not_a_frozen_suite() {
+        assert!(!counts_as_suite("#[cfg(test)]\nmod conformance_x {\n    use super::*;\n}\n"));
+    }
 }
