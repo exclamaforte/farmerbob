@@ -1,0 +1,61 @@
+MERGED codex-luna
+Adjudicated 2026-09-17. Four arms, three viable, all scope clean.
+
+  codex-luna     +547 lines  22 tests
+  claude-sonnet  +594 lines  33 tests   (first successful sonnet run since re-enabling)
+  glm-53-flash   +772 lines  34 tests
+  ifm-k2-horizon refused, 9s -- OpenRouter daily token cap
+
+WHAT DECIDED IT: only codex-luna writes the FILTERED claim list to the artefact.
+
+    render_json(&queued_claims(&claims, &promoted), &contradictions)
+
+claude-sonnet discards the promoted list entirely -- `let (_, verify_rejections) = ...` -- and
+glm-53-flash binds it and then renders `&claims` anyway. Both report a verification count over an
+artefact that still contains every refused claim, so fb-prove would go on generating tests for
+claims the verifier had just refused. The measurement happens, is reported, and does not act.
+
+That is my spec's fault as much as theirs. I wrote "run_cmd calls promote_verified and reports
+both counts" and never said the artefact must be filtered. The task's stated purpose -- "so a
+false claim cannot become a test" -- requires it. codex-luna inferred the purpose; the other two
+followed the letter and are not wrong to have done so.
+
+VERIFIED END TO END, on this morning's real incident. `fb promote liveness-cut`:
+
+    TESTABLE      3
+    PROMOTED      1
+    REFUSED-BY-VERIFICATION 2
+
+and the claims artefact drops from 3 entries to 1. The two fabricated claims -- the ones quoting
+`Cut::Keep { because: "output is too weak to justify ending a run" }`, a string that occurs zero
+times in the file they name -- are now refused automatically. That is the whole chain working:
+claim-verify into core this morning, verify-wire into fb now, catching the incident that
+motivated both.
+
+THE CRITIQUE WAS GOOD, AND BOTH ITS CLAIMS ARE CONFIRMED. codex-luna on glm-53-flash:
+
+  1. `refused_positions.push(local)` stores a batch-LOCAL index, then `refused_positions
+     .contains(&pos)` tests it against a GLOBAL index from `members`. A refused claim survives
+     whenever its group is not at the start of the list -- a fabricated claim gets promoted by
+     the very function written to refuse it. Verified at glm-53-flash promote.rs:811-816.
+  2. `verification_line(promoted.len(), refused.len(), ..)` is fed the full rejection vector,
+     which `promote_verified` builds by extending core rejections with verification ones. A line
+     labelled "refused by verification" counts Incomplete and Duplicate too.
+
+Worth recording against this critic's history: four false-absence claims on port-defects, two
+fabricated claims on liveness-cut, a favourable projection on claim-verify, and now two confirmed
+findings of real defects. It is not reliably wrong, which is exactly why claims get verified
+rather than critics distrusted.
+
+I GOT THIS WRONG THREE TIMES BEFORE GETTING IT RIGHT, always the same way: grepping for an
+identifier instead of running the program.
+  - Concluded glm-53-flash had no verification summary. It has `verification_line`, built with
+    `format!` in a helper, so a grep over `println!` literals missed it. It has the best summary
+    shape of the three, including an explicit "(subjects were unreadable)" variant.
+  - Then concluded codex-luna had none either, on the same flawed grep. It prints PROMOTED and
+    REFUSED-BY-VERIFICATION as separate lines.
+  - Merged claude-sonnet on that reading, then found the artefact still held all three claims.
+Running `fb promote` once would have answered all three questions in a second. A grep tells you
+about a spelling; only running it tells you about behaviour.
+
+1171 workspace tests, clippy 9.

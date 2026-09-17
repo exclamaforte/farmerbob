@@ -39,6 +39,41 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use farmerbob_core::measurement::{Absent, Measurement};
+use farmerbob_core::promote::{
+    Assertion, PromotedTest, Rejection, promote, verify_all, verify_quotes,
+};
+
+/// Where a claim's subject and critic sources are read from, so the wiring is testable
+/// against a fake tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sources {
+    /// Worktree root holding `<task>--<arm>` directories.
+    pub worktrees: PathBuf,
+    /// The deliverable's repo-relative path, e.g. `crates/farmerbob-core/src/gate.rs`.
+    pub target: String,
+}
+
+/// Read one arm's deliverable.
+///
+/// A missing worktree or file is [`Measurement::Missing`], and an empty file is an
+/// observed empty string. In particular, an unreadable subject is not evidence that
+/// a quote is absent: callers must preserve that distinction and must not turn a
+/// missing read into [`Rejection::Fabricated`]. An empty target is also missing, with
+/// a stated reason rather than an invented path.
+pub fn read_deliverable(s: &Sources, task: &str, arm: &str) -> Measurement<String> {
+    if s.target.trim().is_empty() {
+        return Measurement::instrument_failed("deliverable target is empty");
+    }
+
+    let path = s.worktrees.join(format!("{task}--{arm}")).join(&s.target);
+    match fs::read_to_string(&path) {
+        Ok(text) => Measurement::observed(text),
+        Err(error) => Measurement::instrument_failed(&format!(
+            "cannot read deliverable {}: {error}",
+            path.display()
+        )),
+    }
+}
 
 /// Exit codes are part of the contract: other scripts branch on these.
 mod exit {
@@ -449,6 +484,168 @@ fn find_contradictions(claims: &mut [Claim]) -> Vec<Contradiction> {
     contradictions
 }
 
+/// Reads and parses the reviews for one task, preserving the distinction between an
+/// absent review set and an observed set containing no claim blocks.
+fn load_claims(task: &str) -> Measurement<Vec<Claim>> {
+    let dir = crate::paths::logs().join("critiques").join(task);
+    let review_paths = match count_reviews(&dir) {
+        Measurement::Observed(paths) => paths,
+        Measurement::Missing(absent) => return Measurement::Missing(absent),
+    };
+    let mut claims = Vec::new();
+    for path in review_paths {
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+        let Some(stem) = name.strip_suffix(".md") else {
+            continue;
+        };
+        let Some((critic, subject)) = split_stem(stem) else {
+            continue;
+        };
+        let text = match read_review(&path) {
+            Some(text) => text,
+            None => {
+                return Measurement::instrument_failed(&format!(
+                    "cannot read review {}",
+                    path.display()
+                ));
+            }
+        };
+        claims.extend(parse_review(&critic, &subject, &text));
+    }
+    Measurement::observed(claims)
+}
+
+/// Converts the parsed claim format into the core assertion format.
+fn assertion_for(claim: &Claim) -> Assertion {
+    Assertion::Claim {
+        target: claim.subject.clone(),
+        input: claim.trigger.clone(),
+        expect: claim.expect.clone(),
+        actual: claim.actual.clone(),
+    }
+}
+
+/// Verifies the assertions that core promotion kept, retaining their original indices.
+fn promote_claims_verified(
+    task: &str,
+    s: &Sources,
+    claims: &mut [Claim],
+) -> (Vec<PromotedTest>, Vec<(usize, Rejection)>) {
+    for claim in claims.iter_mut() {
+        claim.kind = classify(&claim.expect, &claim.actual);
+    }
+    let _ = find_contradictions(claims);
+
+    let assertions: Vec<Assertion> = claims.iter().map(assertion_for).collect();
+    let (promoted, mut rejections) = promote(&assertions);
+    let rejected_indices: Vec<usize> = rejections.iter().map(|(index, _)| *index).collect();
+    let candidate_indices: Vec<usize> = (0..assertions.len())
+        .filter(|index| !rejected_indices.contains(index))
+        .collect();
+
+    let mut groups: Vec<(String, String, Vec<usize>)> = Vec::new();
+    for index in &candidate_indices {
+        let Some(claim) = claims.get(*index) else {
+            continue;
+        };
+        let Some(group) = groups
+            .iter_mut()
+            .find(|(subject, critic, _)| subject == &claim.subject && critic == &claim.critic)
+        else {
+            groups.push((claim.subject.clone(), claim.critic.clone(), vec![*index]));
+            continue;
+        };
+        group.2.push(*index);
+    }
+
+    let mut verification_rejections: Vec<(usize, Rejection)> = Vec::new();
+    for (subject_arm, critic_arm, indices) in groups {
+        let subject = read_deliverable(s, task, &subject_arm);
+        let Measurement::Observed(subject_text) = subject else {
+            // A missing subject is not a negative observation. Preserve every core
+            // promotion so a true finding is not discarded because the harness could
+            // not reach the file.
+            continue;
+        };
+        let critic = read_deliverable(s, task, &critic_arm);
+        let critic_text = match &critic {
+            Measurement::Observed(text) => text.as_str(),
+            Measurement::Missing(_) => "",
+        };
+
+        if indices.len() == 1 {
+            let Some(index) = indices.first().copied() else {
+                continue;
+            };
+            let Some(assertion) = assertions.get(index) else {
+                continue;
+            };
+            if let Some(rejection) = verify_quotes(assertion, &subject_text, critic_text) {
+                verification_rejections.push((index, rejection));
+            }
+            continue;
+        }
+
+        let grouped_assertions: Vec<Assertion> = indices
+            .iter()
+            .filter_map(|index| assertions.get(*index).cloned())
+            .collect();
+        for (relative, rejection) in verify_all(&grouped_assertions, &subject_text, critic_text) {
+            if let Some(index) = indices.get(relative).copied() {
+                verification_rejections.push((index, rejection));
+            }
+        }
+    }
+
+    let refused_indices: Vec<usize> = verification_rejections
+        .iter()
+        .map(|(index, _)| *index)
+        .collect();
+    let surviving: Vec<PromotedTest> = promoted
+        .into_iter()
+        .zip(candidate_indices)
+        .filter_map(|(test, index)| {
+            if refused_indices.contains(&index) {
+                None
+            } else {
+                Some(test)
+            }
+        })
+        .collect();
+    rejections.extend(verification_rejections);
+    rejections.sort_by_key(|(index, _)| *index);
+    (surviving, rejections)
+}
+
+/// Classify claims as now, then discard those refuted by their own subject.
+///
+/// Core's existing rejection rules run before source verification, so
+/// `Incomplete`, `NotFalsifiable`, `NotAClaim`, and `Duplicate` retain their
+/// existing precedence and input order. Verification decides only the two shapes
+/// that [`verify_quotes`] knows: Fabricated and Projected. A surviving claim has
+/// not been shown true; false absence, where a claim says something is missing
+/// even though the file contains it, is a known third shape this check does not
+/// detect.
+///
+/// The first returned vector contains the surviving promoted tests. The second
+/// contains every refused claim as `(original_index, reason)`, ordered by ascending
+/// index. For an empty claim set both vectors are empty: that means nothing was
+/// examined, whereas an empty rejection vector from non-empty input means nothing
+/// was refused. The caller is responsible for knowing which input it supplied.
+/// An unreadable subject is promoted unchanged, never refused: failure to open a
+/// file is not evidence that a quote is absent from it. An unreadable critic can
+/// therefore downgrade Projected to Fabricated, but never the reverse.
+pub fn promote_verified(task: &str, s: &Sources) -> (Vec<PromotedTest>, Vec<(usize, Rejection)>) {
+    let mut claims = match load_claims(task) {
+        Measurement::Observed(claims) => claims,
+        Measurement::Missing(_) => Vec::new(),
+    };
+    promote_claims_verified(task, s, &mut claims)
+}
+
 /// Escapes one string exactly the way Python's `json.dump` with `ensure_ascii=True`
 /// does: `"` and `\` escaped, `\n \r \t \b \f` short escapes, every other control
 /// character and every non-ASCII character as `\uXXXX` (with lone and surrogate-pair
@@ -543,14 +740,114 @@ fn render_json(claims: &[Claim], contradictions: &[Contradiction]) -> String {
     out
 }
 
-/// Renders the stdout report byte-for-byte like the script's final prints.
+/// Extracts the first target declaration understood by `fb-target.sh`.
+fn declared_target(spec: &str) -> Option<String> {
+    for line in spec.lines() {
+        let Some(marker) = line.find("<!-- fb:") else {
+            continue;
+        };
+        let declaration = &line[marker + "<!-- fb:".len()..];
+        for verb in ["creates ", "modifies "] {
+            let Some(path) = declaration.strip_prefix(verb) else {
+                continue;
+            };
+            let Some(path) = path.strip_suffix(" -->") else {
+                continue;
+            };
+            if !path.trim().is_empty() {
+                return Some(path.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Resolves the target for the fixed-argument `run_cmd` entry point.
+fn target_for_task(task: &str) -> Measurement<String> {
+    if let Ok(target) = std::env::var("FB_TARGET")
+        && !target.trim().is_empty()
+    {
+        return Measurement::observed(target);
+    }
+
+    let repo = crate::paths::repo();
+    let prompt = repo.join(".fb/prompts").join(format!("{task}.md"));
+    if let Ok(spec) = fs::read_to_string(&prompt)
+        && let Some(target) = declared_target(&spec)
+    {
+        return Measurement::observed(target);
+    }
+
+    // A task checkout may carry only the active task metadata rather than the
+    // complete prompt corpus. This fallback keeps the fixed CLI signature useful
+    // in that environment without guessing a deliverable path.
+    let active_task = repo.join(".fb-task.md");
+    if let Ok(spec) = fs::read_to_string(&active_task)
+        && let Some(target) = declared_target(&spec)
+    {
+        return Measurement::observed(target);
+    }
+    Measurement::instrument_failed("task target declaration is unavailable")
+}
+
+/// Counts distinct claim subjects whose deliverables could not be read.
+fn unreadable_subjects(task: &str, s: &Sources, claims: &[Claim]) -> usize {
+    let mut arms: Vec<&str> = Vec::new();
+    for claim in claims {
+        if arms.contains(&claim.subject.as_str()) {
+            continue;
+        }
+        arms.push(claim.subject.as_str());
+    }
+    arms.into_iter()
+        .filter(|arm| !read_deliverable(s, task, arm).is_observed())
+        .count()
+}
+
+/// Keeps the old claims artefact shape while removing TESTABLE claims that no
+/// longer earned execution. Non-testable classifications remain visible for the
+/// existing report and contradiction consumers.
+fn queued_claims(claims: &[Claim], promoted: &[PromotedTest]) -> Vec<Claim> {
+    let mut remaining = promoted.to_vec();
+    claims
+        .iter()
+        .filter(|claim| {
+            if claim.kind != "TESTABLE" {
+                return true;
+            }
+            let position = remaining.iter().position(|test| {
+                test.target == claim.subject
+                    && test.input == claim.trigger
+                    && test.expect == claim.expect
+            });
+            if let Some(position) = position {
+                remaining.remove(position);
+                true
+            } else {
+                false
+            }
+        })
+        .cloned()
+        .collect()
+}
+
+/// Renders the stdout report, preserving the script's existing lines and adding
+/// verification counts without changing their order or wording.
 ///
 /// `  {n} claims from {critics} critics`, one `    {KIND:<14}{count}` line for
-/// CONTRADICTED, TESTABLE and CONFIRMATORY in that order, then — only when there are
-/// contradictions — a blank line, `  SPEC AMBIGUITY — independent critics read the spec
-/// differently:`, and one deduplicated triple per `(topic, a, b)` in first-seen order,
-/// then a blank line and `-> {out}`. `–` is U+2014, encoded UTF-8.
-fn render_report(claims: &[Claim], contradictions: &[Contradiction], out: &Path, buf: &mut String) {
+/// CONTRADICTED, TESTABLE and CONFIRMATORY in that order, then PROMOTED and
+/// REFUSED-BY-VERIFICATION counts, then — only when there are unreadable subjects or
+/// contradictions — their additional lines, and finally a blank line and `-> {out}`.
+/// `–` is U+2014, encoded UTF-8.
+fn render_report(
+    claims: &[Claim],
+    contradictions: &[Contradiction],
+    out: &Path,
+    promoted_count: usize,
+    verification_refused: usize,
+    unreadable_subject_count: usize,
+    buf: &mut String,
+) {
     use std::collections::BTreeSet;
     let critics: BTreeSet<&str> = claims.iter().map(|c| c.critic.as_str()).collect();
     buf.push_str(&format!(
@@ -561,6 +858,15 @@ fn render_report(claims: &[Claim], contradictions: &[Contradiction], out: &Path,
     for kind in ["CONTRADICTED", "TESTABLE", "CONFIRMATORY"] {
         let n = claims.iter().filter(|c| c.kind == kind).count();
         buf.push_str(&format!("    {kind:<14}{n}\n"));
+    }
+    buf.push_str(&format!("    PROMOTED      {promoted_count}\n"));
+    buf.push_str(&format!(
+        "    REFUSED-BY-VERIFICATION {verification_refused}\n"
+    ));
+    if unreadable_subject_count > 0 {
+        buf.push_str(&format!(
+            "    SUBJECTS-UNREADABLE {unreadable_subject_count}\n"
+        ));
     }
     if !contradictions.is_empty() {
         buf.push_str(
@@ -593,54 +899,69 @@ pub fn run_cmd(bead: &str) -> i32 {
         return exit::USAGE;
     }
     let base = crate::paths::logs();
-    let dir = base.join("critiques").join(bead);
     let out = base.join(format!("{bead}.claims.json"));
 
-    let reviews = count_reviews(&dir);
-    if !reviews.is_observed() {
-        println!("NO critiques were written -- refusing to emit an empty claims file");
-        return exit::NO_CRITIQUES;
-    }
-    let review_paths: Vec<PathBuf> = match &reviews {
-        Measurement::Observed(paths) => paths.clone(),
-        Measurement::Missing(_) => Vec::new(),
-    };
-    if review_paths.is_empty() {
-        println!("NO critiques were written -- refusing to emit an empty claims file");
-        return exit::NO_CRITIQUES;
+    let review_dir = base.join("critiques").join(bead);
+    match count_reviews(&review_dir) {
+        Measurement::Missing(_) => {
+            println!("NO critiques were written -- refusing to emit an empty claims file");
+            return exit::NO_CRITIQUES;
+        }
+        Measurement::Observed(paths) if paths.is_empty() => {
+            println!("NO critiques were written -- refusing to emit an empty claims file");
+            return exit::NO_CRITIQUES;
+        }
+        Measurement::Observed(_) => {}
     }
 
-    let mut claims: Vec<Claim> = Vec::new();
-    for path in &review_paths {
-        let name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(name) => name.to_string(),
-            None => continue,
-        };
-        let stem = match name.strip_suffix(".md") {
-            Some(stem) => stem,
-            None => continue,
-        };
-        let Some((critic, subject)) = split_stem(stem) else {
-            continue;
-        };
-        let Some(text) = read_review(path) else {
-            eprintln!("fb-promote: cannot read {}", path.display());
+    let mut claims = match load_claims(bead) {
+        Measurement::Missing(absent) => {
+            eprintln!("fb-promote: cannot read critiques: {absent:?}");
             return exit::ERROR;
-        };
-        claims.extend(parse_review(&critic, &subject, &text));
-    }
+        }
+        Measurement::Observed(claims) => claims,
+    };
+
     for c in &mut claims {
         c.kind = classify(&c.expect, &c.actual);
     }
     let contradictions = find_contradictions(&mut claims);
 
-    let body = render_json(&claims, &contradictions);
+    let target = match target_for_task(bead) {
+        Measurement::Observed(target) => target,
+        Measurement::Missing(_) => String::new(),
+    };
+    let sources = Sources {
+        worktrees: crate::paths::worktrees(),
+        target,
+    };
+    let (promoted, rejections) = promote_verified(bead, &sources);
+    let verification_refused = rejections
+        .iter()
+        .filter(|(_, rejection)| {
+            matches!(
+                rejection,
+                Rejection::Fabricated { .. } | Rejection::Projected { .. }
+            )
+        })
+        .count();
+    let unreadable_subject_count = unreadable_subjects(bead, &sources, &claims);
+
+    let body = render_json(&queued_claims(&claims, &promoted), &contradictions);
     if fs::write(&out, &body).is_err() {
         eprintln!("fb-promote: cannot write {}", out.display());
         return exit::ERROR;
     }
     let mut report = String::new();
-    render_report(&claims, &contradictions, &out, &mut report);
+    render_report(
+        &claims,
+        &contradictions,
+        &out,
+        promoted.len(),
+        verification_refused,
+        unreadable_subject_count,
+        &mut report,
+    );
     print!("{report}");
     exit::OK
 }
@@ -648,6 +969,29 @@ pub fn run_cmd(bead: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn test_root(label: &str) -> PathBuf {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let number = NEXT.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "fb-promote-{label}-{}-{number}",
+            std::process::id()
+        ))
+    }
+
+    fn test_claim(critic: &str, subject: &str, trigger: &str, expect: &str, actual: &str) -> Claim {
+        Claim {
+            critic: critic.to_string(),
+            subject: subject.to_string(),
+            claim: String::from("test claim"),
+            where_: String::from("test location"),
+            trigger: trigger.to_string(),
+            expect: expect.to_string(),
+            actual: actual.to_string(),
+            kind: String::new(),
+        }
+    }
 
     /// Worked example mirroring the script's two-claim demo: exact column widths
     /// (`{kind:<14}`) and exact literal words, pinned byte-for-byte.
@@ -678,11 +1022,13 @@ mod tests {
         let contradictions = Vec::new();
         let out = Path::new("/tmp/fakehome/.local/share/farmerbob/logs/demo.claims.json");
         let mut buf = String::new();
-        render_report(&claims, &contradictions, out, &mut buf);
+        render_report(&claims, &contradictions, out, 2, 0, 0, &mut buf);
         let expected = "  2 claims from 1 critics\n".to_string()
             + "    CONTRADICTED  0\n"
             + "    TESTABLE      1\n"
             + "    CONFIRMATORY  1\n"
+            + "    PROMOTED      2\n"
+            + "    REFUSED-BY-VERIFICATION 0\n"
             + "\n"
             + "-> /tmp/fakehome/.local/share/farmerbob/logs/demo.claims.json\n";
         assert_eq!(buf, expected);
@@ -722,11 +1068,13 @@ mod tests {
         }];
         let out = Path::new("/o/contra.claims.json");
         let mut buf = String::new();
-        render_report(&claims, &contradictions, out, &mut buf);
+        render_report(&claims, &contradictions, out, 2, 0, 0, &mut buf);
         let expected = "  2 claims from 2 critics\n".to_string()
             + "    CONTRADICTED  2\n"
             + "    TESTABLE      0\n"
             + "    CONFIRMATORY  0\n"
+            + "    PROMOTED      2\n"
+            + "    REFUSED-BY-VERIFICATION 0\n"
             + "\n"
             + "  SPEC AMBIGUITY \u{2014} independent critics read the spec differently:\n"
             + "    topic 'excluded': alpha vs zeta\n"
@@ -1082,5 +1430,163 @@ mod tests {
         // Astral characters become UTF-16 surrogate pairs, like Python.
         assert_eq!(json_escape("\u{1d11e}"), "\"\\ud834\\udd1e\"");
         assert_eq!(json_escape("\u{7f}"), "\"\\u007f\"");
+    }
+
+    #[test]
+    fn deliverable_read_distinguishes_empty_from_missing_and_empty_target() {
+        let root = test_root("read");
+        let file = root.join("task--arm").join("src/file.rs");
+        fs::create_dir_all(file.parent().unwrap_or_else(|| Path::new(".")))
+            .expect("test directory can be created");
+        fs::write(&file, "").expect("test file can be written");
+        let sources = Sources {
+            worktrees: root.clone(),
+            target: String::from("src/file.rs"),
+        };
+        assert_eq!(
+            read_deliverable(&sources, "task", "arm"),
+            Measurement::Observed(String::new())
+        );
+        assert!(matches!(
+            read_deliverable(&sources, "task", "absent"),
+            Measurement::Missing(Absent::InstrumentFailed { reason }) if !reason.is_empty()
+        ));
+        let empty_target = Sources {
+            worktrees: root.clone(),
+            target: String::new(),
+        };
+        assert!(matches!(
+            read_deliverable(&empty_target, "task", "arm"),
+            Measurement::Missing(Absent::InstrumentFailed { reason }) if !reason.is_empty()
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verification_keeps_subject_quotes_and_missing_subjects_but_refuses_other_quotes() {
+        let root = test_root("verify");
+        let subject = root.join("task--subject").join("target.rs");
+        let critic = root.join("task--critic").join("target.rs");
+        fs::create_dir_all(subject.parent().unwrap_or_else(|| Path::new(".")))
+            .expect("test directory can be created");
+        fs::create_dir_all(critic.parent().unwrap_or_else(|| Path::new(".")))
+            .expect("test directory can be created");
+        fs::write(&subject, "return \"kept\";").expect("subject can be written");
+        fs::write(&critic, "return \"projected\";").expect("critic can be written");
+        let sources = Sources {
+            worktrees: root.clone(),
+            target: String::from("target.rs"),
+        };
+        let mut claims = vec![
+            test_claim(
+                "critic",
+                "subject",
+                "kept-input",
+                "expected-kept",
+                "\"kept\"",
+            ),
+            test_claim(
+                "critic",
+                "subject",
+                "fabricated-input",
+                "expected-fabricated",
+                "\"invented\"",
+            ),
+            test_claim(
+                "critic",
+                "subject",
+                "projected-input",
+                "expected-projected",
+                "\"projected\"",
+            ),
+            test_claim(
+                "critic",
+                "missing-subject",
+                "missing-input",
+                "expected-missing",
+                "\"not-readable\"",
+            ),
+            test_claim(
+                "missing-critic",
+                "subject",
+                "missing-critic-input",
+                "expected-critic",
+                "\"critic-only\"",
+            ),
+        ];
+
+        let (promoted, rejections) = promote_claims_verified("task", &sources, &mut claims);
+        assert_eq!(promoted.len(), 2);
+        assert_eq!(promoted[0].input, "kept-input");
+        assert_eq!(promoted[1].input, "missing-input");
+        assert_eq!(rejections.len(), 3);
+        assert_eq!(rejections[0].0, 1);
+        assert_eq!(rejections[1].0, 2);
+        assert_eq!(rejections[2].0, 4);
+        let fabricated_quote = match &rejections[0].1 {
+            Rejection::Fabricated { quote } => quote,
+            _ => "",
+        };
+        let projected_quote = match &rejections[1].1 {
+            Rejection::Projected { quote } => quote,
+            _ => "",
+        };
+        let unreadable_critic_quote = match &rejections[2].1 {
+            Rejection::Fabricated { quote } => quote,
+            _ => "",
+        };
+        assert_eq!(fabricated_quote, "invented");
+        assert_eq!(projected_quote, "projected");
+        assert_eq!(unreadable_critic_quote, "critic-only");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn core_rejections_precede_source_verification_and_keep_index_order() {
+        let root = test_root("precedence");
+        let subject = root.join("task--subject").join("target.rs");
+        fs::create_dir_all(subject.parent().unwrap_or_else(|| Path::new(".")))
+            .expect("test directory can be created");
+        fs::write(&subject, "source").expect("subject can be written");
+        let sources = Sources {
+            worktrees: root.clone(),
+            target: String::from("target.rs"),
+        };
+        let duplicate =
+            |actual: &str| test_claim("critic", "subject", "same-input", "same-expect", actual);
+        let mut claims = vec![
+            test_claim("critic", "", "input", "expect", "\"invented\""),
+            test_claim("critic", "subject", "", "expect", "\"invented\""),
+            test_claim("critic", "subject", "input", "same", "same"),
+            duplicate("\"invented\""),
+            duplicate("\"also-invented\""),
+        ];
+
+        let (promoted, rejections) = promote_claims_verified("task", &sources, &mut claims);
+        assert!(promoted.is_empty());
+        assert_eq!(rejections.len(), 5);
+        assert_eq!(rejections[0].0, 0);
+        assert_eq!(rejections[1].0, 1);
+        assert_eq!(rejections[2].0, 2);
+        assert_eq!(rejections[3].0, 3);
+        assert_eq!(rejections[4].0, 4);
+        let first_incomplete = match &rejections[0].1 {
+            Rejection::Incomplete { field } => field,
+            _ => "",
+        };
+        let second_incomplete = match &rejections[1].1 {
+            Rejection::Incomplete { field } => field,
+            _ => "",
+        };
+        let fabricated_quote = match &rejections[3].1 {
+            Rejection::Fabricated { quote } => quote,
+            _ => "",
+        };
+        assert_eq!(first_incomplete, "target");
+        assert_eq!(second_incomplete, "input");
+        assert!(matches!(&rejections[2].1, Rejection::NotFalsifiable));
+        assert_eq!(fabricated_quote, "invented");
+        assert!(matches!(&rejections[4].1, Rejection::Duplicate));
+        let _ = fs::remove_dir_all(root);
     }
 }
