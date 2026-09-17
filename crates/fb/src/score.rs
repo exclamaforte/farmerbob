@@ -67,6 +67,9 @@ fn wire(v: Verdict) -> &'static str {
         Verdict::NoTests => "NO-TESTS",
         Verdict::WrongTarget => "WRONG-TARGET",
         Verdict::Indeterminate => "INDETERMINATE",
+        // New spelling. Nothing in the shell greps for it yet; it is added here rather than
+        // folded into an existing string so a departure can never be read as any other verdict.
+        Verdict::OutOfScope => "OUT-OF-SCOPE",
     }
 }
 
@@ -334,6 +337,10 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
         tests_run: Some(tests_run),
         lines_added: lines.value().copied(),
         declared_targets_present: None,
+        // The real one. `scope` is a Measurement, so an unassessed worktree arrives here as
+        // None and yields Indeterminate rather than Pass -- which is the whole point: an arm
+        // whose scope we could not check has not been shown to have stayed inside it.
+        scope_departures: scope.value().map(|sc| sc.departures.len() as u32),
     });
 
     let duration_s = read_duration(log_root, bead, src);
@@ -594,7 +601,9 @@ test result: ok. 7 passed; 0 failed; 0 ignored
                 tests_run: Some(0),
                 lines_added: Some(40),
                 declared_targets_present: None,
-            }),
+            // Pre-existing test of another axis; scope is not what it measures.
+            scope_departures: Some(0),
+        }),
             Verdict::NoTests
         );
     }
@@ -642,6 +651,8 @@ mod broken_worktree {
             tests_run: Some(39),
             lines_added: None,
             declared_targets_present: None,
+            // Pre-existing test of another axis; scope is not what it measures.
+            scope_departures: Some(0),
         });
         assert_eq!(unreadable, Verdict::Indeterminate);
         assert!(
@@ -656,6 +667,8 @@ mod broken_worktree {
             tests_run: Some(39),
             lines_added: Some(0),
             declared_targets_present: None,
+            // Pre-existing test of another axis; scope is not what it measures.
+            scope_departures: Some(0),
         });
         assert_eq!(truly_empty, Verdict::NoOp);
         assert!(truly_empty.blames_arm());
@@ -754,6 +767,8 @@ mod destroyed_worktree_recovery {
             tests_run: Some(46),
             lines_added: Some(709),
             declared_targets_present: None,
+            // Pre-existing test of another axis; scope is not what it measures.
+            scope_departures: Some(0),
         });
         assert_eq!(recovered, Verdict::Pass);
 
@@ -765,6 +780,8 @@ mod destroyed_worktree_recovery {
             tests_run: Some(46),
             lines_added: None,
             declared_targets_present: None,
+            // Pre-existing test of another axis; scope is not what it measures.
+            scope_departures: Some(0),
         });
         assert_eq!(unrecoverable, Verdict::Indeterminate);
         assert!(!unrecoverable.blames_arm());

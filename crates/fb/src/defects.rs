@@ -425,7 +425,12 @@ pub fn classify_run(run: &CargoRun) -> Measurement<Detection> {
         lines_added: Some(run.graft_lines),
         // Checked before the run: the host module exists or there is no cell.
         declared_targets_present: Some(true),
-    };
+            // Synthetic observation: `judge` used as a boolean combinator, not to score a
+        // run. No worktree, so no scope to depart from. Some(0) rather than None
+        // deliberately -- None means "not assessed" and yields Indeterminate, which
+        // here would turn a correct answer into a refusal to answer.
+        scope_departures: Some(0),
+};
     verdict_to_detection(judge(&observation))
 }
 
@@ -442,6 +447,12 @@ fn verdict_to_detection(v: Verdict) -> Measurement<Detection> {
         Verdict::NoOp => Measurement::nothing_to_measure("the grafted suite contributed no lines"),
         Verdict::WrongTarget => Measurement::instrument_failed("the target module is absent"),
         Verdict::Indeterminate => Measurement::not_attempted(),
+        // Unreachable from the synthetic observation above, which always supplies Some(0),
+        // but stated rather than caught by a wildcard: a wildcard here would silently absorb
+        // any future verdict, which is how a new state becomes an old one's behaviour.
+        Verdict::OutOfScope => {
+            Measurement::instrument_failed("a grafted suite cannot depart its own scope")
+        }
     }
 }
 

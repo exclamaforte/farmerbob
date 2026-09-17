@@ -256,6 +256,11 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
         tests_run: Some(1),
         lines_added: Some(arms.len() as u32),
         declared_targets_present: Some(true),
+            // Synthetic observation: `judge` used as a boolean combinator, not to score a
+        // run. No worktree, so no scope to depart from. Some(0) rather than None
+        // deliberately -- None means "not assessed" and yields Indeterminate, which
+        // here would turn a correct answer into a refusal to answer.
+        scope_departures: Some(0),
     });
     if arms.len() < 2 || !matches!(gate, Verdict::Pass) {
         println!("need >= 2 to cross-review");

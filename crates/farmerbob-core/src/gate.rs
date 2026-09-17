@@ -6,6 +6,12 @@
 //! module closes that trap by distinguishing *absent* evidence (`None`, not
 //! measured) from *negative* evidence (`Some(false)`, `Some(0)`).
 //!
+//! The same discipline governs scope: [`Observation::scope_departures`] is
+//! `None` when scope was never assessed, and an unmeasured scope can never
+//! underwrite a [`Verdict::Pass`] — a gate that measures a violation and then
+//! returns `Pass` is worse than one that never measured, because the record
+//! now carries evidence that the run was fine.
+//!
 //! Pure logic only: no I/O, no process spawning. The caller runs the tools and
 //! feeds the results in as an [`Observation`]; [`judge`] maps it to a
 //! [`Verdict`] by the first applicable rule.
@@ -14,7 +20,10 @@
 ///
 /// `None` means NOT MEASURED, which is never the same as zero. Collapsing the
 /// two is the bug this module exists to prevent.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `Default` gives `None` everywhere — every field unmeasured — and is a
+/// starting point for construction, never a description of a run.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Observation {
     /// Whether the code built. `None` means the build was never performed.
     pub built: Option<bool>,
@@ -26,13 +35,24 @@ pub struct Observation {
     pub lines_added: Option<u32>,
     /// Files the run was declared to create that now exist.
     pub declared_targets_present: Option<bool>,
+    /// Paths changed outside the declared deliverable, as counted by
+    /// [`crate::scope::assess`]. `Some(0)` means measured and clean.
+    /// `None` means scope was never assessed, which is NOT the same as clean.
+    pub scope_departures: Option<u32>,
 }
 
-/// The gate's decision. Exactly these verdicts and no others.
+/// The gate's decision. Exactly these verdicts and no others — and the set is
+/// closed on purpose: a verdict is a decision the harness makes, so every
+/// caller can match it exhaustively. The refusal patterns in
+/// [`crate::limit_signal`] are the opposite: an open subset of the ways a
+/// provider can say no, grown as providers surprise us. Recognising an open
+/// world and deciding a closed one are different jobs, and the types keep
+/// them apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     /// Positive evidence on every axis: built, tests passed, tests ran,
-    /// lines written, declared deliverable present or unstated.
+    /// lines written, declared deliverable present or unstated, and scope
+    /// measured clean.
     Pass,
     /// Wrote nothing.
     NoOp,
@@ -46,6 +66,10 @@ pub enum Verdict {
     WrongTarget,
     /// Not enough was measured to decide. Never a failure.
     Indeterminate,
+    /// Built, tested and wrote code, but touched files outside its declared
+    /// deliverable. A statement about what the run was PERMITTED to change,
+    /// not about whether it can write working code.
+    OutOfScope,
 }
 
 impl Verdict {
@@ -63,6 +87,24 @@ impl Verdict {
 
 /// Decide. Checked in this order, and the FIRST applicable verdict wins:
 /// Indeterminate, NoOp, NoCompile, WrongTarget, TestsFail, NoTests, Pass.
+/// [`Verdict::OutOfScope`] is reached only where `Pass` was: it is the answer
+/// to a fully evidenced run that also departed scope.
+///
+/// Scope precedence, decided here so it is not decided by accident:
+/// [`Verdict::OutOfScope`] displaces [`Verdict::Pass`] and NOTHING ELSE. A run
+/// that departed scope AND failed to build reports [`Verdict::NoCompile`]. A
+/// run that departed scope and whose tests failed reports
+/// [`Verdict::TestsFail`]. Those verdicts describe the code the arm wrote;
+/// scope describes what it was allowed to touch, and when the code is already
+/// unusable the more actionable fact wins. But a run that built, ran tests,
+/// passed them, wrote lines, and departed scope reports
+/// [`Verdict::OutOfScope`] and must never report [`Verdict::Pass`].
+///
+/// Unmeasured scope is not clean scope: `scope_departures` being `None`
+/// resolves to [`Verdict::Indeterminate`]. Scope that was never assessed is
+/// not scope that was clean, and a missing measurement must never be read as
+/// a fine one. It blocks the `Pass` and nothing else — every verdict above it
+/// was already decidable without it.
 ///
 /// A fully evidenced run falls through every rule to [`Verdict::Pass`]. A run
 /// that falls through every rule but is missing [`Observation::lines_added`]
@@ -88,8 +130,15 @@ pub fn judge(o: &Observation) -> Verdict {
     if o.tests_run == Some(0) {
         return Verdict::NoTests;
     }
+    if o.scope_departures.is_none() {
+        return Verdict::Indeterminate;
+    }
     if lines_positive && o.declared_targets_present != Some(false) {
-        return Verdict::Pass;
+        // OutOfScope displaces Pass and NOTHING ELSE.
+        if o.scope_departures == Some(0) {
+            return Verdict::Pass;
+        }
+        return Verdict::OutOfScope;
     }
     Verdict::Indeterminate
 }
@@ -97,7 +146,8 @@ pub fn judge(o: &Observation) -> Verdict {
 /// Which fields were not measured. Empty means fully observed.
 ///
 /// Returned in the declaration order of [`Observation`]: `built`,
-/// `tests_passed`, `tests_run`, `lines_added`, `declared_targets_present`.
+/// `tests_passed`, `tests_run`, `lines_added`, `declared_targets_present`,
+/// `scope_departures`.
 pub fn unmeasured(o: &Observation) -> Vec<&'static str> {
     let mut out = Vec::new();
     if o.built.is_none() {
@@ -114,6 +164,9 @@ pub fn unmeasured(o: &Observation) -> Vec<&'static str> {
     }
     if o.declared_targets_present.is_none() {
         out.push("declared_targets_present");
+    }
+    if o.scope_departures.is_none() {
+        out.push("scope_departures");
     }
     out
 }
@@ -156,10 +209,15 @@ pub fn explain(o: &Observation, v: Verdict) -> String {
             "no_tests: tests_run is 0, so a passing tests_passed proves nothing (empty suite)",
         ),
         Verdict::Pass => format!(
-            "pass: built is true, tests_passed is true, tests_run is {} (> 0), lines_added is {} (> 0), declared_targets_present is {}",
+            "pass: built is true, tests_passed is true, tests_run is {} (> 0), lines_added is {} (> 0), declared_targets_present is {}, scope_departures is {}",
             show_count(o.tests_run),
             show_count(o.lines_added),
             show_bool(o.declared_targets_present),
+            show_count(o.scope_departures),
+        ),
+        Verdict::OutOfScope => format!(
+            "out_of_scope: scope_departures is {}, so the run changed files outside its declared deliverable",
+            show_count(o.scope_departures),
         ),
     }
 }
@@ -193,6 +251,7 @@ mod tests {
             tests_run: Some(7),
             lines_added: Some(42),
             declared_targets_present: Some(true),
+            scope_departures: Some(0),
         }
     }
 
@@ -206,6 +265,7 @@ mod tests {
             tests_run: Some(3),
             lines_added: Some(0),
             declared_targets_present: Some(true),
+            scope_departures: Some(0),
         };
         assert_eq!(judge(&blind_but_idle), Verdict::Indeterminate);
 
@@ -242,6 +302,7 @@ mod tests {
             tests_run: Some(5),
             lines_added: Some(0),
             declared_targets_present: Some(false),
+            scope_departures: Some(0),
         };
         assert_eq!(judge(&idle_broken), Verdict::NoOp);
     }
@@ -264,6 +325,7 @@ mod tests {
             tests_run: None,
             lines_added: Some(0),
             declared_targets_present: None,
+            scope_departures: None,
         };
         // Unmeasured core evidence takes precedence over the broken build.
         assert_eq!(judge(&broken), Verdict::Indeterminate);
@@ -274,6 +336,7 @@ mod tests {
             tests_run: Some(4),
             lines_added: Some(9),
             declared_targets_present: None,
+            scope_departures: Some(0),
         };
         assert_eq!(judge(&broken_measured), Verdict::NoCompile);
     }
@@ -431,6 +494,7 @@ mod tests {
             tests_run: Some(0),
             lines_added: Some(0),
             declared_targets_present: Some(false),
+            scope_departures: Some(0),
         };
         assert_eq!(judge(&all_bad), Verdict::NoOp);
 
@@ -475,6 +539,7 @@ mod tests {
             Verdict::NoTests,
             Verdict::WrongTarget,
             Verdict::Indeterminate,
+            Verdict::OutOfScope,
         ] {
             assert!(!v.is_pass());
         }
@@ -490,6 +555,7 @@ mod tests {
             Verdict::TestsFail,
             Verdict::NoTests,
             Verdict::WrongTarget,
+            Verdict::OutOfScope,
         ] {
             assert!(v.blames_arm(), "{v:?} should blame the arm");
         }
@@ -521,6 +587,7 @@ mod tests {
                     tests_run: Some(2),
                     lines_added: Some(5),
                     declared_targets_present: None,
+                    scope_departures: Some(0),
                 },
                 Verdict::NoCompile,
                 "built",
@@ -590,6 +657,7 @@ mod tests {
             tests_run: None,
             lines_added: None,
             declared_targets_present: Some(true),
+            scope_departures: Some(0),
         };
         assert_eq!(unmeasured(&o), vec!["built", "tests_run", "lines_added"]);
 
@@ -599,6 +667,7 @@ mod tests {
             tests_run: None,
             lines_added: None,
             declared_targets_present: None,
+            scope_departures: None,
         };
         assert_eq!(
             unmeasured(&all_missing),
@@ -607,9 +676,220 @@ mod tests {
                 "tests_passed",
                 "tests_run",
                 "lines_added",
-                "declared_targets_present"
+                "declared_targets_present",
+                "scope_departures"
             ]
         );
+    }
+}
+
+
+/// The scope axis and the incident it closes: a run that left its declared
+/// deliverable must not be able to read PASS, and scope that was never
+/// measured must not be read as clean.
+#[cfg(test)]
+mod scope_gate {
+    use super::*;
+
+    /// Fully positive evidence, scope measured clean.
+    fn passing() -> Observation {
+        Observation {
+            built: Some(true),
+            tests_passed: Some(true),
+            tests_run: Some(7),
+            lines_added: Some(42),
+            declared_targets_present: Some(true),
+            scope_departures: Some(0),
+        }
+    }
+
+    // Clause 1: measured and clean leaves Pass reachable.
+    #[test]
+    fn scope_measured_clean_leaves_pass_reachable() {
+        assert_eq!(judge(&passing()), Verdict::Pass);
+    }
+
+    // Clause 2: one departure is a departure; there is no tolerance band.
+    #[test]
+    fn one_departure_is_a_departure_no_tolerance_band() {
+        let o = Observation {
+            scope_departures: Some(1),
+            ..passing()
+        };
+        let v = judge(&o);
+        assert_eq!(v, Verdict::OutOfScope);
+        assert!(!v.is_pass());
+    }
+
+    // Clause 3: the real case — the run that rewrote two crates and read PASS.
+    #[test]
+    fn fifty_one_departures_still_out_of_scope() {
+        let o = Observation {
+            scope_departures: Some(51),
+            ..passing()
+        };
+        assert_eq!(judge(&o), Verdict::OutOfScope);
+    }
+
+    // Clause 4, the clause that matters most: scope never assessed is not
+    // scope assessed clean. It must not read as Pass, and it has not earned
+    // OutOfScope either — a missing measurement decides nothing.
+    #[test]
+    fn scope_never_assessed_is_indeterminate_not_pass_not_out_of_scope() {
+        let o = Observation {
+            scope_departures: None,
+            ..passing()
+        };
+        assert_eq!(judge(&o), Verdict::Indeterminate);
+        assert_ne!(judge(&o), Verdict::Pass);
+        assert_ne!(judge(&o), Verdict::OutOfScope);
+    }
+
+    // Boundary: `None` scope alongside ANOTHER unmeasured field lands in
+    // `Indeterminate` by either route — the verdict is the same either way,
+    // so the test only pins that neither route reads as `Pass` or
+    // `OutOfScope`.
+    #[test]
+    fn unmeasured_scope_with_another_unmeasured_field_stays_indeterminate() {
+        let lines_unknown = Observation {
+            scope_departures: None,
+            lines_added: None,
+            ..passing()
+        };
+        let v = judge(&lines_unknown);
+        assert_eq!(v, Verdict::Indeterminate);
+        assert_ne!(v, Verdict::Pass);
+        assert_ne!(v, Verdict::OutOfScope);
+
+        let build_unknown = Observation {
+            scope_departures: None,
+            built: None,
+            ..passing()
+        };
+        assert_eq!(judge(&build_unknown), Verdict::Indeterminate);
+    }
+
+    // Boundary: an all-`None` Observation is `Indeterminate`, exactly as it
+    // was before the scope field existed; adding a field must not change
+    // that. `Default` is every field unmeasured.
+    #[test]
+    fn fully_unmeasured_observation_is_indeterminate() {
+        assert_eq!(judge(&Observation::default()), Verdict::Indeterminate);
+    }
+
+    // Clause 5: the code's own verdict outranks scope when the code is
+    // unusable.
+    #[test]
+    fn broken_build_outranks_scope() {
+        let o = Observation {
+            built: Some(false),
+            scope_departures: Some(51),
+            ..passing()
+        };
+        assert_eq!(judge(&o), Verdict::NoCompile);
+    }
+
+    // Clause 6: failing tests outrank scope.
+    #[test]
+    fn failing_tests_outrank_scope() {
+        let o = Observation {
+            tests_passed: Some(false),
+            scope_departures: Some(51),
+            ..passing()
+        };
+        assert_eq!(judge(&o), Verdict::TestsFail);
+    }
+
+    // Clause 7: an arm that wrote nothing to its target cannot have departed
+    // scope in any interesting sense, and NoOp is the more informative
+    // answer.
+    #[test]
+    fn noop_outranks_scope() {
+        let o = Observation {
+            lines_added: Some(0),
+            scope_departures: Some(51),
+            ..passing()
+        };
+        assert_eq!(judge(&o), Verdict::NoOp);
+    }
+
+    // Clause 8: the empty-suite trap still outranks scope.
+    #[test]
+    fn empty_suite_outranks_scope() {
+        let o = Observation {
+            tests_run: Some(0),
+            scope_departures: Some(51),
+            ..passing()
+        };
+        assert_eq!(judge(&o), Verdict::NoTests);
+    }
+
+    // The last member of the displacement family: WrongTarget describes the
+    // code too, and OutOfScope displaces Pass and NOTHING ELSE.
+    #[test]
+    fn wrong_target_outranks_scope() {
+        let o = Observation {
+            declared_targets_present: Some(false),
+            scope_departures: Some(51),
+            ..passing()
+        };
+        assert_eq!(judge(&o), Verdict::WrongTarget);
+    }
+
+    // Boundaries at N: the smallest departure, the real one, and the top of
+    // the range all read the same. The count is measured, not graded, and
+    // nothing is computed from it, so `u32::MAX` overflows nothing.
+    #[test]
+    fn departure_count_boundaries_all_read_out_of_scope() {
+        for n in [1u32, 51, u32::MAX] {
+            let o = Observation {
+                scope_departures: Some(n),
+                ..passing()
+            };
+            assert_eq!(judge(&o), Verdict::OutOfScope, "n = {n}");
+        }
+    }
+
+    // Two compositions of already-pinned behaviours. `lines_added: None`
+    // never reached `Pass` before scope existed, so with departures it still
+    // cannot reach `OutOfScope` — scope only takes the `Pass`'s place. And
+    // `declared_targets_present: None` never blocked `Pass`, so it does not
+    // block `OutOfScope` either.
+    #[test]
+    fn scope_takes_only_the_place_pass_would_have_taken() {
+        let lines_unknown = Observation {
+            lines_added: None,
+            scope_departures: Some(51),
+            ..passing()
+        };
+        assert_eq!(judge(&lines_unknown), Verdict::Indeterminate);
+
+        let target_unstated = Observation {
+            declared_targets_present: None,
+            scope_departures: Some(51),
+            ..passing()
+        };
+        assert_eq!(judge(&target_unstated), Verdict::OutOfScope);
+    }
+
+    // Clause 9, directly: OutOfScope is a failure, and the arm owns it.
+    #[test]
+    fn out_of_scope_is_not_a_pass_and_blames_the_arm() {
+        assert!(!Verdict::OutOfScope.is_pass());
+        assert!(Verdict::OutOfScope.blames_arm());
+    }
+
+    // The explanation names the deciding field and stays one line, like
+    // every other verdict's.
+    #[test]
+    fn out_of_scope_explanation_names_scope_and_stays_one_line() {
+        let o = Observation {
+            scope_departures: Some(51),
+            ..passing()
+        };
+        let text = explain(&o, Verdict::OutOfScope);
+        assert!(text.contains("scope_departures"), "{text}");
+        assert!(!text.contains('\n'), "{text}");
     }
 }
 
@@ -630,6 +910,7 @@ mod cx_gate_or_muse_spark {
             tests_run: Some(7),
             lines_added: Some(42),
             declared_targets_present: Some(true),
+            scope_departures: Some(0),
         }
     }
 
@@ -643,6 +924,7 @@ mod cx_gate_or_muse_spark {
             tests_run: Some(3),
             lines_added: Some(0),
             declared_targets_present: Some(true),
+            scope_departures: Some(0),
         };
         assert_eq!(judge(&blind_but_idle), Verdict::Indeterminate);
 
@@ -679,6 +961,7 @@ mod cx_gate_or_muse_spark {
             tests_run: Some(5),
             lines_added: Some(0),
             declared_targets_present: Some(false),
+            scope_departures: Some(0),
         };
         assert_eq!(judge(&idle_broken), Verdict::NoOp);
     }
@@ -701,6 +984,7 @@ mod cx_gate_or_muse_spark {
             tests_run: None,
             lines_added: Some(0),
             declared_targets_present: None,
+            scope_departures: None,
         };
         // Unmeasured core evidence takes precedence over the broken build.
         assert_eq!(judge(&broken), Verdict::Indeterminate);
@@ -711,6 +995,7 @@ mod cx_gate_or_muse_spark {
             tests_run: Some(4),
             lines_added: Some(9),
             declared_targets_present: None,
+            scope_departures: Some(0),
         };
         assert_eq!(judge(&broken_measured), Verdict::NoCompile);
     }
@@ -868,6 +1153,7 @@ mod cx_gate_or_muse_spark {
             tests_run: Some(0),
             lines_added: Some(0),
             declared_targets_present: Some(false),
+            scope_departures: Some(0),
         };
         assert_eq!(judge(&all_bad), Verdict::NoOp);
 
@@ -912,6 +1198,7 @@ mod cx_gate_or_muse_spark {
             Verdict::NoTests,
             Verdict::WrongTarget,
             Verdict::Indeterminate,
+            Verdict::OutOfScope,
         ] {
             assert!(!v.is_pass());
         }
@@ -927,6 +1214,7 @@ mod cx_gate_or_muse_spark {
             Verdict::TestsFail,
             Verdict::NoTests,
             Verdict::WrongTarget,
+            Verdict::OutOfScope,
         ] {
             assert!(v.blames_arm(), "{v:?} should blame the arm");
         }
@@ -958,6 +1246,7 @@ mod cx_gate_or_muse_spark {
                     tests_run: Some(2),
                     lines_added: Some(5),
                     declared_targets_present: None,
+                    scope_departures: Some(0),
                 },
                 Verdict::NoCompile,
                 "built",
@@ -1027,6 +1316,7 @@ mod cx_gate_or_muse_spark {
             tests_run: None,
             lines_added: None,
             declared_targets_present: Some(true),
+            scope_departures: Some(0),
         };
         assert_eq!(unmeasured(&o), vec!["built", "tests_run", "lines_added"]);
 
@@ -1036,6 +1326,7 @@ mod cx_gate_or_muse_spark {
             tests_run: None,
             lines_added: None,
             declared_targets_present: None,
+            scope_departures: None,
         };
         assert_eq!(
             unmeasured(&all_missing),
@@ -1044,7 +1335,8 @@ mod cx_gate_or_muse_spark {
                 "tests_passed",
                 "tests_run",
                 "lines_added",
-                "declared_targets_present"
+                "declared_targets_present",
+                "scope_departures"
             ]
         );
     }

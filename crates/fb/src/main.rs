@@ -47,6 +47,9 @@ enum Command {
         #[arg(long)] tests_run: Option<u32>,
         #[arg(long)] lines_added: Option<u32>,
         #[arg(long)] target_present: Option<bool>,
+        /// Files changed outside the declared deliverable. Omit to say NOT ASSESSED,
+        /// which yields Indeterminate -- scope unchecked is not scope found clean.
+        #[arg(long)] scope_departures: Option<u32>,
     },
     /// Assemble all evidence for a task -- objective metrics AND the critiques -- for the
     /// adjudicator to weigh. Does not pick a winner.
@@ -429,7 +432,7 @@ fn leaderboard(from: &str, show_excluded: bool, json: bool) -> i32 {
 fn main() {
     let cli = Cli::parse();
     let code = match cli.command {
-        Some(Command::Gate { built, tests_passed, tests_run, lines_added, target_present }) => {
+        Some(Command::Gate { built, tests_passed, tests_run, lines_added, target_present, scope_departures }) => {
             use farmerbob_core::gate::{judge, unmeasured, explain, Observation};
             let o = Observation {
                 built,
@@ -437,6 +440,7 @@ fn main() {
                 tests_run,
                 lines_added,
                 declared_targets_present: target_present,
+                scope_departures,
             };
             let v = judge(&o);
             if cli.json {

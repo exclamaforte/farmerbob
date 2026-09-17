@@ -240,7 +240,21 @@ fn registry_path() -> PathBuf {
 fn run_cmd_with_path(arm: &str, path: &Path) -> i32 {
     let measured = decide(arm, path);
     let verdict = match measured {
-        Measurement::Observed(eligible) => judge(&Observation { built: Some(true), tests_passed: Some(eligible), tests_run: Some(1), lines_added: Some(1), declared_targets_present: Some(true) }),
+        Measurement::Observed(eligible) => judge(&Observation {
+            built: Some(true),
+            tests_passed: Some(eligible),
+            tests_run: Some(1),
+            lines_added: Some(1),
+            declared_targets_present: Some(true),
+        // Synthetic observation: this call site uses `judge` as a boolean combinator,
+        // not to score a run, so there is no worktree and no scope to depart from.
+        // Some(0) rather than None DELIBERATELY -- None means "scope was not assessed"
+        // and yields Indeterminate, which here would turn a correct answer into a
+        // refusal to answer. That these sites exist at all is the N-of-N finding from
+        // port-eligible: my spec told every arm to route pass/fail through gate::judge,
+        // and eligibility is not a run verdict.
+            scope_departures: Some(0),
+        }),
         Measurement::Missing(reason) => {
             eprintln!("{arm}: {}", match reason { farmerbob_core::measurement::Absent::InstrumentFailed { reason } => reason, _ => "eligibility could not be measured".to_string() });
             Verdict::Indeterminate

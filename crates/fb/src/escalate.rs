@@ -348,6 +348,8 @@ mod tests {
             tests_run: Some(0),
             lines_added: Some(1),
             declared_targets_present: Some(true),
+            // Pre-existing test of another axis; scope is not what it measures.
+            scope_departures: Some(0),
         };
         assert_eq!(
             farmerbob_core::gate::judge(&observation),

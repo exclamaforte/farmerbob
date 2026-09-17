@@ -1,0 +1,57 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. Four arms, one viable.
+
+  codex-luna       PASS  +2820 lines  SCOPE: 51 departures -- disqualified
+  glm-53-flash     PASS   +300 lines  scope clean, 51 tests (base 36)
+  ifm-k2-horizon   refused, 11s -- OpenRouter daily token cap
+  ifm-k2-think     refused,  8s -- same
+
+CODEX-LUNA DEPARTED SCOPE ON THE SCOPE TASK. 51 files, on the task whose entire purpose is to
+make 51 departures stop reading PASS. Third consecutive: 51 on refusal-norm, 52 on liveness-cut,
+51 here. It is a capable implementer -- 2780, 2941 and 2820 lines that build and test -- and it
+does not observe the one instruction every spec states in the same words.
+
+Unopposed, so I probed it rather than counting its tests. All 12 spec clauses pass, including
+the two that carry the weight: Some(1) is already OutOfScope with no tolerance band, and
+scope_departures: None returns Indeterminate rather than Pass. Scope never assessed is not scope
+found clean, which is the defect this task existed to close.
+
+The critique, codex-luna on glm-53-flash: NO MATERIAL DEFECTS, plus a judgement that the new
+variant forces a caller migration at score.rs:62 and defects.rs:434, correctly noting the spec
+restricts changes to farmerbob-core and so this is not a defect in the patch. That is a good
+critique -- it read the spec, applied it, and named the exact sites. Worth recording given the
+same critic fabricated its claims on liveness-cut two hours ago: the failure is not constant, so
+the fix is verification per claim, not distrust per arm.
+
+I MIGRATED THE CALLERS MYSELF, which the spec put outside the arm's reach. Seven sites, and the
+distinction between them is the interesting part:
+
+  score.rs is the REAL one and now passes `scope.value().map(|sc| sc.departures.len())`. Because
+  `scope` is a Measurement, an unassessed worktree arrives as None and yields Indeterminate --
+  the capability is wired to its evidence, not merely present.
+
+  eligible.rs, critique.rs and defects.rs pass Some(0), deliberately. These are synthetic
+  observations that use `judge` as a boolean combinator, with no worktree and no scope to depart
+  from. None would mean "not assessed" and turn a correct answer into a refusal to answer; in
+  eligible.rs it would have made every arm ineligible. That these sites exist at all is the
+  N-of-N finding from port-eligible, where my spec told every arm to route pass/fail through
+  gate::judge and eligibility is not a run verdict. The comment at each site says so.
+
+  defects.rs's verdict match gets an explicit OutOfScope arm rather than a wildcard. A wildcard
+  absorbs the next variant silently, which is how a new state inherits an old one's behaviour.
+
+TWO THINGS I GOT WRONG AND CAUGHT. `cargo build --workspace` succeeded while six #[cfg(test)]
+call sites were still broken -- build does not compile tests, so "it builds" was not the check I
+thought I was running. And `fb eligible` is differential-verified, so changing its Observation
+risked silently breaking a contract proven earlier today; re-ran it across all 25 registry arms,
+0 divergences.
+
+Verified end to end through the CLI, which is the only proof the whole path is connected:
+  --scope-departures 51 -> OutOfScope, exit 1
+  --scope-departures 0  -> Pass,       exit 0
+  flag omitted          -> Indeterminate, "unmeasured field(s): ... scope_departures"
+
+1158 workspace tests, clippy 9 (unchanged).
+
+Still open: the objective table has no scope column, so a departure is visible in the verdict now
+but still not in the board a reader skims.
