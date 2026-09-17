@@ -207,6 +207,15 @@ fn evidence(task: &str) -> Vec<Evidence> {
                 .get("crates_touched")
                 .and_then(|v| v.as_u64())
                 .map(|n| n as u32),
+            // The measurement ScopeDiscipline now ranks on. `fb score` writes this from
+            // farmerbob_core::scope, and it is absent -- None, not 0 -- when the worktree
+            // could not be assessed. None must stay None all the way here: an unassessed
+            // run has not been shown to have stayed in scope, and mapping it to 0 would
+            // hand it the criterion it never earned.
+            scope_departures: r
+                .get("scope_departures")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32),
             tests,
             lines: r.get("lines").and_then(|v| v.as_u64()).map(|n| n as u32),
             cost_usd: None,

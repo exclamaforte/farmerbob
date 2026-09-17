@@ -1,0 +1,47 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. Four arms, three PASS, all scope clean.
+
+  codex-luna      +96 lines  24 tests
+  claude-sonnet  +119 lines  23 tests
+  glm-53-flash   +218 lines  29 tests
+  ifm-k2-think   refused, 9s -- OpenRouter daily token cap
+
+The last of the three proxy metrics from farmerbob-2jc is retired. Criterion::ScopeDiscipline
+ranked on crates_touched -- "the task names one; more is scope creep" -- which penalised work the
+task REQUIRED and said nothing about the rule the harness states and enforces. It now ranks on
+scope_departures, from farmerbob_core::scope, the same measurement gate::judge already gates on.
+
+All three arms scored 5 of 5 on the probe, with byte-identical rulings:
+
+    0 vs 3 departures      Winner { arm: "a", on: ScopeDiscipline, margin: 3.0 }
+    crates 1 vs 9          Undecided { tied: ["a","b"], next: [] }        -- the regression
+    Some(0) vs None        Undecided { tied: ["a","b"], next: [ScopeDiscipline] }
+
+That third line is the one worth keeping. An unmeasured scope does not win the criterion and does
+not lose it; it is reported as a criterion that could not rank, which is exactly the treatment
+Conformance and Clippy already give an absent value. The spec refused to let the arms invent a
+rule here and told them to go read what the module already does. All three did.
+
+THE CRITIQUE FILED THE SPEC'S OWN INSTRUCTION AS A DEFECT. codex-luna on glm-53-flash, both
+claims: the `fb` crate will not build because adjudicate_cmd.rs constructs Evidence without the
+new field, and the CLI never supplies scope_departures. Both true. Neither is a defect. The spec
+says, in those words:
+
+    The crates/fb build WILL break because callers construct Evidence without the new field;
+    that is expected, it is not yours to fix, and reaching into another crate to silence it is
+    the scope departure this very criterion measures.
+
+Critics are given the task spec -- I have read the prompt files. And this same critic got the
+identical situation RIGHT on scope-gate a few hours earlier, writing that the caller migration
+"is therefore not a defect in this patch's scoped behavior". Same arm, same shape, opposite
+reading, hours apart. Its critiques are useful often enough to keep, and inconsistent enough that
+verifying each claim remains the only safe policy.
+
+I MIGRATED THE CALLER, as the spec intended, and the comment there carries the rule: score.json's
+scope_departures is absent -- None, not 0 -- when a worktree could not be assessed, and mapping
+it to 0 would hand an arm a criterion it never earned.
+
+Checked before blaming my own merge: `fb brief refusal-norm` prints "no candidate cleared the
+gate", and it printed that before this change too. Pre-existing, not a regression.
+
+1258 tests, clippy 9.

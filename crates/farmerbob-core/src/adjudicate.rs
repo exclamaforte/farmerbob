@@ -14,7 +14,11 @@ pub struct Evidence {
     pub survival: Option<f64>,
     /// Number of clippy diagnostics.
     pub clippy: Option<u32>,
-    /// Crates modified. The task names one; more is scope creep.
+    /// Crates modified. RECORDED, never RANKED: no [`Criterion`] reads this any more,
+    /// because counting crates penalised work the task itself demanded — a deliverable
+    /// spanning two crates is obedience, not scope creep. Scope discipline ranks on
+    /// [`Evidence::scope_departures`]. The field is still emitted in score records and
+    /// read by reports.
     pub crates_touched: Option<u32>,
     /// Number of tests.
     pub tests: Option<u32>,
@@ -30,6 +34,10 @@ pub struct Evidence {
     /// from such a suite is not a measure of depth, it is a measure of how specifically the
     /// author wrote to their own implementation -- so TestDepth must not reward it.
     pub suite_overfitted: Option<bool>,
+    /// Paths changed outside the declared deliverable, from [`crate::scope::assess`].
+    /// `Some(0)` means measured and clean. `None` means scope was never assessed, which
+    /// is NOT the same as clean.
+    pub scope_departures: Option<u32>,
 }
 
 /// Which measurement decided it, in the rubric's order.
@@ -37,7 +45,11 @@ pub struct Evidence {
 pub enum Criterion {
     /// Hidden-suite conformance.
     Conformance,
-    /// Number of crates touched.
+    /// Paths changed outside the declared deliverable, per [`crate::scope::assess`].
+    /// Fewer is better: the rule the harness states and the gate enforces is that a run
+    /// changes the ONE file the task declares and nothing beyond the allowances. Replaces
+    /// the retired "number of crates touched" proxy, which scored the arm that skipped
+    /// half of a two-crate deliverable as the more disciplined one.
     ScopeDiscipline,
     /// Injected-defect detection rate.
     DefectSensitivity,
@@ -298,7 +310,7 @@ pub fn missing_evidence(candidates: &[Evidence]) -> Vec<Criterion> {
 fn value(candidate: &Evidence, criterion: Criterion) -> Option<f64> {
     let value = match criterion {
         Criterion::Conformance => candidate.conformance,
-        Criterion::ScopeDiscipline => candidate.crates_touched.map(f64::from),
+        Criterion::ScopeDiscipline => candidate.scope_departures.map(f64::from),
         Criterion::DefectSensitivity => candidate.defect_sensitivity,
         Criterion::Survival => candidate.survival,
         Criterion::Clippy => candidate.clippy.map(f64::from),
@@ -336,6 +348,7 @@ mod tests {
             lines: Some(10),
             cost_usd: Some(1.0),
             suite_overfitted: None,
+            scope_departures: Some(0),
         }
     }
 
@@ -353,13 +366,17 @@ mod tests {
         );
     }
 
+    // Changed 2026-09-17: this ruling used to be decided by crates_touched, and
+    // ScopeDiscipline no longer reads that field -- it ranks on scope_departures. The
+    // test's intent (scope outranks a better defect sensitivity) is preserved on the
+    // field the criterion now reads.
     #[test]
     fn scope_discipline_beats_a_better_defect_sensitivity() {
         let mut narrow = evidence("narrow");
-        narrow.crates_touched = Some(1);
+        narrow.scope_departures = Some(0);
         narrow.defect_sensitivity = Some(0.1);
         let mut broad = evidence("broad");
-        broad.crates_touched = Some(2);
+        broad.scope_departures = Some(3);
         broad.defect_sensitivity = Some(0.9);
         assert!(
             matches!(adjudicate(&[narrow, broad], 0.001), Ruling::Winner {
@@ -452,6 +469,7 @@ mod test_depth_fallback {
             lines: Some(lines),
             cost_usd: None,
             suite_overfitted: None,
+            scope_departures: Some(0),
         }
     }
 
@@ -518,6 +536,7 @@ mod overfitted_suites {
             lines: Some(lines),
             cost_usd: None,
             suite_overfitted: Some(overfitted),
+            scope_departures: Some(0),
         }
     }
 
@@ -573,6 +592,7 @@ mod cost_never_decides {
             lines: Some(10),
             cost_usd: cost,
             suite_overfitted: None,
+            scope_departures: Some(0),
         }
     }
 
@@ -621,6 +641,7 @@ mod never_measured_is_visible {
             lines: Some(10),
             cost_usd: None,
             suite_overfitted: None,
+            scope_departures: Some(0),
         }
     }
 
@@ -668,5 +689,200 @@ mod never_measured_is_visible {
     #[test]
     fn an_empty_field_reports_no_gaps() {
         assert!(evidence_gaps(&[]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod scope_departures_ranking {
+    //! ScopeDiscipline ranks on paths changed outside the declared deliverable, per
+    //! [`crate::scope::assess`] — the rule the harness actually states: change the ONE
+    //! file the task declares, and nothing else. The regression pinned here is
+    //! crates_touched silently deciding again, and measured-clean being mistaken for
+    //! never-measured.
+
+    use super::*;
+
+    fn cand(arm: &str, departures: Option<u32>) -> Evidence {
+        Evidence {
+            arm: arm.into(),
+            conformance: Some(1.0),
+            defect_sensitivity: Some(0.5),
+            survival: Some(0.5),
+            clippy: Some(0),
+            crates_touched: Some(1),
+            tests: Some(1),
+            lines: Some(10),
+            cost_usd: None,
+            suite_overfitted: None,
+            scope_departures: departures,
+        }
+    }
+
+    /// Fewer departures wins on this criterion.
+    #[test]
+    fn fewer_departures_wins() {
+        let clean = cand("clean", Some(0));
+        let strayed = cand("strayed", Some(3));
+        assert!(
+            matches!(adjudicate(&[clean, strayed], 0.001), Ruling::Winner {
+            arm, on: Criterion::ScopeDiscipline, ..
+        } if arm == "clean")
+        );
+    }
+
+    /// The regression this task exists for: candidates identical but for
+    /// crates_touched produce no winner on ScopeDiscipline. The field ties on every
+    /// measured criterion and is undecided — crates_touched is recorded, never ranked.
+    #[test]
+    fn crates_touched_alone_never_decides_the_ruling() {
+        let mut one = cand("one", Some(0));
+        one.crates_touched = Some(1);
+        let mut nine = cand("nine", Some(0));
+        nine.crates_touched = Some(9);
+        match adjudicate(&[one, nine], 0.001) {
+            Ruling::Winner { on, .. } => {
+                panic!("a field differing only in crates touched was decided on {on:?}")
+            }
+            Ruling::Undecided { tied, next } => {
+                assert_eq!(tied.len(), 2, "both candidates stay in contention");
+                assert!(
+                    !next.contains(&Criterion::ScopeDiscipline),
+                    "scope was measured for both and tied; it was not skipped: {next:?}"
+                );
+            }
+            Ruling::NoCandidate => panic!("both candidates are eligible"),
+        }
+    }
+
+    /// And with crates_touched neutered, the adjudication falls through to the next
+    /// criterion: the arm that touched two crates because the task demanded it beats the
+    /// one that quietly skipped half the job, and it is never decided on crate count.
+    #[test]
+    fn crates_touched_differences_fall_through_to_the_next_criterion() {
+        let mut obeyed = cand("obeyed", Some(0));
+        obeyed.crates_touched = Some(2);
+        obeyed.defect_sensitivity = Some(0.9);
+        let mut skipped = cand("skipped", Some(0));
+        skipped.crates_touched = Some(1);
+        skipped.defect_sensitivity = Some(0.1);
+        assert!(
+            matches!(adjudicate(&[obeyed, skipped], 0.001), Ruling::Winner {
+            arm, on: Criterion::DefectSensitivity, ..
+        } if arm == "obeyed")
+        );
+    }
+
+    /// `None` is handled exactly as every other criterion here handles an unmeasured
+    /// value: the criterion is skipped for the whole field and reported in `next`. It is
+    /// not read as zero, not as worst, not as clean.
+    #[test]
+    fn never_measured_skips_the_criterion_and_lists_it_next() {
+        let field = [cand("a", None), cand("b", None)];
+        match adjudicate(&field, 0.001) {
+            Ruling::Undecided { next, .. } => {
+                assert!(next.contains(&Criterion::ScopeDiscipline), "{next:?}");
+            }
+            other => panic!("expected Undecided, got {other:?}"),
+        }
+    }
+
+    /// Stated boundary: the module's rule is ALL — a criterion applies only when every
+    /// contender has a value. One measured candidate among unmeasured ones still skips
+    /// the criterion; the lone measurement is not extrapolated over the others.
+    #[test]
+    fn one_measured_among_unmeasured_still_skips() {
+        let measured = cand("measured", Some(0));
+        let mut low = cand("low", None);
+        low.defect_sensitivity = Some(0.1);
+        let mut high = cand("high", None);
+        high.defect_sensitivity = Some(0.9);
+        // If None were read as a number, "measured" (0 departures) would win right here
+        // on scope; the fall-through to DefectSensitivity proves it was skipped.
+        assert!(
+            matches!(adjudicate(&[measured, low, high], 0.001), Ruling::Winner {
+            arm, on: Criterion::DefectSensitivity, ..
+        } if arm == "high")
+        );
+    }
+
+    /// `Some(0)` and `None` are different facts: measured-clean participates in the
+    /// ranking (see `fewer_departures_wins`), never-measured does not — so a field
+    /// mixing them cannot be decided on this criterion, and the criterion is reported
+    /// as unmeasured rather than treated as a tie.
+    #[test]
+    fn measured_clean_is_not_equal_to_never_measured() {
+        let field = [cand("clean", Some(0)), cand("unassessed", None)];
+        match adjudicate(&field, 0.001) {
+            Ruling::Winner { on, .. } => {
+                panic!("a field with unmeasured scope was decided on {on:?}")
+            }
+            Ruling::Undecided { next, .. } => {
+                assert!(next.contains(&Criterion::ScopeDiscipline), "{next:?}");
+            }
+            Ruling::NoCandidate => panic!("both candidates are eligible"),
+        }
+    }
+
+    /// Boundary at zero: every candidate measured and clean means no leader on this
+    /// criterion, and the field falls through to the next.
+    #[test]
+    fn all_measured_clean_has_no_leader_here() {
+        let field = [cand("a", Some(0)), cand("b", Some(0))];
+        match adjudicate(&field, 0.001) {
+            Ruling::Winner {
+                on: Criterion::ScopeDiscipline,
+                ..
+            } => {
+                panic!("an all-clean field cannot produce a scope winner")
+            }
+            Ruling::Undecided { next, .. } => {
+                assert!(!next.contains(&Criterion::ScopeDiscipline), "{next:?}");
+            }
+            other => panic!("expected Undecided, got {other:?}"),
+        }
+    }
+
+    /// Boundary at u32::MAX: conversion for comparison must not overflow or wrap, and
+    /// the worst possible measured field still loses to a measured-clean one.
+    #[test]
+    fn u32_max_does_not_overflow_the_comparison() {
+        let clean = cand("clean", Some(0));
+        let worst = cand("worst", Some(u32::MAX));
+        assert!(
+            matches!(adjudicate(&[clean, worst], 0.001), Ruling::Winner {
+            arm, on: Criterion::ScopeDiscipline, ..
+        } if arm == "clean")
+        );
+    }
+
+    /// A single candidate wins on Conformance with margin 1.0 regardless of its scope
+    /// evidence — even unmeasured — exactly as before this criterion changed what it
+    /// reads.
+    #[test]
+    fn single_candidate_ruling_is_unchanged() {
+        let lone = cand("lone", None);
+        match adjudicate(&[lone], 0.001) {
+            Ruling::Winner { arm, on, margin } => {
+                assert_eq!(arm, "lone");
+                assert_eq!(on, Criterion::Conformance);
+                assert_eq!(margin, 1.0);
+            }
+            other => panic!("expected the single-candidate ruling, got {other:?}"),
+        }
+    }
+
+    /// The shared unmeasured rule reaches the gap report too: scope measured for nobody
+    /// is `Absent`, for some but not all is `Partial`, for all is no gap at all —
+    /// "never assessed" stays visible, exactly as for every other criterion.
+    #[test]
+    fn scope_gaps_are_reported_like_any_criterion() {
+        let all_measured = [cand("a", Some(0)), cand("b", Some(2))];
+        assert!(evidence_gaps(&all_measured).is_empty());
+
+        let some_missing = [cand("a", Some(0)), cand("b", None)];
+        assert!(evidence_gaps(&some_missing).contains(&Gap::Partial(Criterion::ScopeDiscipline)));
+
+        let none_measured = [cand("a", None), cand("b", None)];
+        assert!(evidence_gaps(&none_measured).contains(&Gap::Absent(Criterion::ScopeDiscipline)));
     }
 }
