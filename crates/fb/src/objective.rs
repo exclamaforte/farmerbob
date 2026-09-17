@@ -53,6 +53,23 @@ const LIMIT_PATTERNS: &[&str] = &[
     // as a failure of the model. The default is the dangerous one, and the set of ways a
     // provider can say no is open. (farmerbob-2ve -- superset status on enumerated lists.)
     "error: key limit exceeded",
+    // OpenRouter-hosted IFM routes, when the account's DAILY TOKEN allowance is spent:
+    //   Error: Token limit exceeded: Tokens per day limit reached (10173826/10000000)
+    // The fourth distinct refusal string this project has had to learn, each one discovered
+    // the same way: by finding runs already scored as arm failures. See
+    // `launcher_refused_before_the_agent_ran` below for the rule that does not require
+    // guessing the fifth.
+    "error: token limit exceeded",
+];
+
+/// Keywords that mark an `error:` line as a REFUSAL rather than a harness fault.
+///
+/// Only consulted once we already know the launcher errored before the agent produced
+/// anything, so this list decides which bucket a known non-arm-result lands in -- never
+/// whether it is one. Getting a word wrong here mislabels a refusal as infrastructure; it
+/// cannot put the blame back on the model.
+const REFUSAL_WORDS: &[&str] = &[
+    "limit", "quota", "rate", "token", "429", "billing", "credit", "spend", "balance",
 ];
 
 /// Patterns that, appearing in the head of a run's log, mean the harness itself
@@ -293,6 +310,14 @@ fn classify_outcome(
     if quota_blocked(rec, read_log) {
         return "quota_limited".to_string();
     }
+    // The shape rule, after the explicit patterns so a known string keeps its exact label.
+    if launcher_refused_before_the_agent_ran(rec, read_log) {
+        return if head_names_a_refusal(rec, read_log) {
+            "quota_limited".to_string()
+        } else {
+            "infrastructure".to_string()
+        };
+    }
     if permission_killed(rec, read_log) || harness_failed(rec, read_log) {
         return "infrastructure".to_string();
     }
@@ -345,6 +370,44 @@ fn permission_killed(rec: &Value, read_log: &dyn Fn(&Path) -> Option<String>) ->
 fn log_head(rec: &Value, read_log: &dyn Fn(&Path) -> Option<String>) -> Option<String> {
     let path = rec.get("log").and_then(Value::as_str)?;
     read_log(Path::new(path))
+}
+
+/// True when the launcher itself errored in the head of the log.
+///
+/// The pattern lists above are an OPEN set pretending to be a closed one. Four distinct
+/// refusal strings have been learned so far -- individual quota, rate limit, key limit, token
+/// limit -- and every one was discovered by finding runs that had already been scored as the
+/// model producing nothing. Enumerating the fifth in advance is not possible.
+///
+/// This is the rule that does not need it. A launcher that refuses says so in its banner
+/// region, on a line of its own beginning `error:`, and the agent never runs. So: an `error:`
+/// line in the head, together with a non-zero exit and ZERO lines written, means the run was
+/// refused before it began. All three are required. The line alone is not enough -- an agent
+/// can legitimately print an error while working -- and the zero-lines condition is what keeps
+/// a genuinely failing arm from being excused.
+fn launcher_refused_before_the_agent_ran(rec: &Value, read_log: &dyn Fn(&Path) -> Option<String>) -> bool {
+    let rc = rec.get("rc").and_then(Value::as_i64).unwrap_or(0);
+    let lines = rec.get("lines_added").and_then(Value::as_i64).unwrap_or(-1);
+    if rc == 0 || lines != 0 {
+        return false;
+    }
+    let Some(text) = log_head(rec, read_log) else {
+        return false;
+    };
+    text.lines()
+        .take(6)
+        .any(|l| strip_ansi(l).trim().to_lowercase().starts_with("error:"))
+}
+
+/// Whether a refusal line names a quota rather than a broken harness.
+fn head_names_a_refusal(rec: &Value, read_log: &dyn Fn(&Path) -> Option<String>) -> bool {
+    let Some(text) = log_head(rec, read_log) else {
+        return false;
+    };
+    text.lines().take(6).any(|l| {
+        let f = strip_ansi(l).trim().to_lowercase();
+        f.starts_with("error:") && REFUSAL_WORDS.iter().any(|w| f.contains(w))
+    })
 }
 
 /// True when any of the first `n` lines BEGINS with one of `patterns`, after ANSI stripping,
@@ -800,6 +863,56 @@ mod tests {
         let reader = |_: &Path| Some(log.to_string());
         let out = classify_outcome(&rec, Some(&json!("PASS")), &reader);
         assert_eq!(out, "quota_limited");
+    }
+
+    /// The fourth refusal string, verbatim from scope-gate--ifm-k2-think.log, 2026-09-17.
+    #[test]
+    fn a_daily_token_cap_is_a_refusal() {
+        let log = "\u{1b}[0m\n> build IFM/K2-Think-v2\n\u{1b}[0m\n\
+                   \u{1b}[91m\u{1b}[1mError: \u{1b}[0mToken limit exceeded: Tokens per day limit reached (10173826/10000000)\n";
+        let rec = json!({"log": "x.log", "verdict": "NO-OP", "rc": 1, "lines_added": 0});
+        let reader = |_: &Path| Some(log.to_string());
+        assert_eq!(classify_outcome(&rec, Some(&json!("NO-OP")), &reader), "quota_limited");
+    }
+
+    /// The shape rule must fire on a refusal string NOBODY has enumerated. This is the whole
+    /// point: the fifth string will arrive and no list will contain it.
+    #[test]
+    fn an_unknown_refusal_string_is_still_not_an_arm_result() {
+        let log = "\u{1b}[0m\n> build some/model\n\
+                   Error: Monthly spend ceiling reached for this workspace.\n";
+        let rec = json!({"log": "x.log", "verdict": "NO-OP", "rc": 1, "lines_added": 0});
+        let reader = |_: &Path| Some(log.to_string());
+        // NOT asserting which bucket. "Monthly spend ceiling" matches no REFUSAL_WORD, so it
+        // lands in infrastructure rather than quota_limited -- and that is the designed
+        // behaviour: the word list picks the bucket, never whether this is an arm result.
+        // The property that matters, and the only one this rule promises, is that the model
+        // is not blamed for a refusal nobody enumerated.
+        assert_ne!(
+            classify_outcome(&rec, Some(&json!("NO-OP")), &reader),
+            "arm_result",
+            "an unenumerated refusal must not be charged to the model"
+        );
+    }
+
+    /// All three conditions are required. An arm that WROTE code and then errored is a real
+    /// arm result, however loudly it complained.
+    #[test]
+    fn an_arm_that_wrote_lines_is_never_excused_by_the_shape_rule() {
+        let log = "Error: something went wrong while I was working\n";
+        let rec = json!({"log": "x.log", "verdict": "PASS", "rc": 1, "lines_added": 240});
+        let reader = |_: &Path| Some(log.to_string());
+        assert_ne!(classify_outcome(&rec, Some(&json!("PASS")), &reader), "quota_limited");
+    }
+
+    /// A clean exit is not a refusal even with zero lines: that is an ordinary NO-OP, the arm
+    /// ran and produced nothing, and it must keep counting against the arm.
+    #[test]
+    fn a_genuine_no_op_with_rc_zero_stays_an_arm_result() {
+        let log = "\u{1b}[0m\n> build x\nError: nothing\n";
+        let rec = json!({"log": "x.log", "verdict": "NO-OP", "rc": 0, "lines_added": 0});
+        let reader = |_: &Path| Some(log.to_string());
+        assert_eq!(classify_outcome(&rec, Some(&json!("NO-OP")), &reader), "arm_result");
     }
 
     /// rc=127 is the harness failing to launch, never the model failing to work.
