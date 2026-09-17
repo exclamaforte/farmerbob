@@ -2,6 +2,7 @@
 # fb-status — everything the orchestrator needs to decide what to do next, in one call.
 # Written because two hours were lost to an idle machine while finished results sat unread.
 set -uo pipefail
+. /home/gabe/Documents/farmerbob/fb-target.sh
 cd /home/gabe/Documents/farmerbob
 LOGS="$HOME/.local/share/farmerbob/logs"
 
@@ -19,12 +20,23 @@ for s in "$LOGS"/*.score.json; do
   [ -f "$s" ] || continue
   t=$(basename "$s" .score.json)
   # a task is merged when its declared file exists on master
-  f=$(grep -ohE '<!-- fb:creates [^ ]+ -->' ".fb/prompts/$t.md" 2>/dev/null | awk '{print $3}' | head -1)
+  f=$(fb_target "$t"); verb=$(fb_target_verb "$t")
   # A task is not adjudicable until the SUBJECTIVE tier has run. The critique/promote/prove
   # stages silently stopped happening for 15 tasks when the parallel wave path replaced
   # `fb trial`, and nothing reported their absence because the objective numbers kept
   # flowing. A missing stage must be visible here.  (bead farmerbob-k9f)
-  if [ -n "$f" ] && [ -f "$f" ]; then state="MERGED"
+  #
+  # An explicit adjudication record wins over any inference. A task can be finished WITHOUT
+  # a merge -- probe's twelve candidates were all Indeterminate because git had lost their
+  # worktrees, so there was no winner to merge and never will be. Inferring state from the
+  # filesystem had no way to say that, and the board went on demanding adjudication of a
+  # task already adjudicated.  (bead farmerbob-13p)
+  if [ -f ".fb/adjudicated/$t" ]; then
+    state="$(head -1 ".fb/adjudicated/$t")"
+  # "the declared file exists" is evidence of a merge only for a `creates` task. For a
+  # `modifies` task the file exists BEFORE any work is done, so existence proves nothing
+  # and would report MERGED for every unstarted edit task.
+  elif [ "$verb" = creates ] && [ -n "$f" ] && [ -f "$f" ]; then state="MERGED"
   elif [ ! -f "$LOGS/$t.claims.json" ]; then state="** NEEDS CRITIQUE **"
   else state="** NEEDS ADJUDICATION **"; fi
   n=$(python3 -c "import json;d=json.load(open('$s'));print(sum(1 for r in d if r.get('verdict')=='PASS'))" 2>/dev/null || echo '?')

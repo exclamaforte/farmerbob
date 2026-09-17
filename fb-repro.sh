@@ -11,13 +11,14 @@
 # twenty hand-run copies of this same pipeline accumulated 4.6GB -- starving the machine that
 # fb-admit was carefully budgeting, with nothing in its arithmetic able to see why.
 set -uo pipefail
+. /home/gabe/Documents/farmerbob/fb-target.sh
 export PATH="$HOME/.cargo/bin:$PATH"
 cd /home/gabe/Documents/farmerbob
 
 T="${1:?task}"; IMPL="${2:?impl arm}"; SUITE="${3:?suite arm}"
 WT="$HOME/.local/share/farmerbob/worktrees"
-REL=$(grep -ohE '<!-- fb:creates [^ ]+ -->' ".fb/prompts/$T.md" 2>/dev/null | awk '{print $3}' | head -1)
-[ -n "$REL" ] || { echo "$T: no fb:creates target in its spec"; exit 2; }
+REL=$(fb_target "$T")
+[ -n "$REL" ] || { fb_target_why "$T"; exit 2; }
 CRATE=$(awk -F/ '{print $2}' <<< "$REL")
 
 for a in "$IMPL" "$SUITE"; do

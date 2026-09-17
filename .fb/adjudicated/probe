@@ -1,0 +1,6 @@
+VOID (evidence destroyed)
+Adjudicated 2026-09-16. No winner and none possible: all twelve candidates scored
+INDETERMINATE because git lost their worktree admin directories (farmerbob-13p), so the
+diffs that would rank them no longer exist. Three critics did find a live trap in master's
+own ids.rs -- Default returning a fresh random UUID -- which was escalated and credited.
+See commit 6149e01.

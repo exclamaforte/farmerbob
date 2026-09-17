@@ -10,6 +10,7 @@
 # nothing else is running. It never adjudicates, never merges, never commits -- those need
 # judgement. It just refuses to let the box be idle while there is queued work.
 set -uo pipefail
+. /home/gabe/Documents/farmerbob/fb-target.sh
 cd /home/gabe/Documents/farmerbob
 Q=.fb/queue; DONE=$Q/dispatched
 LOG="$HOME/.local/share/farmerbob/logs/autopilot.log"
@@ -54,7 +55,7 @@ while :; do
                 [ -f "$sc" ] || continue
                 t=$(basename "$sc" .score.json)
                 [ -f .fb/prompts/"$t".md ] || continue
-                f=$(grep -ohE '<!-- fb:creates [^ ]+ -->' .fb/prompts/"$t".md 2>/dev/null | awk '{print $3}' | head -1)
+                f=$(fb_target "$t")
                 [ -n "$f" ] || continue
                 [ -f "$f" ] && continue
                 [ -s "$HOME/.local/share/farmerbob/logs/$t.claims.json" ] && continue

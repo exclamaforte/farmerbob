@@ -11,6 +11,7 @@
 # not account for them, so running several tasks' worth concurrently alongside a live wave
 # is how the box gets oversubscribed.
 set -uo pipefail
+. /home/gabe/Documents/farmerbob/fb-target.sh
 cd /home/gabe/Documents/farmerbob
 LOGS="$HOME/.local/share/farmerbob/logs"
 export FB_SLOTS=${FB_SLOTS:-3}
@@ -21,8 +22,8 @@ defect-sens store-mig cost-attr corpus divergence adjudicate cli-tree}"
 for t in $TASKS; do
   [ -f ".fb/prompts/$t.md" ] || { echo "skip $t: no spec"; continue; }
   if [ -s "$LOGS/$t.claims.json" ]; then echo "skip $t: already has claims"; continue; fi
-  tgt=$(grep -ohE '<!-- fb:creates [^ ]+ -->' ".fb/prompts/$t.md" | awk '{print $3}' | head -1)
-  [ -n "$tgt" ] || { echo "skip $t: no fb:creates target"; continue; }
+  tgt=$(fb_target "$t")
+  [ -n "$tgt" ] || { fb_target_why "$t"; continue; }
   crate=$(awk -F/ '{print $2}' <<< "$tgt")
   echo "======== $t ($crate, $tgt)"
   bash ./fb-critique.sh "$t" "$crate" "$tgt" 2>&1 | sed 's/^/  /'

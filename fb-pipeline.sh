@@ -10,6 +10,7 @@
 #
 #   fb-pipeline.sh <task> <crate> <target-rel>
 set -uo pipefail
+. /home/gabe/Documents/farmerbob/fb-target.sh
 cd /home/gabe/Documents/farmerbob
 T="${1:?task}"; CRATE="${2:-farmerbob-core}"; TARGET="${3:-}"
 LOGS="$HOME/.local/share/farmerbob/logs"
@@ -20,21 +21,8 @@ LOGS="$HOME/.local/share/farmerbob/logs"
 # gpu-lease were unpipelineable from the day they were written and sat in NEEDS CRITIQUE
 # indefinitely, with the same message as a task whose spec is simply missing. One reader,
 # two vocabularies.  (bead farmerbob-z1p)
-if [ -z "$TARGET" ]; then
-  TARGET=$(grep -ohE '<!-- fb:(creates|modifies) [^ ]+ -->' ".fb/prompts/$T.md" 2>/dev/null \
-           | awk '{print $3}' | head -1)
-fi
-if [ -z "$TARGET" ]; then
-  # Distinguish the two ways this fails. "The spec declares no target" is a defect in the
-  # spec and I can fix it; "there is no spec" means the task was never written. Reporting
-  # both as one message is how these five stayed invisible.
-  if [ -f ".fb/prompts/$T.md" ]; then
-    echo "$T: spec exists but declares no <!-- fb:creates|fb:modifies PATH --> target"
-  else
-    echo "$T: no spec at .fb/prompts/$T.md"
-  fi
-  exit 2
-fi
+[ -n "$TARGET" ] || TARGET=$(fb_target "$T")
+[ -n "$TARGET" ] || { fb_target_why "$T"; exit 2; }
 echo "== pipeline $T ($CRATE, $TARGET)"
 
 # The set of gate-passing candidates, as a stable fingerprint. An artefact is valid only

@@ -22,6 +22,7 @@
 #   fb-escalate.sh credit <task> <critic> <subject> <n>   record a contribution
 #   fb-escalate.sh ledger                 print the credit ledger
 set -uo pipefail
+. /home/gabe/Documents/farmerbob/fb-target.sh
 cd /home/gabe/Documents/farmerbob
 export PATH="$HOME/.cargo/bin:$PATH"
 LEDGER=.fb/credits.json
@@ -36,8 +37,8 @@ case "$CMD" in
     # adjudication. The test already exists and already passes against the merged winner, so
     # escalating it costs nothing and sharpens the gate for every future candidate.
     T="${2:?task}"
-    tgt=$(grep -ohE '<!-- fb:creates [^ ]+ -->' ".fb/prompts/$T.md" 2>/dev/null | awk '{print $3}' | head -1)
-    [ -n "$tgt" ] || { echo "$T: no fb:creates target"; exit 2; }
+    tgt=$(fb_target "$T")
+    [ -n "$tgt" ] || { fb_target_why "$T"; exit 2; }
     crate=$(awk -F/ '{print $2}' <<< "$tgt")
     CX="$HOME/.local/share/farmerbob/logs/$T.crossx.json"
     [ -s "$CX" ] || { echo "$T: no crossx"; exit 0; }
@@ -70,8 +71,8 @@ print(b[0][0] if b else '')")
     # the test, ran it against the subject, and ran it against the merged reference -- the
     # artefact exists and was simply being discarded. Escalation keeps it.
     T="${2:?task}"
-    tgt=$(grep -ohE '<!-- fb:creates [^ ]+ -->' ".fb/prompts/$T.md" 2>/dev/null | awk '{print $3}' | head -1)
-    [ -n "$tgt" ] || { echo "$T: no fb:creates target"; exit 2; }
+    tgt=$(fb_target "$T")
+    [ -n "$tgt" ] || { fb_target_why "$T"; exit 2; }
     crate=$(awk -F/ '{print $2}' <<< "$tgt")
     PROOFS="$HOME/.local/share/farmerbob/logs/proofs/$T"
     suite=".fb/conformance/$T.rs"
@@ -168,7 +169,7 @@ PYV
     T="${2:?task}"
     suite=".fb/conformance/$T.rs"
     [ -f "$suite" ] || { echo "no suite for $T"; exit 2; }
-    tgt=$(grep -ohE '<!-- fb:creates [^ ]+ -->' ".fb/prompts/$T.md" | awk '{print $3}' | head -1)
+    tgt=$(fb_target "$T")
     crate=$(awk -F/ '{print $2}' <<< "$tgt")
     echo "reference veto: $T against merged HEAD ($crate)"
     cargo test -p "$crate" "conformance_${T//-/_}" 2>&1 | grep -E '^test |test result:' | tail -20
