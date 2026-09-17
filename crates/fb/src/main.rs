@@ -17,6 +17,7 @@ mod prove;
 mod score;
 mod select;
 mod sources;
+mod status;
 mod trial;
 
 use clap::{Parser, Subcommand};
@@ -99,6 +100,11 @@ enum Command {
         krate: String,
         target: String,
     },
+    /// Everything the orchestrator needs to decide what to do next, in one call.
+    ///
+    /// Ported from fb-status.sh. Its stdout is a wire format: the autopilot greps it and a
+    /// human reads it, so ordering and wording are the contract, not a display choice.
+    Status,
     /// Refuse to dispatch an arm that is absent, disabled, parked, or redundant.
     ///
     /// Ported from fb-eligible.sh, which the dispatcher sources as a predicate. Exit code and
@@ -515,6 +521,7 @@ fn main() {
             krate,
             target,
         }) => defects::run_cmd(&task, &krate, &target),
+        Some(Command::Status) => status::run_cmd(),
         Some(Command::Eligible { arm }) => eligible::run_cmd(&arm),
         Some(Command::Differential { task }) => differential::run_cmd(&task),
         Some(Command::Mutants { file, task, max }) => mutants::run_cmd(&file, &task, max),

@@ -1,0 +1,46 @@
+MERGED claude-sonnet
+Adjudicated 2026-09-17. Four arms, three PASS, all scope clean. This task was destroyed once
+already: wave36 lost all four arms to the OpenRouter caps and a 21-minute stall, and nothing was
+scored. Relaunched as wave48 after the timeout and refusal detection were fixed.
+
+  codex-luna     +816 lines   5 tests   DIVERGES
+  claude-sonnet +1032 lines  40 tests   agrees
+  glm-53-flash   +971 lines  20 tests   agrees (on the differential)
+  ifm-k2-horizon refused, 8s -- OpenRouter daily token cap
+
+THE DIFFERENTIAL DECIDED THE FIRST CUT, and found something no unit test would. codex-luna
+produced 91 lines of output and one was out of order:
+
+    shell:  wtalloc, wt-provision, wt-select
+    codex:  wt-provision, wt-select, wtalloc
+
+The shell's glob sorts by locale collation, which ignores the punctuation, so `wtalloc` compares
+as `wtallocation`-ish against `wtprovision` and `a` precedes `p`. codex-luna sorted byte-wise,
+where `-` (0x2D) precedes `a` (0x61). One line in 91, in a wire format the autopilot greps.
+
+THE CRITIQUE DECIDED THE SECOND, and found what the differential structurally could not.
+codex-luna on glm-53-flash, claim 1, verified by running all three against a fake `pgrep`:
+
+    shell:          dispatcher processes: 7
+    claude-sonnet:  dispatcher processes: 7
+    glm-53-flash:   dispatcher processes: NOT MEASURED: pgrep printed a non-count: "7\nextra"
+
+fb-status.sh pipes pgrep through `head -1` and takes the first line; glm-53-flash refuses the
+whole value. The differential rated both arms "agrees" because that branch only runs when NO
+agent is live, and one was. A case the oracle cannot reach is exactly what the subjective tier is
+for, and this is the clearest instance of it yet: the differential and the critique each caught a
+defect the other could not.
+
+Its claim 2 is FALSE, and checked rather than assumed: it alleged glm discards write errors and
+"returns the bd-derived status, potentially 0 or 1" where the shell exits 141. Measured, all
+three exit 141 -- the script's own `head` closes a pipe and pipefail propagates SIGPIPE, and both
+arms reproduce it. One true claim and one false one from the same critic in the same file.
+
+Its JUDGEMENT is right and applies to the WINNER too: the collation key hardcodes one glibc
+en_US.UTF-8 ordering and only the alphabet currently observed. An uppercase task name or a new
+punctuation character would reorder the report with no code change and no diagnostic. That is a
+real limitation of the merged code, not a reason to prefer another arm, and it is recorded here
+rather than fixed today.
+
+Verified after merge, both sides run fresh: stdout IDENTICAL line for line, exit 141 from both,
+and the pgrep-multiline branch now agrees too. 1303 tests, clippy 9.
