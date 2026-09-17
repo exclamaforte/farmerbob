@@ -2,6 +2,7 @@ mod adjudicate_cmd;
 mod cmd;
 mod doctor;
 mod import;
+mod pareto;
 mod score;
 mod sources;
 mod trial;
@@ -46,6 +47,15 @@ enum Command {
     /// Run environment preflight checks and print an actionable report.
     Doctor,
     /// Run a full bakeoff: dispatch, score, cross-review, prove claims, report.
+    /// Cost against ability to complete, via farmerbob_core::cost and ::pricing.
+    ///
+    /// An arm whose launcher writes no cost store is UNMEASURED, not free. The shell
+    /// aggregated a missing store as 0.0 and crowned one such arm on the frontier.
+    Pareto {
+        /// Costs within this many dollars per success are treated as indistinguishable.
+        #[arg(long, default_value_t = 0.0)]
+        epsilon: f64,
+    },
     /// Measure every candidate worktree for a task, via farmerbob_core.
     ///
     /// Replaces fb-score.sh. Liveness needs TWO signals -- the task marker AND a launcher
@@ -293,6 +303,7 @@ fn main() {
             }
             if v.is_pass() { exit::OK } else { exit::ERROR }
         }
+        Some(Command::Pareto { epsilon }) => pareto::run_cmd(epsilon, cli.json),
         Some(Command::Score { task, krate }) => score::run_cmd(&task, &krate, cli.json),
         Some(Command::Brief { task, epsilon, allow_missing_critique }) =>
             adjudicate_cmd::run(&task, epsilon, allow_missing_critique),

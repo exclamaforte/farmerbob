@@ -179,7 +179,15 @@ pub fn frontier(arms: &[ArmCost], epsilon: f64) -> Vec<String> {
 }
 
 /// Return total measured spend, completions, and counted runs.
-pub fn totals(arms: &[ArmCost]) -> (f64, u32, u32) {
+/// Total measured spend, completions and counted runs.
+///
+/// Spend is `None` when NOTHING was measured, which is not the same as zero spend. This
+/// function used to accumulate into an `Option` with care and then return
+/// `spend.unwrap_or(0.0)` — a single `unwrap_or` at the boundary that discarded the whole
+/// distinction the surrounding type system was built to keep. It went unnoticed because the
+/// module had no caller; `fb pareto` is the first, and found it immediately.
+///   (bead farmerbob-jd2.5)
+pub fn totals(arms: &[ArmCost]) -> (Option<f64>, u32, u32) {
     let mut spend = None;
     let mut completed: u32 = 0;
     let mut runs: u32 = 0;
@@ -190,7 +198,7 @@ pub fn totals(arms: &[ArmCost]) -> (f64, u32, u32) {
         completed = completed.saturating_add(arm.completed);
         runs = runs.saturating_add(arm.runs);
     }
-    (spend.unwrap_or(0.0), completed, runs)
+    (spend, completed, runs)
 }
 
 #[cfg(test)]
@@ -275,5 +283,39 @@ mod tests {
     fn epsilon_absorbs_float_noise() {
         let arms = vec![arm("a", Some(1.0), 1, 1), arm("b", Some(1.0 + 1e-10), 1, 1)];
         assert_eq!(frontier(&arms, 1e-9), vec!["a", "b"]);
+    }
+}
+
+#[cfg(test)]
+mod unmeasured_spend {
+    use super::*;
+
+    fn arm_of(name: &str, usd: Option<f64>) -> ArmCost {
+        ArmCost { arm: name.into(), runs: 3, completed: 2, usd, tokens: None }
+    }
+
+    /// Instance twelve of this project's recurring failure, found inside the module written
+    /// to prevent it, by the act of giving that module its first caller.
+    #[test]
+    fn a_field_nothing_measured_reports_none_not_zero() {
+        let none_measured = [arm_of("codex-luna", None), arm_of("glm-53-flash", None)];
+        let (spend, completed, runs) = totals(&none_measured);
+        assert_eq!(spend, None, "unmeasured spend must not read as $0.00");
+        assert_eq!((completed, runs), (4, 6), "the run counts are still real");
+    }
+
+    /// A field that genuinely spent nothing is Some(0.0), and must stay distinguishable.
+    #[test]
+    fn a_field_that_really_spent_nothing_reports_some_zero() {
+        let free = [arm_of("or-inkling", Some(0.0))];
+        assert_eq!(totals(&free).0, Some(0.0));
+        assert_ne!(totals(&free).0, totals(&[arm_of("codex-luna", None)]).0);
+    }
+
+    /// One measured arm among unmeasured ones yields that arm's spend, not a padded sum.
+    #[test]
+    fn partial_measurement_sums_only_what_was_measured() {
+        let mixed = [arm_of("a", Some(1.5)), arm_of("b", None), arm_of("c", Some(0.25))];
+        assert_eq!(totals(&mixed).0, Some(1.75));
     }
 }

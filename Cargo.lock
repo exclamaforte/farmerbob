@@ -276,6 +276,7 @@ dependencies = [
  "clap",
  "directories",
  "farmerbob-core",
+ "rusqlite",
  "serde",
  "serde_json",
  "toml",
