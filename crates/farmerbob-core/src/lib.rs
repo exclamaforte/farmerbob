@@ -50,6 +50,7 @@ pub mod task_contract;
 pub mod timing;
 pub mod verifier;
 pub mod vrouter;
+pub mod wtalloc;
 
 pub use agent::{Agent, AgentKind};
 pub use error::DomainError;
