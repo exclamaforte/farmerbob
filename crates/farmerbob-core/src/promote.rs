@@ -11,6 +11,8 @@
 //! already promoted claim. Whatever survives is kept with a stable
 //! [`fingerprint`] identity. [`objective_leaks`] answers the mirror question:
 //! whether a judgement smuggles in something the harness could check.
+//! [`coverage`] answers a third question, about the critic rather than the
+//! claim: whether its citations reach past the head of the subject.
 
 /// A line a critic wrote about a rival implementation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,6 +227,116 @@ pub fn verify_all(
             verify_quotes(assertion, subject, critic).map(|rejection| (index, rejection))
         })
         .collect()
+}
+
+/// How thoroughly a critic's citations cover the file they are about.
+///
+/// A closed set of two, like `Verdict` and [`Rejection`]: every judgement of
+/// a critic's reach is one of these variants and no others. New shapes of
+/// partial reading extend this enum; they do not grow parallel ones.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Coverage {
+    /// Citations reach past the head of the file, or there is not enough evidence to judge.
+    Unremarkable,
+    /// Every cited line sits in the head of a large file: the critic appears to have read
+    /// the opening and inferred the rest. The claims may still be true.
+    HeadOnly {
+        /// The largest line number cited.
+        deepest_cited: u32,
+        /// Total lines in the subject.
+        subject_lines: u32,
+    },
+}
+
+/// Fewer than this many distinct citations cannot establish a pattern.
+///
+/// A reviewer who finds one real defect on line 40 and says so has done
+/// nothing wrong; one or two shallow citations are ordinary reviewing, not
+/// evidence of a partial read.
+const MIN_DISTINCT_CITATIONS: usize = 3;
+
+/// A subject shorter than this has no "rest of the file" to have missed.
+///
+/// Clustering in the first quarter of a 60-line file is meaningless: there
+/// is nothing below the head to have skipped.
+const MIN_SUBJECT_LINES: u32 = 400;
+
+/// Every citation must sit at or below this percent of the subject.
+///
+/// A quarter of the file is a generous definition of "head": the real
+/// incident clustered at 17% of an 1892-line file. One citation beyond this
+/// line proves the critic read past the opening, so the deepest citation
+/// alone decides the boundary, and it is inclusive: exactly 25% is still
+/// head-only, one line past 25% is not.
+const HEAD_PERCENT: u64 = 25;
+
+/// Turns a line count into a percent for the head test.
+///
+/// Comparing `line * PERCENT_SCALE` against `subject * HEAD_PERCENT` needs
+/// no division, so a zero-length subject cannot divide by zero, and `u64`
+/// leaves room for every `u32` pair.
+const PERCENT_SCALE: u64 = 100;
+
+/// True when `line` lies strictly beyond `HEAD_PERCENT` percent of `subject`.
+fn beyond_head(line: u32, subject: u32) -> bool {
+    u64::from(line) * PERCENT_SCALE > u64::from(subject) * HEAD_PERCENT
+}
+
+/// Judge how far a critic's citations reach into the file.
+///
+/// This is the seventh known failure signal, and deliberately not a refusal:
+/// it describes the critic's coverage, not the claim's truth. A claim
+/// written after reading only the opening of a file may still be true —
+/// finding a genuine defect near the top is ordinary reviewing — so a
+/// [`Coverage::HeadOnly`] verdict must never remove a claim from the
+/// promoted list. It records a suspicion about the reader, not a defect in
+/// the code.
+///
+/// The ways a critique can be shallow are open, and this function recognises
+/// exactly one of them: citations clustered in the head of the file. A
+/// critic that reads the whole file and then reasons badly about it is not
+/// detected here, and is not meant to be.
+///
+/// The verdict is [`Coverage::HeadOnly`] only when all three thresholds
+/// hold: at least 3 distinct citations (`MIN_DISTINCT_CITATIONS` — one or
+/// two cannot establish a pattern); a subject of at least 400 lines
+/// (`MIN_SUBJECT_LINES` — a short file has no rest to have missed); and
+/// every citation at or below 25% of the subject (`HEAD_PERCENT` — the real
+/// incident sat at 17%). The deepest citation decides the boundary, because
+/// one line read at the bottom proves the critic got there.
+///
+/// An empty `cited_lines` is [`Coverage::Unremarkable`], NOT
+/// [`Coverage::HeadOnly`]: no citations is not evidence of a shallow read;
+/// it is no evidence at all. A `subject_lines` of zero is also
+/// [`Coverage::Unremarkable`] — a subject whose length is unknown cannot be
+/// judged — and so is any citation greater than `subject_lines`: a stale or
+/// wrong citation is not evidence about coverage, and no ratio above one is
+/// ever computed.
+///
+/// `cited_lines` is treated as a set: order does not matter, duplicates
+/// collapse into one citation, and a cited line of zero is an ordinary
+/// member. All arithmetic is integer arithmetic.
+pub fn coverage(cited_lines: &[u32], subject_lines: u32) -> Coverage {
+    let mut distinct = cited_lines.to_vec();
+    distinct.sort_unstable();
+    distinct.dedup();
+
+    let Some(&deepest) = distinct.last() else {
+        return Coverage::Unremarkable;
+    };
+
+    let head_only = distinct.len() >= MIN_DISTINCT_CITATIONS
+        && subject_lines >= MIN_SUBJECT_LINES
+        && deepest <= subject_lines
+        && !beyond_head(deepest, subject_lines);
+    if head_only {
+        Coverage::HeadOnly {
+            deepest_cited: deepest,
+            subject_lines,
+        }
+    } else {
+        Coverage::Unremarkable
+    }
 }
 
 /// Normalised identity of a claim, ignoring surrounding whitespace and letter case.
@@ -794,5 +906,155 @@ mod tests {
                 }
             ),]
         );
+    }
+
+    #[test]
+    fn the_real_incident_is_head_only() {
+        assert_eq!(
+            coverage(&[67, 74, 152, 310], 1892),
+            Coverage::HeadOnly {
+                deepest_cited: 310,
+                subject_lines: 1892
+            }
+        );
+    }
+
+    #[test]
+    fn citations_spread_through_the_file_are_unremarkable() {
+        assert_eq!(coverage(&[67, 900, 1500], 1892), Coverage::Unremarkable);
+    }
+
+    #[test]
+    fn one_deep_citation_clears_the_verdict() {
+        assert_eq!(coverage(&[67, 74, 1800], 1892), Coverage::Unremarkable);
+    }
+
+    #[test]
+    fn two_citations_are_never_head_only() {
+        // Even two shallow citations of a large file: a pattern needs three.
+        assert_eq!(coverage(&[5, 10], 5000), Coverage::Unremarkable);
+        assert_eq!(coverage(&[1, 2], 1892), Coverage::Unremarkable);
+    }
+
+    #[test]
+    fn three_citations_exactly_are_eligible() {
+        assert_eq!(
+            coverage(&[67, 74, 152], 1892),
+            Coverage::HeadOnly {
+                deepest_cited: 152,
+                subject_lines: 1892
+            }
+        );
+    }
+
+    #[test]
+    fn short_subjects_are_unremarkable_whatever_the_citations() {
+        assert_eq!(coverage(&[67, 74, 152], 300), Coverage::Unremarkable);
+        // Boundary: 399 lines is short, 400 is not, for the same citations.
+        assert_eq!(coverage(&[1, 50, 99], 399), Coverage::Unremarkable);
+        assert_eq!(
+            coverage(&[1, 50, 99], 400),
+            Coverage::HeadOnly {
+                deepest_cited: 99,
+                subject_lines: 400
+            }
+        );
+    }
+
+    #[test]
+    fn empty_citations_are_no_evidence_at_all() {
+        assert_eq!(coverage(&[], 1892), Coverage::Unremarkable);
+        assert_eq!(coverage(&[], 0), Coverage::Unremarkable);
+    }
+
+    #[test]
+    fn unknown_subject_length_cannot_be_judged() {
+        assert_eq!(coverage(&[1, 2, 3], 0), Coverage::Unremarkable);
+    }
+
+    #[test]
+    fn stale_citation_past_the_end_is_unremarkable() {
+        assert_eq!(coverage(&[1, 2, 2000], 1892), Coverage::Unremarkable);
+    }
+
+    #[test]
+    fn head_boundary_pins_both_sides_of_25_percent() {
+        // 100 of 400 is exactly 25%: still head-only.
+        assert_eq!(
+            coverage(&[1, 50, 100], 400),
+            Coverage::HeadOnly {
+                deepest_cited: 100,
+                subject_lines: 400
+            }
+        );
+        // One line past 25%: not.
+        assert_eq!(coverage(&[1, 50, 101], 400), Coverage::Unremarkable);
+    }
+
+    #[test]
+    fn duplicates_and_zero_behave_as_the_same_set() {
+        // Duplicates collapse: the same evidence as [67, 74, 152], said twice.
+        assert_eq!(
+            coverage(&[67, 67, 74, 152], 1892),
+            coverage(&[67, 74, 152], 1892)
+        );
+        // After collapsing, the set has two members, so no pattern.
+        assert_eq!(coverage(&[67, 67, 74], 1892), Coverage::Unremarkable);
+        // Zero is an ordinary member: harmless, and it counts once.
+        assert_eq!(coverage(&[0, 0, 67], 1892), Coverage::Unremarkable);
+        assert_eq!(
+            coverage(&[0, 67, 74], 1892),
+            Coverage::HeadOnly {
+                deepest_cited: 74,
+                subject_lines: 1892
+            }
+        );
+    }
+
+    #[test]
+    fn citation_order_does_not_matter() {
+        assert_eq!(
+            coverage(&[310, 152, 74, 67], 1892),
+            coverage(&[67, 74, 152, 310], 1892)
+        );
+    }
+
+    #[test]
+    fn u32_max_subject_does_not_overflow() {
+        assert_eq!(
+            coverage(&[1, 2, 3], u32::MAX),
+            Coverage::HeadOnly {
+                deepest_cited: 3,
+                subject_lines: u32::MAX
+            }
+        );
+        // A citation at the very end of a maximal file: 100%, beyond the
+        // head, and the percent arithmetic must not overflow.
+        assert_eq!(
+            coverage(&[1, 2, u32::MAX], u32::MAX),
+            Coverage::Unremarkable
+        );
+    }
+
+    #[test]
+    fn head_only_is_a_suspicion_and_never_a_rejection() {
+        // A head-only reading does not stop the claims underneath it from
+        // being promoted: coverage judges the critic, not the claim.
+        let verdict = coverage(&[67, 74, 152], 1892);
+        assert_eq!(
+            verdict,
+            Coverage::HeadOnly {
+                deepest_cited: 152,
+                subject_lines: 1892
+            }
+        );
+        let assertions = [
+            claim("sort", "[]", "[]", "panics"),
+            claim("sort", "[1]", "[1]", "hangs"),
+            claim("sort", "[2]", "[2]", "corrupts"),
+        ];
+        let (promoted, rejections) = promote(&assertions);
+        assert_eq!(promoted.len(), 3);
+        assert!(rejections.is_empty());
     }
 }

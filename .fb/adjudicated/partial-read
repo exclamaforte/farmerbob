@@ -1,0 +1,42 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. Four arms, three PASS, all scope clean.
+
+  codex-luna     +154 lines  38 tests
+  claude-sonnet  +213 lines  43 tests
+  glm-53-flash   +262 lines  44 tests
+  ifm-k2-think   refused, 8s -- OpenRouter daily token cap
+
+THERE IS NO DISCRIMINATING EVIDENCE. That is the finding, and it is about my spec.
+
+  16 of 16 spec clauses and boundaries: all three, identically.
+  Cross-examination: a full 3x3 matrix, EVERY cell passing. Each arm's suite passes against
+    every other arm's implementation -- genuine mutual conformance, not the untestability that
+    doctor-repo produced.
+  The only critique, codex-luna on glm-53-flash: NO MATERIAL DEFECTS.
+  Set semantics, which my probe initially missed: [1,1,2] is two citations, not three. All
+    three return Unremarkable. I only tested that duplicates do not panic, and had to go back
+    for the clause that mattered.
+  The three named constants are the same three thresholds in all three, differing only in
+    spelling and in whether 25% is written as a percent or a denominator of 4.
+
+I pinned both sides of every boundary in this spec -- 3 citations against 2, 400 lines against
+399, a citation exactly at 25% against 25% plus one. It worked: nobody got a boundary wrong, and
+three earlier tasks were decided by exactly such disagreements. But a specification tight enough
+that every competent arm converges is a specification that produces no ranking signal. The
+tournament learned nothing about these three models today.
+
+That is a real tension and it belongs on the record rather than in a bead: the tighter the spec,
+the better the code and the less it discriminates. Both halves are wanted, and they pull apart.
+A spec that leaves a boundary open discovers who thinks carefully; a spec that pins it gets the
+boundary right. This one chose correctness, knowingly, and got it.
+
+MERGED ON THE TIEBREAKS, which is all that was left. glm-53-flash has the most tests (44 to 43
+to 38) and it is the only one of the three on a free route -- codex-luna and claude-sonnet both
+draw on plans the orchestrator itself competes with. Where capability is indistinguishable, the
+cheaper arm should win, and that is the whole premise of the Pareto board.
+
+Its implementation sorts and deduplicates the citations for set semantics and widens the
+comparison to u64 so the inclusive 25% boundary cannot overflow at u32::MAX. codex-luna's
+critique confirmed both, and I verified them.
+
+1234 tests, clippy 9, rustfmt clean.
