@@ -15,10 +15,26 @@ T="${1:?task}"; CRATE="${2:-farmerbob-core}"; TARGET="${3:-}"
 LOGS="$HOME/.local/share/farmerbob/logs"
 
 # Infer the target from the spec's own declaration rather than making the caller repeat it.
+# BOTH verbs, not just fb:creates. Specs declare `fb:modifies` when the deliverable is an
+# edit to an existing file, and this reader knew only `fb:creates` -- so probe, fnd-store and
+# gpu-lease were unpipelineable from the day they were written and sat in NEEDS CRITIQUE
+# indefinitely, with the same message as a task whose spec is simply missing. One reader,
+# two vocabularies.  (bead farmerbob-z1p)
 if [ -z "$TARGET" ]; then
-  TARGET=$(grep -ohE '<!-- fb:creates [^ ]+ -->' ".fb/prompts/$T.md" 2>/dev/null | awk '{print $3}' | head -1)
+  TARGET=$(grep -ohE '<!-- fb:(creates|modifies) [^ ]+ -->' ".fb/prompts/$T.md" 2>/dev/null \
+           | awk '{print $3}' | head -1)
 fi
-[ -n "$TARGET" ] || { echo "$T: cannot determine target file"; exit 2; }
+if [ -z "$TARGET" ]; then
+  # Distinguish the two ways this fails. "The spec declares no target" is a defect in the
+  # spec and I can fix it; "there is no spec" means the task was never written. Reporting
+  # both as one message is how these five stayed invisible.
+  if [ -f ".fb/prompts/$T.md" ]; then
+    echo "$T: spec exists but declares no <!-- fb:creates|fb:modifies PATH --> target"
+  else
+    echo "$T: no spec at .fb/prompts/$T.md"
+  fi
+  exit 2
+fi
 echo "== pipeline $T ($CRATE, $TARGET)"
 
 # The set of gate-passing candidates, as a stable fingerprint. An artefact is valid only
