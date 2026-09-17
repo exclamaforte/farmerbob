@@ -64,8 +64,15 @@ line, so that four independent implementations produce byte-identical output:
 1. Split the source into lines on `'\n'`. Track the byte offset at which each line starts.
 2. **Skip an entire line** if, after trimming leading whitespace, it starts with `//` or `#[`
    or `*` or `/*`.
-3. Within a surviving line, find the first occurrence of `//` **not** preceded on that line by
-   a `"` character. Everything from there to the end of the line is ignored.
+3. Within a surviving line, scan left to right tracking whether you are inside a string (see
+   rule 4). The first `//` found **outside** a string begins a comment; everything from there
+   to the end of the line is ignored.
+
+   An earlier version of this rule said "the first `//` not preceded on that line by a `\"`
+   character", which is wrong whenever a string appears BEFORE a comment. A critic verified
+   it: `let s = "x"; // max > 0 < 1` emitted four mutants inside the trailing comment. Every
+   implementation was compliant, because the heuristic was pinned precisely -- the defect was
+   in what I pinned, not in anyone's reading of it.
 4. Within the remaining text of the line, ignore any region between an unescaped `"` and the
    next unescaped `"`. A `"` preceded by an odd number of consecutive `\` is escaped. An
    unterminated `"` ignores the rest of the line.
@@ -79,6 +86,11 @@ Sites are then found in what survives, by plain substring scanning.
 
 1. `ComparisonBoundary`: `<=` becomes `<`, `>=` becomes `>`, and a `<` or `>` that is **not**
    part of `<=`, `>=`, `<<`, `>>`, `->`, or `=>` becomes `<=` or `>=` respectively.
+
+   **`<<=` and `>>=` yield NO mutant at all.** Scanning `a <<= b` left to right finds `<<` at
+   the first position and excludes it, then finds `<=` at the second and matches it, turning
+   a shift-assign into a shift. A critic verified that too. Check for the three-character
+   forms before the two-character ones.
 2. `ComparisonNegate`: `==` becomes `!=`, and `!=` becomes `==`. A `==` that is part of `===`
    does not occur in Rust and needs no special handling.
 3. `BooleanConnective`: `&&` becomes `||`, and `||` becomes `&&`. A `|` or `&` alone is left
@@ -113,6 +125,11 @@ source changed under it.
 - `"x.0"` and `"3u32"` and `"1.5"` yield no `IntegerLiteral` mutant.
 - `"let s = \"a < b\";"` yields no mutant: the `<` is inside a string.
 - `"a < b // c > d"` yields exactly one mutant, for the `<`.
+- **A character literal is skipped like a string.** `'<'` otherwise yields a mutant that
+  cannot compile -- an inert mutant wastes a whole verification cycle proving nothing -- and
+  `'//'` otherwise truncates the rest of the line as a comment. Treat a `'` the way rule 4
+  treats a `"`, with the same escape handling, and note that a lifetime such as `'a` has no
+  closing quote and so must not swallow the line: an unterminated `'` ignores nothing.
 - Non-ASCII text is passed through untouched and must not panic or split a character; all
   offsets are byte offsets and must always land on character boundaries.
 

@@ -1,0 +1,14 @@
+MERGED or-ling-30-flash
+Adjudicated 2026-09-17. THIN FIELD, and worth saying so: 2 of 4 arms survived, because
+farmerbob-rt34 destroyed two worktrees whose deliverables were never written to disk, and only
+one critique exists because a two-arm derangement produces one review each way and
+or-ling-30-flash's never landed.
+On what remains: or-ling-30-flash leads every available axis -- clippy 0 vs 2 (glm-53-flash
+ships a dead `kinds_of`), 47 tests vs 46, 595 lines vs 709. DefectSensitivity and Survival
+read NEVER MEASURED.
+glm-53-flash's single critique is the best-routed of the project: three edge cases, each
+VERIFIED by running the code, each characterised as "compliant under reading A, defect under
+reading B" and sent to the task author rather than forced into a claim. All three were defects
+in MY heuristic and all three are now pinned: a string before a comment leaked four mutants
+into that comment, `<<=` produced a spurious shift mutant, and char literals were unhandled.
+Credited: glm-53-flash (3).

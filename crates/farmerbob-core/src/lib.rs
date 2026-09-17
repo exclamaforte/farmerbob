@@ -35,6 +35,7 @@ pub mod lease_manager;
 pub mod liveness;
 pub mod matrix;
 pub mod measurement;
+pub mod mutate;
 pub mod outcome;
 pub mod pricing;
 pub mod prior;

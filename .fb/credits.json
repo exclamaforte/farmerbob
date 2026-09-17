@@ -173,6 +173,12 @@
    "critic": "glm-53-flash",
    "found_on": "or-hy3",
    "tests": 1
+  },
+  {
+   "task": "mutate",
+   "critic": "glm-53-flash",
+   "found_on": "or-ling-30-flash",
+   "tests": 3
   }
  ]
 }
