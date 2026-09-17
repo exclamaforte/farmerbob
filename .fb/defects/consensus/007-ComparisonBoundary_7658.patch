@@ -1,0 +1,4 @@
+@@@
+            let mut names: Vec<String> = members.into_iter().map(|i| m.arms[i].clone()).collect();
+--->
+            let mut names: Vec<=String> = members.into_iter().map(|i| m.arms[i].clone()).collect();

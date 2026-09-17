@@ -1,0 +1,4 @@
+@@@
+        camps: Vec<Vec<String>>,
+--->
+        camps: Vec<Vec<=String>>,

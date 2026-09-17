@@ -1,0 +1,4 @@
+@@@
+    fn index(&self, arm: &str) -> Option<usize> {
+--->
+    fn index(&self, arm: &str) -> Option<usize>= {

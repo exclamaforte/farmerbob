@@ -1,0 +1,4 @@
+@@@
+        row == col || m.cells[k] != Cell::NoCompile
+--->
+        row == col || m.cells[k] == Cell::NoCompile

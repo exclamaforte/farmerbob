@@ -1,0 +1,4 @@
+@@@
+    p.headroom_mib.saturating_add(p.per_slot_mib) > m.total_mib
+--->
+    p.headroom_mib.saturating_add(p.per_slot_mib) >= m.total_mib

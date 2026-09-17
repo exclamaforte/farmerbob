@@ -1,0 +1,4 @@
+@@@
+    if m.available_mib <= p.headroom_mib {
+--->
+    if m.available_mib < p.headroom_mib {

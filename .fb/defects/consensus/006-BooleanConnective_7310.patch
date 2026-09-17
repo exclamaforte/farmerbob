@@ -1,0 +1,4 @@
+@@@
+            if same && !together(i, j) {
+--->
+            if same || !together(i, j) {

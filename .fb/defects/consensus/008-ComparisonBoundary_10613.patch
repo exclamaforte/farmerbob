@@ -1,0 +1,4 @@
+@@@
+pub fn suite_quality(m: &Matrix, arm: &str) -> Option<SuiteQuality> {
+--->
+pub fn suite_quality(m: &Matrix, arm: &str) -> Option<SuiteQuality>= {

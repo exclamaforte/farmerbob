@@ -42,14 +42,37 @@ PY
 run_suite() {  # run_suite <dir> <suitefile> -> pass|fail|nocompile
   local d="$1" suite="$2"
   local sd="$d/crates/$CRATE/src"
-  cp "$sd/lib.rs" "$sd/lib.rs.bak"
-  cat "$suite" >> "$sd/lib.rs"
+  # Graft into the TARGET MODULE, not lib.rs.
+  #
+  # A conformance suite is written as a child of the module it tests, so it says
+  # `use super::Admission`. Appended to lib.rs, `super::` resolves to the CRATE ROOT and
+  # every import fails: "unresolved imports super::Admission, super::Machine, super::Policy".
+  # So every defect came back `nocompile`, every defect was EXCLUDED as inert, and the run
+  # ended "0 validated defects, nothing to measure" -- for any task whose deliverable is a
+  # module rather than lib.rs itself, which is all but a handful.
+  #
+  # That is why DefectSensitivity, the adjudicator's only DIRECT measure of suite quality and
+  # its third criterion, has been available for one task in forty-eight. Not because nobody
+  # wrote defect sets: because the validation step could not compile the suite it validates
+  # against.
+  #
+  # fb-crossx.sh already solved exactly this and carries the bead for it. One rule, two
+  # implementations, and only one of them got the fix.  (beads farmerbob-74l, farmerbob-jd2.11)
+  local host="$sd/$(basename "$TARGET")"
+  [ -f "$host" ] || host="$sd/lib.rs"
+  cp "$host" "$host.bak"
+  # Rename the grafted module. The merged reference already contains this very suite -- it was
+  # escalated into the file when the task was adjudicated -- so appending it verbatim is
+  # "the name `cx_budget_codex_luna` is defined multiple times", which reads as nocompile and
+  # excludes the defect exactly like the import failure did. fb-crossx renames to xtests_N for
+  # the same reason.
+  sed 's/^\( *\)mod \([a-z_0-9]*\)/\1mod dfx_\2/' "$suite" >> "$host"
   local o="$d/out"
   local r
   if (cd "$d" && timeout 300 cargo test -p "$CRATE" >"$o" 2>&1); then r=pass
   elif grep -qE '^error\[E[0-9]+\]:|could not compile' "$o"; then r=nocompile
   else r=fail; fi
-  mv "$sd/lib.rs.bak" "$sd/lib.rs"
+  mv "$host.bak" "$host"
   echo "$r"
 }
 

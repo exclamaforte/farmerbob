@@ -1,0 +1,4 @@
+@@@
+    if running >= p.max_slots {
+--->
+    if running > p.max_slots {

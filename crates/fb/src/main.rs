@@ -8,6 +8,7 @@ mod doctor;
 mod import;
 mod prove;
 mod pareto;
+mod mutants;
 mod paths;
 mod score;
 mod select;
@@ -65,6 +66,19 @@ enum Command {
         /// The bead / task whose claims to promote. The shell script takes only this, and
         /// the port matched it rather than inventing parameters it does not use.
         task: String,
+    },
+    /// Generate a defect set mechanically, so suite sensitivity can be measured.
+    ///
+    /// DefectSensitivity is the adjudicator's only direct measure of suite quality and has
+    /// been available for one task in forty-eight, because the defect sets were hand-written.
+    Mutants {
+        /// The source file to mutate, repo-relative.
+        file: String,
+        /// The task whose defect set this becomes.
+        task: String,
+        /// How many defects to emit. Each costs a suite run per candidate.
+        #[arg(long, default_value_t = 0)]
+        max: usize,
     },
     /// Execute each promoted CLAIM as a test, and veto the ones the reference also fails.
     ///
@@ -404,6 +418,7 @@ fn main() {
             if v.is_pass() { exit::OK } else { exit::ERROR }
         }
         Some(Command::Promote { task }) => promote::run_cmd(&task),
+        Some(Command::Mutants { file, task, max }) => mutants::run_cmd(&file, &task, max),
         Some(Command::Prove { task, krate, target, prover }) =>
             prove::run_cmd(&task, &krate, &target, &prover),
         Some(Command::Escalate { command, task, critic, subject, n }) =>

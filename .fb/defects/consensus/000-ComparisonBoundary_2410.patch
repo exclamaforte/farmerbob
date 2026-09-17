@@ -1,0 +1,4 @@
+@@@
+    pub fn new(arms: Vec<String>, cells: Vec<Cell>) -> Result<Self, String> {
+--->
+    pub fn new(arms: Vec<String>, cells: Vec<Cell>=) -> Result<Self, String> {
