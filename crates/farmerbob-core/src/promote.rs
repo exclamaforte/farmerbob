@@ -49,6 +49,16 @@ pub enum Rejection {
     NotAClaim,
     /// The same claim, already promoted.
     Duplicate,
+    /// The claim's `actual` quotes text that appears in neither source.
+    Fabricated {
+        /// The first quoted fragment that could not be found, verbatim.
+        quote: String,
+    },
+    /// The claim's `actual` quotes text found in the critic's source but not the subject.
+    Projected {
+        /// The first quoted fragment found in the critic and not the subject.
+        quote: String,
+    },
 }
 
 /// A claim that earned execution.
@@ -138,6 +148,83 @@ pub fn promote(assertions: &[Assertion]) -> (Vec<PromotedTest>, Vec<(usize, Reje
         }
     }
     (promoted, rejections)
+}
+
+/// Check a claim's quoted evidence against the subject and critic sources.
+///
+/// Returns `None` when the assertion is a judgement, when it has no usable quoted
+/// fragment, or when every usable fragment occurs in `subject`. An empty `subject`
+/// means that no source was supplied, so even a quoted claim returns `None`, never
+/// [`Rejection::Fabricated`]; a missing haystack is not evidence that a needle is
+/// absent. The set of ways a claim can be wrong is open, and this function decides
+/// only fabrication and projection. Surviving this check has not shown a claim true;
+/// false absence (alleging that something is missing when the file contains it) is
+/// another known shape this function does not detect.
+///
+/// Fragments are runs between paired `"` characters. Empty and whitespace-only
+/// fragments are ignored, and an unterminated final quote is ignored. Nested
+/// quoting is not supported: a fragment cannot contain `"` by construction, which
+/// is sufficient for the claim format. Matching is exact and byte-for-byte by
+/// design; guessing at equivalent whitespace or spelling would silently permit
+/// fabrication.
+pub fn verify_quotes(a: &Assertion, subject: &str, critic: &str) -> Option<Rejection> {
+    let Assertion::Claim { actual, .. } = a else {
+        return None;
+    };
+    if subject.is_empty() {
+        return None;
+    }
+
+    let mut first_fabricated: Option<String> = None;
+    let mut first_projected: Option<String> = None;
+    let mut quote_start: Option<usize> = None;
+    for (index, byte) in actual.bytes().enumerate() {
+        if byte != b'"' {
+            continue;
+        }
+        if let Some(start) = quote_start.take() {
+            let quote = &actual[start..index];
+            if quote.trim().is_empty() {
+                continue;
+            }
+            if subject.contains(quote) {
+                continue;
+            }
+            if critic.contains(quote) {
+                if first_projected.is_none() {
+                    first_projected = Some(String::from(quote));
+                }
+            } else if first_fabricated.is_none() {
+                first_fabricated = Some(String::from(quote));
+            }
+        } else {
+            quote_start = Some(index + 1);
+        }
+    }
+
+    first_projected
+        .map(|quote| Rejection::Projected { quote })
+        .or_else(|| first_fabricated.map(|quote| Rejection::Fabricated { quote }))
+}
+
+/// Verify many assertions against one subject and one critic, in input order.
+///
+/// Returns `(index, rejection)` for each assertion refused, in ascending index
+/// order. An empty input returns an empty vector, meaning that nothing was
+/// examined; an empty result for a non-empty input means that nothing was refused.
+/// The caller is responsible for knowing which of those two facts it asked for.
+pub fn verify_all(
+    assertions: &[Assertion],
+    subject: &str,
+    critic: &str,
+) -> Vec<(usize, Rejection)> {
+    assertions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, assertion)| {
+            verify_quotes(assertion, subject, critic).map(|rejection| (index, rejection))
+        })
+        .collect()
 }
 
 /// Normalised identity of a claim, ignoring surrounding whitespace and letter case.
@@ -598,5 +685,114 @@ mod tests {
         assert_eq!(promoted.len(), 1);
         assert_eq!(promoted[0].target, " Sort ");
         assert_eq!(promoted[0].expect, " [] ");
+    }
+
+    #[test]
+    fn verify_quotes_accepts_present_quote_and_rejects_missing_quote() {
+        let assertion = claim("target", "input", "expected", "actual \"return 1\"");
+        assert_eq!(verify_quotes(&assertion, "fn f() { return 1 }", ""), None);
+        assert_eq!(
+            verify_quotes(&assertion, "fn f() { return 2 }", ""),
+            Some(Rejection::Fabricated {
+                quote: String::from("return 1")
+            })
+        );
+    }
+
+    #[test]
+    fn verify_quotes_projects_quote_from_critic() {
+        let assertion = claim("rival", "input", "expected", "actual \"line.replace()\"");
+        assert_eq!(
+            verify_quotes(
+                &assertion,
+                "fn rival() {}",
+                "fn critic() { line.replace() }"
+            ),
+            Some(Rejection::Projected {
+                quote: String::from("line.replace()")
+            })
+        );
+    }
+
+    #[test]
+    fn projected_quote_wins_over_fabricated_quote() {
+        let assertion = claim(
+            "rival",
+            "input",
+            "expected",
+            "\"missing first\" then \"critic line\"",
+        );
+        assert_eq!(
+            verify_quotes(&assertion, "fn rival() {}", "critic line"),
+            Some(Rejection::Projected {
+                quote: String::from("critic line")
+            })
+        );
+    }
+
+    #[test]
+    fn verify_quotes_handles_boundaries_and_ignored_fragments() {
+        let no_quotes = claim("t", "i", "e", "plain prose");
+        assert_eq!(verify_quotes(&no_quotes, "source", "critic"), None);
+
+        let ignored = claim("t", "i", "e", "\"\" \"  \" and \"present\"");
+        assert_eq!(verify_quotes(&ignored, "present", ""), None);
+
+        let later_missing = claim("t", "i", "e", "\"first\" then \"second\"");
+        assert_eq!(
+            verify_quotes(&later_missing, "first", ""),
+            Some(Rejection::Fabricated {
+                quote: String::from("second")
+            })
+        );
+
+        let unterminated = claim("t", "i", "e", "\"present\" and \"unfinished");
+        assert_eq!(verify_quotes(&unterminated, "present", ""), None);
+    }
+
+    #[test]
+    fn verify_quotes_requires_a_supplied_subject_and_exact_spelling() {
+        let assertion = claim("t", "i", "e", "\"a  b\"");
+        assert_eq!(verify_quotes(&assertion, "", ""), None);
+        assert_eq!(
+            verify_quotes(&assertion, "a b", ""),
+            Some(Rejection::Fabricated {
+                quote: String::from("a  b")
+            })
+        );
+        assert_eq!(verify_quotes(&assertion, "", "a  b"), None);
+    }
+
+    #[test]
+    fn verify_quotes_ignores_judgements_and_empty_critic_cannot_project() {
+        let judgement = judgement("t", "\"missing\"");
+        assert_eq!(verify_quotes(&judgement, "source", "missing"), None);
+
+        let assertion = claim("t", "i", "e", "\"missing\"");
+        assert_eq!(
+            verify_quotes(&assertion, "source", ""),
+            Some(Rejection::Fabricated {
+                quote: String::from("missing")
+            })
+        );
+    }
+
+    #[test]
+    fn verify_all_is_empty_for_empty_input_and_preserves_refusal_order() {
+        assert!(verify_all(&[], "source", "critic").is_empty());
+        let assertions = [
+            claim("a", "i", "e", "\"one\""),
+            claim("b", "i", "e", "\"two\""),
+            judgement("c", "\"three\""),
+        ];
+        assert_eq!(
+            verify_all(&assertions, "one", "two"),
+            vec![(
+                1,
+                Rejection::Projected {
+                    quote: String::from("two")
+                }
+            ),]
+        );
     }
 }

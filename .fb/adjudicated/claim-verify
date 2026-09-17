@@ -1,0 +1,53 @@
+MERGED codex-luna
+Adjudicated 2026-09-17. Four arms, two viable; the first task codex-luna has won.
+
+  codex-luna       PASS  +196 lines  30 tests  scope clean
+  glm-53-flash     PASS  +426 lines  46 tests  scope clean
+  ifm-k2-horizon   refused, 11s -- OpenRouter daily token cap
+  ifm-k2-think     refused, 13s -- same
+
+Both arms passed all 14 clauses of the spec probe, identically. Consensus from a shared cause
+again: the spec enumerates the clauses, so agreement on them is worth nothing for ranking.
+
+BOTH CATCH THE REAL FABRICATION. Run against the actual liveness.rs and the actual claim filed
+against it two hours earlier, both return
+    Fabricated { quote: "output is too weak to justify ending a run" }
+and both leave a true claim about the same file alone. The instrument works on the incident it
+was built from, which is the only test of it that counts.
+
+NEITHER CATCHES THE REAL PROJECTION, AND THAT IS MY DEFECT. The port-defects incident I cited in
+the spec was a critic quoting `line.replace("use super::", "use crate::")` as a rival's line. The
+distinguishing evidence there is the EXPRESSION; its inner string literals appear in both files.
+My detector extracts text between quote characters, so it cannot see it. The spec asserted "the
+first two are decidable from text alone" and that is true of fabrication and false of projection
+as it actually occurred. Both arms implemented what I specified, faithfully. Filed as a
+follow-up rather than charged to anyone.
+
+WHAT DECIDED IT, and it inverts the metric-led reading -- 46 tests against 30, 426 lines against
+196, both favouring glm-53-flash:
+
+Spec clause 3 says "Projected must win over Fabricated: it is strictly more informative, because
+it says where the defect actually lives." With a fabricated fragment appearing FIRST in the prose
+and a projected one later:
+
+    codex-luna     -> Projected { quote: "critics own text" }    honours the clause
+    glm-53-flash   -> Fabricated { quote: "nowhere at all" }     first-in-text-order, violates it
+
+That is not a style difference. A claim routed as Fabricated is discarded; routed as Projected it
+goes back to the critic's own arm as a confirmed defect. glm-53-flash silently loses that
+information whenever a critique mixes the two, which is exactly the case this module exists for.
+
+THE CRITIQUE IS WRONG, IN THE SUBJECT'S FAVOUR. codex-luna's judgement on glm-53-flash reads: "It
+also retains the first result in each rejection category and gives Projected precedence over
+Fabricated, which matches the specified precedence even when a fabricated fragment appears
+earlier in the prose." Measured, glm-53-flash does not. codex-luna described its OWN behaviour
+and attributed it to its rival -- projection, the same mechanism as the port-defects incident,
+but of a correctness rather than a defect. It is the third time this critic has misdescribed a
+subject: false-absence on port-defects, fabrication on liveness-cut, favourable projection here.
+
+I found the precedence divergence only because that judgement pointed at it. A critique can be
+false and still be the most useful thing in the round -- it named the one axis where the two
+implementations differ, and got the direction backwards. That is an argument for verifying
+claims, which is what this module now does, and not for ignoring critics.
+
+1168 workspace tests, clippy 9.
