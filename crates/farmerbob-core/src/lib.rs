@@ -17,6 +17,7 @@ pub mod slots;
 pub mod attempt_log;
 pub mod budget;
 pub mod compare;
+pub mod confinement;
 pub mod corpus;
 pub mod cost;
 pub mod crossx;

@@ -20,6 +20,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Decide a run's verdict from its observations, via farmerbob_core::gate.
+    ///
+    /// The shell harness reimplemented this rule four times independently and got it wrong
+    /// each time -- an empty test suite exits 0, so "nothing broke" read as "it worked".
+    /// This is the one implementation. Omit a flag to say NOT MEASURED, which is a
+    /// different fact from zero and yields Indeterminate rather than blaming the arm.
+    Gate {
+        #[arg(long)] built: Option<bool>,
+        #[arg(long)] tests_passed: Option<bool>,
+        #[arg(long)] tests_run: Option<u32>,
+        #[arg(long)] lines_added: Option<u32>,
+        #[arg(long)] target_present: Option<bool>,
+    },
     /// Run environment preflight checks and print an actionable report.
     Doctor,
     /// Run a full bakeoff: dispatch, score, cross-review, prove claims, report.
@@ -238,6 +251,26 @@ fn leaderboard(from: &str, show_excluded: bool, json: bool) -> i32 {
 fn main() {
     let cli = Cli::parse();
     let code = match cli.command {
+        Some(Command::Gate { built, tests_passed, tests_run, lines_added, target_present }) => {
+            use farmerbob_core::gate::{judge, unmeasured, explain, Observation};
+            let o = Observation {
+                built,
+                tests_passed,
+                tests_run,
+                lines_added,
+                declared_targets_present: target_present,
+            };
+            let v = judge(&o);
+            if cli.json {
+                println!(
+                    "{{\"verdict\":\"{v:?}\",\"is_pass\":{},\"blames_arm\":{},\"unmeasured\":{:?},\"explain\":{:?}}}",
+                    v.is_pass(), v.blames_arm(), unmeasured(&o), explain(&o, v)
+                );
+            } else {
+                println!("{v:?}  {}", explain(&o, v));
+            }
+            if v.is_pass() { exit::OK } else { exit::ERROR }
+        }
         Some(Command::Doctor) => doctor::run(cli.json),
         Some(Command::Agents { all }) => agents(all, cli.json),
         Some(Command::Leaderboard { from, excluded }) => leaderboard(&from, excluded, cli.json),
