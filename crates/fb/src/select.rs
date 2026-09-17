@@ -180,7 +180,7 @@ fn history(base: &Path) -> BTreeMap<String, (u32, u32, Option<f64>)> {
 pub fn run_cmd(n: usize, seed: Option<u64>, needed: &[String], json_only: bool) -> i32 {
     let repo = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let base = match std::env::var("HOME") {
-        Ok(h) => PathBuf::from(h).join(".local/share/farmerbob"),
+        Ok(_) => crate::paths::state(),
         Err(_) => return 2,
     };
     let mut reg = match registry(&repo, needed) {

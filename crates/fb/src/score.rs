@@ -460,8 +460,8 @@ pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
             return 2;
         }
     };
-    let wt_root = home.join(".local/share/farmerbob/worktrees");
-    let log_root = home.join(".local/share/farmerbob/logs");
+    let wt_root = crate::paths::worktrees();
+    let log_root = crate::paths::logs();
     let out = log_root.join(format!("{bead}.score.json"));
 
     let (target, creates) = declared_target(bead);

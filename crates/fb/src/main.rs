@@ -7,6 +7,7 @@ mod escalate;
 mod doctor;
 mod import;
 mod pareto;
+mod paths;
 mod score;
 mod select;
 mod sources;

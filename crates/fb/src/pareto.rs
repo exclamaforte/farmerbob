@@ -104,7 +104,7 @@ fn unpriced(runs: &[RunCost]) -> BTreeMap<String, (u32, u32)> {
 
 pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
     let base = match std::env::var("HOME") {
-        Ok(h) => PathBuf::from(h).join(".local/share/farmerbob"),
+        Ok(_) => crate::paths::state(),
         Err(_) => {
             eprintln!("error: HOME is not set");
             return 2;
