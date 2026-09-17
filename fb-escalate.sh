@@ -46,10 +46,12 @@ case "$CMD" in
       conf=$(python3 -c "import json;print(json.load(open('$j'))['confirmed'])")
       [ "${conf:-0}" -gt 0 ] || continue
       prov=$(python3 -c "import json;print(json.load(open('$j')).get('provisional',False))" 2>/dev/null)
-      if [ "$prov" = "True" ]; then
-        echo "  $subj: confirmed $conf but the veto was UNAVAILABLE -- provisional, not escalating"
-        continue
-      fi
+      # `provisional` means fb-prove could not veto, because prove always runs BEFORE the
+      # merge and HEAD had no reference yet. That is the normal case, not an exception: a
+      # blanket refusal here meant nothing could ever escalate. Note it and continue -- the
+      # veto below runs against the reference as it stands NOW, which is the check that
+      # actually matters.
+      [ "$prov" = "True" ] && echo "  $subj: prove could not veto (pre-merge); vetoing now instead"
       tree="$PROOFS/$subj.tree/$tgt"
       [ -f "$tree" ] || { echo "  $subj: confirmed $conf but no proof tree"; continue; }
       # Which critic found it. A claim names its critic; take the one with claims on this subject.
@@ -91,8 +93,26 @@ PYE
       # backfill, so there was no reference and nothing could be vetoed. An escalation
       # admitted on a veto that could not run is exactly the false confirmation the
       # discipline exists to prevent.
-      if ! cargo test -p "$crate" "$marker" >/dev/null 2>&1; then
+      # Graft into the CRATE before vetoing. Running `cargo test -p <crate> <marker>` while
+      # the block lives only in .fb/conformance matches zero tests, and cargo exits 0 on
+      # zero tests -- so the veto passed by measuring nothing. That is the empty-suite trap
+      # (farmerbob-slh) reappearing inside the check built to prevent it.
+      python3 - "$suite" "$tgt" "$marker" <<'PYG'
+import re, sys
+suite, target, marker = sys.argv[1:4]
+blk = re.search(rf'\n// ESCALATED:(?:(?!\n// ESCALATED:).)*?mod {marker}\b.*', open(suite).read(), re.S)
+if blk:
+    t = open(target).read()
+    if marker not in t:
+        open(target, 'a').write('\n' + blk.group(0))
+PYG
+      if ! cargo test -p "$crate" "$marker" 2>&1 | grep -qE "^test .*$marker.*ok$"; then
         echo "  $subj: VETOED against the merged reference -- retracting"
+        python3 -c "
+import re,sys
+t=sys.argv[1]; s=open(t).read()
+m=re.search(r'\n// ESCALATED:(?:(?!\n// ESCALATED:).)*\$', s, re.S)
+if m: open(t,'w').write(s[:m.start()]+'\n')" "$tgt"
         python3 - "$suite" <<'PYV'
 import re, sys
 p = sys.argv[1]; s = open(p).read()
