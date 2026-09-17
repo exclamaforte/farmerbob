@@ -3,6 +3,8 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use crate::measurement::Measurement;
+
 /// What one run cost and whether it counted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunCost {
@@ -220,6 +222,120 @@ pub fn totals(arms: &[ArmCost]) -> (Option<f64>, u32, u32) {
         runs = runs.saturating_add(arm.runs);
     }
     (spend, completed, runs)
+}
+
+/// The log marker `codex exec` prints immediately before its token count.
+///
+/// A known subset of that launcher's current output format, not a contract:
+/// it may change when the launcher is upgraded, and this constant is the
+/// whole of what would need revisiting when it does.
+const CODEX_TOKEN_MARKER: &str = "tokens used";
+
+/// A launcher whose log format this module can read.
+///
+/// A KNOWN SUBSET of the launchers in use, not a closed set. An unrecognised
+/// launcher is [`Launcher::Unknown`] and always yields
+/// [`Measurement::Missing`], never a zero.
+///
+/// This enum is open in meaning while closed in type: [`Launcher::Unknown`]
+/// is the escape, and adding a variant as new launchers are adopted is
+/// expected, not a rupture. It is the opposite of
+/// [`crate::outcome::OutcomeClass`] and [`crate::gate::Verdict`], whose
+/// variants are closed decisions this crate itself reaches and must stay
+/// exhaustive; a launcher's output format is a fact about an external tool
+/// that changes independently of this crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Launcher {
+    /// `codex exec`: prints `tokens used` then a comma-grouped count on the
+    /// NEXT line.
+    Codex,
+    /// `zcode`: prints no token count. Recognised so the reason can say so
+    /// precisely.
+    Zcode,
+    /// Anything else.
+    Unknown,
+}
+
+/// Total tokens a run reported, read from its own log.
+///
+/// [`Measurement::Missing`] distinguishes "this launcher does not report
+/// tokens" from "it reports them and this run did not" -- different facts
+/// with different reasons, and collapsing them is how an unmeasured arm
+/// becomes a free one.
+///
+/// For [`Launcher::Codex`], the marker must be a whole trimmed line and the
+/// count is the NEXT line: comma-grouped or bare, tolerating stray
+/// surrounding whitespace. When a log carries several reports -- a retry --
+/// the LAST is returned: the final figure is the run's total, and an earlier
+/// one describes an attempt that was superseded. A count that overflows
+/// `u64`, and any non-numeric payload, are [`Measurement::Missing`] -- never
+/// a wrapped value, never a zero.
+pub fn tokens_from_log(launcher: Launcher, log: &str) -> Measurement<u64> {
+    match launcher {
+        Launcher::Zcode => Measurement::nothing_to_measure(
+            "zcode does not report a token count, so there is no count in its log to read",
+        ),
+        Launcher::Unknown => unknown_tokens(log),
+        Launcher::Codex => codex_tokens(log),
+    }
+}
+
+/// An unrecognised launcher: look for the codex marker only to report, in
+/// the reason, that its presence would not be interpreted.
+fn unknown_tokens(log: &str) -> Measurement<u64> {
+    if log.lines().any(|line| line.trim() == CODEX_TOKEN_MARKER) {
+        Measurement::untrusted(
+            "launcher is unrecognised: its log contains a `tokens used` line, but what that \
+             counts for this launcher is unknown",
+        )
+    } else {
+        Measurement::nothing_to_measure(
+            "launcher is unrecognised, and its log reports no token count",
+        )
+    }
+}
+
+/// Read a codex log: the LAST whole-line marker's NEXT line is the report.
+fn codex_tokens(log: &str) -> Measurement<u64> {
+    if log.trim().is_empty() {
+        return Measurement::nothing_to_measure("codex log is empty; there is nothing to read");
+    }
+    let lines: Vec<&str> = log.lines().collect();
+    let last_marker = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.trim() == CODEX_TOKEN_MARKER)
+        .map(|(index, _)| index)
+        .next_back();
+    match last_marker {
+        None => Measurement::nothing_to_measure(
+            "codex log contains no `tokens used` line; the run reported no token count",
+        ),
+        Some(index) => match lines.get(index + 1) {
+            None => Measurement::instrument_failed(
+                "codex printed `tokens used` as its final line and no count follows it",
+            ),
+            Some(payload) => parse_token_count(payload),
+        },
+    }
+}
+
+/// Parse one report payload: digits, optionally comma-grouped, with stray
+/// surrounding whitespace.
+fn parse_token_count(payload: &str) -> Measurement<u64> {
+    let digits = payload.replace(',', "");
+    let digits = digits.trim();
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Measurement::instrument_failed(
+            "codex printed `tokens used` but the next line is not a token count",
+        );
+    }
+    match digits.parse::<u64>() {
+        Ok(count) => Measurement::observed(count),
+        Err(_) => Measurement::untrusted(
+            "codex reported a token count that does not fit in u64; it is refused, not wrapped",
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -537,5 +653,190 @@ mod partial_total_tests {
         assert_eq!(result[1].unmeasured_runs, 1);
         assert_eq!(result[2].runs, 0);
         assert_eq!(result[2].unmeasured_runs, 0);
+    }
+}
+
+#[cfg(test)]
+mod token_scrape {
+    use super::*;
+
+    // Clause 1: the verbatim shape a codex run ends with.
+    #[test]
+    fn codex_comma_grouped_report_is_observed() {
+        let log = "exec 41s\nstream closed\ntokens used\n130,826\n";
+        assert_eq!(
+            tokens_from_log(Launcher::Codex, log),
+            Measurement::Observed(130_826)
+        );
+    }
+
+    // Clause 5: the comma grouping is format, not value.
+    #[test]
+    fn codex_bare_count_without_commas_is_observed() {
+        assert_eq!(
+            tokens_from_log(Launcher::Codex, "tokens used\n4096"),
+            Measurement::Observed(4096)
+        );
+    }
+
+    // Clause 2: the count line is simply absent.
+    #[test]
+    fn codex_log_without_the_marker_is_missing() {
+        let log = "exec 41s\nstream closed\n";
+        assert!(matches!(
+            tokens_from_log(Launcher::Codex, log),
+            Measurement::Missing(_)
+        ));
+    }
+
+    // Clause 6: the marker as the last line names no figure; no panic.
+    #[test]
+    fn marker_as_final_line_is_missing() {
+        for log in ["exec 41s\ntokens used", "tokens used", "tokens used\n"] {
+            assert!(matches!(
+                tokens_from_log(Launcher::Codex, log),
+                Measurement::Missing(_)
+            ));
+        }
+    }
+
+    // Clause 7: the marker must be the whole trimmed line.
+    #[test]
+    fn prose_containing_the_marker_words_is_not_a_report() {
+        let log = "the tokens used by the arm were many\n130,826\n";
+        assert!(matches!(
+            tokens_from_log(Launcher::Codex, log),
+            Measurement::Missing(_)
+        ));
+    }
+
+    // Clause 7 again: a line that merely begins with the marker is not one.
+    #[test]
+    fn marker_as_prefix_of_its_own_line_is_not_a_report() {
+        assert!(matches!(
+            tokens_from_log(Launcher::Codex, "tokens used: 130,826\n"),
+            Measurement::Missing(_)
+        ));
+    }
+
+    // Clause 7, the other edge: surrounding whitespace does not disqualify
+    // the marker, because the line is trimmed before comparison.
+    #[test]
+    fn marker_line_is_matched_after_trimming() {
+        let log = "step 3\n  tokens used  \n130,826\n";
+        assert_eq!(
+            tokens_from_log(Launcher::Codex, log),
+            Measurement::Observed(130_826)
+        );
+    }
+
+    // Clause 8: a retry's final figure is the run's total.
+    #[test]
+    fn two_reports_yield_the_last() {
+        let log = "tokens used\n100\ntokens used\n130,826\n";
+        assert_eq!(
+            tokens_from_log(Launcher::Codex, log),
+            Measurement::Observed(130_826)
+        );
+    }
+
+    // The count must be on the NEXT line, not the next number anywhere.
+    #[test]
+    fn count_on_a_later_line_is_not_the_report() {
+        let log = "tokens used\n(unavailable)\n130,826\n";
+        assert!(matches!(
+            tokens_from_log(Launcher::Codex, log),
+            Measurement::Missing(_)
+        ));
+    }
+
+    // Clause 3: zcode is recognised as not reporting, on ANY log.
+    #[test]
+    fn zcode_is_missing_on_any_log() {
+        for log in ["step 1 done\n", "", "tokens used\n130,826\n"] {
+            assert!(matches!(
+                tokens_from_log(Launcher::Zcode, log),
+                Measurement::Missing(_)
+            ));
+        }
+    }
+
+    // Clause 4: an unrecognised launcher's marker is not interpreted.
+    #[test]
+    fn unknown_launcher_ignores_a_marker_it_happens_to_contain() {
+        for log in ["tokens used\n130,826\n", "no marker here\n"] {
+            assert!(matches!(
+                tokens_from_log(Launcher::Unknown, log),
+                Measurement::Missing(_)
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod token_boundaries {
+    use super::*;
+
+    // A genuinely reported zero is a measurement, not an absence.
+    #[test]
+    fn reported_zero_is_observed_zero() {
+        assert_eq!(
+            tokens_from_log(Launcher::Codex, "tokens used\n0\n"),
+            Measurement::Observed(0)
+        );
+    }
+
+    #[test]
+    fn empty_log_is_missing() {
+        assert!(matches!(
+            tokens_from_log(Launcher::Codex, ""),
+            Measurement::Missing(_)
+        ));
+    }
+
+    // u64::MAX parses, through the documented comma grouping.
+    #[test]
+    fn u64_max_parses_through_full_comma_grouping() {
+        let log = "tokens used\n18,446,744,073,709,551,615\n";
+        assert_eq!(
+            tokens_from_log(Launcher::Codex, log),
+            Measurement::Observed(u64::MAX)
+        );
+    }
+
+    // A count past u64 is Missing, never a wrapped value.
+    #[test]
+    fn overflowing_count_is_missing_not_wrapped() {
+        let log = "tokens used\n99,999,999,999,999,999,999\n";
+        assert!(matches!(
+            tokens_from_log(Launcher::Codex, log),
+            Measurement::Missing(_)
+        ));
+    }
+
+    #[test]
+    fn stray_whitespace_around_the_count_parses() {
+        assert_eq!(
+            tokens_from_log(Launcher::Codex, "tokens used\n\t130,826  \n"),
+            Measurement::Observed(130_826)
+        );
+    }
+
+    // A non-numeric payload is not a count.
+    #[test]
+    fn non_numeric_payload_is_missing() {
+        assert!(matches!(
+            tokens_from_log(Launcher::Codex, "tokens used\nn/a\n"),
+            Measurement::Missing(_)
+        ));
+    }
+
+    // Nor is a negative one.
+    #[test]
+    fn negative_payload_is_missing() {
+        assert!(matches!(
+            tokens_from_log(Launcher::Codex, "tokens used\n-5\n"),
+            Measurement::Missing(_)
+        ));
     }
 }

@@ -7,7 +7,8 @@
 
 # ---------------------------------------------------------------- native CLIs
 [source.claude-sonnet]
-status      = "verified"
+status      = "disabled"
+disabled_reason = "the orchestrator runs on the same Anthropic plan and we are hitting its limits (user instruction, 2026-09-17, second time). Re-enabled that morning for a weekly reset that has since been consumed -- largely BY this arm, which ran 14 waves today. Kept verified-in-all-but-status: its launcher branch, --effort xhigh and the args in this entry all work and were exercised repeatedly, so re-enabling is a one-word change back to status = verified."
 kind        = "cli"
 cmd         = "claude"
 args        = ["-p", "{prompt}", "--permission-mode", "bypassPermissions",

@@ -1,0 +1,41 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. Four arms, three PASS, all scope clean.
+
+  codex-luna     +179 lines  31 tests
+  claude-sonnet  +224 lines  33 tests
+  glm-53-flash   +301 lines  38 tests
+  ifm-k2-horizon refused, 7s
+
+All three scored 14 of 14 on the spec probe, including the clauses that carry the design:
+Observed(0) stays a measurement rather than becoming Missing; an overflowing count is Missing
+rather than a wrapped value; and Launcher::Unknown on a log that HAPPENS to contain the marker is
+Missing, because we do not know the string means the same thing for a launcher we do not
+recognise.
+
+VERIFIED ON REAL LOGS, which is the test that counts: run over every codex-luna log on disk, the
+merged parser reads a token count from 46 of 46, none missing --
+
+    fnd-core--codex-luna.log        37968
+    dmn-proto--codex-luna.log       58224
+    wt-provision--codex-luna.log    48791
+    fnd-store--codex-luna.log       68891
+
+That is the entire UNPRICED 32/32 gap on the Pareto board, and more besides. The board could not
+place its best-performing arm on the frontier because nothing had ever read a number the launcher
+prints on every run.
+
+The only critique, codex-luna on glm-53-flash: NO MATERIAL DEFECTS, with a judgement worth
+keeping -- the parser strips every comma before parsing, so malformed grouping like `13,08`
+reads as 1308. It then declines to call that a defect, correctly: "the task does not require
+validating grouping ... treating this as a defect would impose a stricter contract than the
+specification states." That is a critic reasoning about the spec's authority rather than its own
+preference, and it is the right answer.
+
+CROSSX VOIDED, on codex-luna's diagonal alone. I checked whether that was its code: grafting its
+own suite into its own file by hand compiles cleanly. So the fault is in crossx's strip-then-graft
+path, another instance of the P1 already open, and not a mark against the arm.
+
+glm-53-flash on the usual thin margin: the most tests (38 to 33 to 31), and the only free route
+of the three.
+
+1354 tests, clippy 9.
