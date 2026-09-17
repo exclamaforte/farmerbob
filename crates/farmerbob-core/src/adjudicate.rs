@@ -22,6 +22,11 @@ pub struct Evidence {
     pub lines: Option<u32>,
     /// Measured USD. `Some(0.0)` for a plan-based arm is a real zero.
     pub cost_usd: Option<f64>,
+    /// True when cross-examination labelled this candidate's suite OVER-FITTED: it fails
+    /// nearly every rival, so its failures carry no evidence about anyone. A count of tests
+    /// from such a suite is not a measure of depth, it is a measure of how specifically the
+    /// author wrote to their own implementation -- so TestDepth must not reward it.
+    pub suite_overfitted: Option<bool>,
 }
 
 /// Which measurement decided it, in the rubric's order.
@@ -229,7 +234,19 @@ fn value(candidate: &Evidence, criterion: Criterion) -> Option<f64> {
         Criterion::Survival => candidate.survival,
         Criterion::Clippy => candidate.clippy.map(f64::from),
         Criterion::Cost => candidate.cost_usd,
-        Criterion::TestDepth => candidate.tests.map(f64::from),
+        // An over-fitted suite scores ZERO depth, not "unmeasured". Returning None made the
+        // whole criterion skip, so a single over-fitted candidate removed depth-ranking for
+        // the entire field and handed the decision to Simplicity -- which is how resume
+        // regressed to picking the shortest implementation. Zero is the honest reading: the
+        // suite's count is real but worthless as evidence of depth, because a suite that
+        // fails nearly every rival is measuring its author's implementation, not the spec.
+        Criterion::TestDepth => {
+            if candidate.suite_overfitted == Some(true) {
+                Some(0.0)
+            } else {
+                candidate.tests.map(f64::from)
+            }
+        }
         Criterion::Simplicity => candidate.lines.map(f64::from),
     }?;
     value.is_finite().then_some(value)
@@ -250,6 +267,7 @@ mod tests {
             tests: Some(1),
             lines: Some(10),
             cost_usd: Some(1.0),
+            suite_overfitted: None,
         }
     }
 
@@ -365,6 +383,7 @@ mod test_depth_fallback {
             tests: Some(tests),
             lines: Some(lines),
             cost_usd: None,
+            suite_overfitted: None,
         }
     }
 
@@ -409,6 +428,60 @@ mod test_depth_fallback {
                 assert_eq!(on, Criterion::TestDepth);
             }
             other => panic!("expected a TestDepth winner, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod overfitted_suites {
+    //! A suite that fails nearly every rival is measuring its author's implementation, not
+    //! the specification. Its test count is real and worthless as evidence of depth.
+    use super::*;
+
+    fn cand(arm: &str, tests: u32, lines: u32, overfitted: bool) -> Evidence {
+        Evidence {
+            arm: arm.into(),
+            conformance: Some(1.0),
+            defect_sensitivity: None,
+            survival: None,
+            clippy: Some(0),
+            crates_touched: Some(1),
+            tests: Some(tests),
+            lines: Some(lines),
+            cost_usd: None,
+            suite_overfitted: Some(overfitted),
+        }
+    }
+
+    #[test]
+    fn an_overfitted_suite_does_not_win_on_its_test_count() {
+        // the budget field: glm-53-flash wrote 18 tests to codex-luna's 9, and failed all
+        // three rivals, so its count carries no evidence of depth
+        let field = [cand("glm-53-flash", 18, 139, true), cand("codex-luna", 9, 86, false)];
+        match adjudicate(&field, 0.001) {
+            Verdict::Winner { arm, on, .. } => {
+                assert_eq!(arm, "codex-luna");
+                assert_eq!(on, Criterion::TestDepth);
+            }
+            other => panic!("expected codex-luna on TestDepth, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_overfitted_candidate_does_not_disable_depth_for_the_field() {
+        // Scoring it as unmeasured skipped the criterion entirely and handed the decision to
+        // Simplicity, which picked the shortest implementation. Zero, not None.
+        let field = [
+            cand("overfit", 30, 100, true),
+            cand("shortest", 8, 120, false),
+            cand("deepest", 12, 400, false),
+        ];
+        match adjudicate(&field, 0.001) {
+            Verdict::Winner { arm, on, .. } => {
+                assert_eq!(arm, "deepest", "depth must still rank the sound suites");
+                assert_eq!(on, Criterion::TestDepth);
+            }
+            other => panic!("expected deepest on TestDepth, got {other:?}"),
         }
     }
 }

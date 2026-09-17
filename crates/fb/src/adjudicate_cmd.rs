@@ -102,6 +102,11 @@ fn evidence(task: &str) -> Vec<Evidence> {
             .and_then(|v| v.get("survival"))
             .and_then(|v| v.as_f64());
         let tests = tests_written(task, &arm);
+        let overfitted = cx
+            .as_ref()
+            .and_then(|c| c.get(&arm))
+            .and_then(|v| v.get("suite_overfitted"))
+            .and_then(|v| v.as_bool());
         out.push(Evidence {
             arm,
             // A frozen suite is the real measurement. Where none exists, clearing the
@@ -115,6 +120,7 @@ fn evidence(task: &str) -> Vec<Evidence> {
             tests,
             lines: r.get("lines").and_then(|v| v.as_u64()).map(|n| n as u32),
             cost_usd: None,
+            suite_overfitted: overfitted,
         });
     }
     out

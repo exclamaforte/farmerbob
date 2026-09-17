@@ -47,6 +47,9 @@ pub struct Evidence {
     pub lines: Option<u32>,
     /// Measured USD. `Some(0.0)` for a plan-based arm is a real zero.
     pub cost_usd: Option<f64>,
+    /// True when cross-examination labelled this suite OVER-FITTED -- it fails nearly every
+    /// rival, so its failures carry no evidence. Such a suite scores ZERO on `TestDepth`.
+    pub suite_overfitted: Option<bool>,
 }
 
 /// Which measurement decided it, in the rubric's order.
@@ -81,7 +84,9 @@ pub fn missing_evidence(candidates: &[Evidence]) -> Vec<Criterion>;
 ## Required behaviour
 
 - Criteria apply in exactly this order: `Conformance`, `ScopeDiscipline`,
-  `DefectSensitivity`, `Survival`, `Clippy`, `Cost`, `TestDepth`, `Simplicity`. The first that separates
+  `DefectSensitivity`, `Survival`, `Clippy`, `Cost`, `TestDepth`, `Simplicity`.
+- An `suite_overfitted` candidate scores 0.0 on `TestDepth`, NOT `None`. Scoring it as
+  unmeasured skips the criterion for the whole field and hands the decision to `Simplicity`. The first that separates
   the field decides, and later criteria are never consulted.
 - `ScopeDiscipline` prefers FEWER `crates_touched`; a candidate touching more crates than
   the minimum loses to one touching fewer, whatever else is true of it.
