@@ -5,6 +5,30 @@
    "critic": "or-muse-spark",
    "found_on": "glm-53-flash",
    "tests": 2
+  },
+  {
+   "task": "resume",
+   "critic": "codex-luna",
+   "found_on": "crossx",
+   "tests": 8
+  },
+  {
+   "task": "gate",
+   "critic": "or-muse-spark",
+   "found_on": "crossx",
+   "tests": 18
+  },
+  {
+   "task": "outcome",
+   "critic": "codex-luna",
+   "found_on": "crossx",
+   "tests": 8
+  },
+  {
+   "task": "reviewer",
+   "critic": "codex-luna",
+   "found_on": "crossx",
+   "tests": 8
   }
  ]
 }

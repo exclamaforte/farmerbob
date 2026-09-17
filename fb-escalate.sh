@@ -25,9 +25,46 @@ set -uo pipefail
 cd /home/gabe/Documents/farmerbob
 export PATH="$HOME/.cargo/bin:$PATH"
 LEDGER=.fb/credits.json
+REPO_ESC=/home/gabe/Documents/farmerbob
 CMD="${1:?verify|credit|ledger}"
 
 case "$CMD" in
+  crossx)
+    # Cross-examination finds defects that never pass through a CLAIM, so they never reached
+    # the permanent suite: outcome's validation order, resume's due_now ordering and gate's
+    # one-line explain were all found this way and all discarded after deciding a single
+    # adjudication. The test already exists and already passes against the merged winner, so
+    # escalating it costs nothing and sharpens the gate for every future candidate.
+    T="${2:?task}"
+    tgt=$(grep -ohE '<!-- fb:creates [^ ]+ -->' ".fb/prompts/$T.md" 2>/dev/null | awk '{print $3}' | head -1)
+    [ -n "$tgt" ] || { echo "$T: no fb:creates target"; exit 2; }
+    crate=$(awk -F/ '{print $2}' <<< "$tgt")
+    CX="$HOME/.local/share/farmerbob/logs/$T.crossx.json"
+    [ -s "$CX" ] || { echo "$T: no crossx"; exit 0; }
+    WTR="$HOME/.local/share/farmerbob/worktrees"
+    suite=".fb/conformance/$T.rs"
+    finder=$(python3 -c "
+import json
+d=json.load(open('$CX'))
+b=[(a,v) for a,v in d.items() if v.get('suite_discriminating') and (v.get('discovery') or 0)>0]
+b.sort(key=lambda kv:-kv[1]['discovery'])
+print(b[0][0] if b else '')")
+    [ -n "$finder" ] || { echo "  no discriminating suite"; exit 0; }
+    marker="cx_${T//-/_}_${finder//-/_}"
+    grep -q "$marker" "$suite" 2>/dev/null && { echo "  already escalated from $finder"; exit 0; }
+    echo "  discriminating suite: $finder"
+    python3 "$REPO_ESC/fb-escalate-graft.py" "$WTR/$T--$finder/$tgt" "$suite" "$marker" "$finder" "$T" || exit 0
+    python3 "$REPO_ESC/fb-escalate-graft.py" --into "$suite" "$tgt" "$marker"
+    n=$(cargo test -p "$crate" "$marker" 2>&1 | grep -cE "^test .*$marker.*ok$")
+    if [ "${n:-0}" -eq 0 ] || ! cargo test -p "$crate" "$marker" >/dev/null 2>&1; then
+      echo "  VETOED against the merged reference -- retracting"
+      python3 "$REPO_ESC/fb-escalate-graft.py" --retract "$suite" "$tgt"
+      exit 0
+    fi
+    echo "  kept: $n test(s) pass against the merged winner"
+    ./fb-escalate.sh credit "$T" "$finder" "crossx" "$n" >/dev/null
+    exit 0
+    ;;
   auto)
     # Harvest every CONFIRMED proof into the task's permanent suite. fb-prove already wrote
     # the test, ran it against the subject, and ran it against the merged reference -- the
