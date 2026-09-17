@@ -11,9 +11,28 @@
 #
 # Runs on copies; never touches a candidate worktree.        (bead farmerbob-xle)
 set -uo pipefail
+
+
 export PATH="$HOME/.cargo/bin:$PATH"
 . /home/gabe/Documents/farmerbob/fb-verdict.sh
 BEAD="${1:?bead}"; CRATE="${2:-farmerbob-core}"; FILE="${3:?relative path of the file under test}"
+
+# As of this commit the matrix lives in Rust -- `fb crossx` -- and this script DELEGATES.
+# Verified on `consensus` BEFORE switching over: identical arms, identical cells, identical
+# survival/discovery/suite classification, field for field, and 20 seconds against the
+# shell's own runtime.
+#
+# That verification is not ceremony. The merged port passed the worktree score, built clean
+# on merge and ran 18 of 18 unit tests green -- and then waited the full per-cell timeout on
+# every cell, 80 minutes of sleeping to do 20 seconds of work, because its timeout killer
+# could not be cancelled. Running it on real input and diffing is the only check that caught
+# it.  (bead farmerbob-jd2.13)
+#
+# Falls back to the shell below when the binary is not built.
+FB_BIN=/home/gabe/Documents/farmerbob/target/debug/fb
+if [ -x "$FB_BIN" ]; then
+  exec "$FB_BIN" crossx "$BEAD" --crate "$CRATE" "$FILE"
+fi
 WT_ROOT="$HOME/.local/share/farmerbob/worktrees"
 REPO=/home/gabe/Documents/farmerbob
 OUT="$HOME/.local/share/farmerbob/logs/$BEAD.crossx.json"
