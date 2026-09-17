@@ -158,17 +158,50 @@ CGPID=$!
       -E XDG_DATA_HOME="$FBSTATE/data" -E XDG_STATE_HOME="$FBSTATE/state" \
       -E XDG_CACHE_HOME="$FBSTATE/cache" \
       -p MemoryMax="${FB_MEM_MAX:-3G}" -p MemoryHigh="${FB_MEM_HIGH:-2500M}" \
-      -p CPUQuota="${FB_CPU_QUOTA:-400%}" -p TasksMax=2048 -- "$@"
+      -p CPUQuota="${FB_CPU_QUOTA:-400%}" -p TasksMax=2048 \
+      -p RuntimeMaxSec="${FB_RUN_TIMEOUT:-2700}" -- "$@"
   }
+  # RuntimeMaxSec above is the run timeout, and it is systemd's rather than a `timeout`
+  # wrapper DELIBERATELY: it terminates the whole scope, so it reaches the agent inside bwrap
+  # and every process it spawned. A `timeout` around fb-isolated would signal the wrapper and
+  # leave the sandboxed children running.
+  #
+  # Until 2026-09-17 there was no run timeout of any kind. The one `timeout` in this file was
+  # a --print-timeout flag passed to ONE launcher because that launcher happened to offer it.
+  # port-status/glm-53-flash then ran 21 minutes on 26 seconds of CPU, writing nothing, and
+  # because a live run holds the wave lock it held the entire queue behind it. It ended when a
+  # human read `ps`. (farmerbob-... : no dispatch timeout)
+  #
+  # systemd sends SIGTERM, which surfaces as rc=143, which classify_outcome already maps to
+  # orchestrator_cancelled -- so a timed-out run is NOT recorded as the arm producing nothing.
+  # That existing mapping is what makes this cheap; without it the cure would have been another
+  # way to blame a model for the harness.
+  #
+  # 45 minutes: the longest legitimate run observed is 1304s (22 min), so the cap is roughly
+  # double it. Override per wave with FB_RUN_TIMEOUT.
   case "$SRC" in
-    codex-luna)      run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.6-luna "$P" ;;
+    codex-luna)      run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" codex exec \
+                         --dangerously-bypass-approvals-and-sandbox --strict-config \
+                         -c model_reasoning_effort="${FB_CODEX_EFFORT:-xhigh}" \
+                         -m gpt-5.6-luna "$P" ;;
+    claude-sonnet)   run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" claude \
+                         -p "$P" --permission-mode bypassPermissions --model sonnet \
+                         --effort "${FB_CLAUDE_EFFORT:-xhigh}" --output-format json ;;
     gemini-38-flash) run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" agy -p "$P" --print-timeout 45m --model gemini-3.8-flash-high --add-dir "$WT" \
                          --dangerously-skip-permissions --output-format text ;;
     glm-53-flash)    run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" zcode --prompt "$P" ;;
     ifm-*)           set -a; . "$HOME/.config/farmerbob/secrets.env"; set +a
                      run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" opencode run -m "$MODEL" "$P" ;;
     or-*)            run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" ori opencode run -m "$MODEL" "$P" ;;
-    *) echo "unknown source $SRC"; exit 127 ;;
+    # An arm the registry calls verified but this table cannot launch. sources.toml declares
+    # `cmd` and `args` for every arm and NOTHING HERE READS THEM -- this case statement is a
+    # second, authoritative-looking copy of the same fact, and claude-sonnet was re-enabled,
+    # dispatched, and came back rc=127 in 0 seconds because it was missing from this one.
+    # Building the command line from the registry is the real fix (farmerbob-...); until then
+    # the message at least says which of the two copies is wrong.
+    *) echo "unknown source $SRC: no launcher branch in fb-dispatch.sh (sources.toml declares" \
+            "cmd/args for it, but this table is what actually runs and does not read them)"
+       exit 127 ;;
   esac
 ) >"$LOG" 2>&1
 RC=$?
