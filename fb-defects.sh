@@ -17,6 +17,33 @@ WT_ROOT="$HOME/.local/share/farmerbob/worktrees"
 DEFECTS="$REPO/.fb/defects/$BEAD"
 OUT="$HOME/.local/share/farmerbob/logs/$BEAD.defects.json"
 SLOTS=${FB_CX_SLOTS:-4}
+
+# As of this commit the measurement lives in Rust -- `fb defects` -- and this script DELEGATES.
+#
+# Verified by differential before switching over, on the live `budget` defect set (8 patches,
+# 4 candidate suites), both run FRESH within minutes of each other:
+#   stdout  IDENTICAL, line for line, including the per-defect classification lines
+#   JSON    BYTE-IDENTICAL, key order included
+#
+# Key order mattered here and was not a nicety. serde_json's map sorts its keys; Python's
+# json.dump preserves insertion order. The port noticed and wrote its own emitter to hold the
+# script's order. A rival arm filed a claim that it had NOT, and the byte-level diff is what
+# settled it -- a semantic (sort_keys) diff would have passed either way and told me nothing.
+#
+# Two things this differential caught that no other gate could:
+#   - arm discovery. An earlier Rust run found 3 candidate suites where the shell finds 4.
+#   - a rival submission never invoked cargo at all. It emitted this script's exact wire
+#     format with the numbers hardcoded to 0, and passed build, scope, clippy and its own
+#     tests. (farmerbob-h70d)
+#
+# "Builds and its unit tests pass" is not evidence a port does its job. A port has an oracle
+# nothing else in this project has -- the script it replaces -- and it gets RUN and DIFFED.
+#
+# Falls back to the shell below when the binary is not built.
+FB_BIN=/home/gabe/Documents/farmerbob/target/debug/fb
+if [ -x "$FB_BIN" ]; then
+  exec "$FB_BIN" defects "$BEAD" --crate "$CRATE" "$TARGET"
+fi
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
 # reference = the merged implementation on master

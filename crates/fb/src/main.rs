@@ -3,6 +3,7 @@ mod cmd;
 mod critique;
 mod crossx;
 mod promote;
+mod defects;
 mod escalate;
 mod doctor;
 mod import;
@@ -70,6 +71,18 @@ enum Command {
     },
     /// Rebuild logs/objective.json.
     Objective { #[arg(default_value = "")] only: String },
+    /// Measure each candidate suite's sensitivity against a set of injected defects.
+    ///
+    /// Ported from fb-defects.sh. A defect is valid when the reference conformance suite
+    /// detects it, BEYOND THE REFERENCE when the reference misses it -- which is the only
+    /// figure that separates a field where everyone catches the obvious defects -- and not a
+    /// defect at all when it fails to compile.
+    Defects {
+        task: String,
+        #[arg(long = "crate", default_value = score::DEFAULT_CRATE)]
+        krate: String,
+        target: String,
+    },
     /// Generate a defect set mechanically, so suite sensitivity can be measured.
     ///
     /// DefectSensitivity is the adjudicator's only direct measure of suite quality and has
@@ -422,6 +435,7 @@ fn main() {
         }
         Some(Command::Promote { task }) => promote::run_cmd(&task),
         Some(Command::Objective { only }) => objective::run_cmd(if only.is_empty() { None } else { Some(only) }),
+        Some(Command::Defects { task, krate, target }) => defects::run_cmd(&task, &krate, &target),
         Some(Command::Mutants { file, task, max }) => mutants::run_cmd(&file, &task, max),
         Some(Command::Prove { task, krate, target, prover }) =>
             prove::run_cmd(&task, &krate, &target, &prover),
