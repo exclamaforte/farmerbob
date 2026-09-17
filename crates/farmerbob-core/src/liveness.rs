@@ -23,6 +23,12 @@
 //! Everything here is pure logic: no I/O, no clock reads, no process inspection. Time
 //! enters only as the `at_ms` field of an [`Observation`] and the `now_ms` argument of
 //! [`decay`], so a recorded sequence of observations can be replayed deterministically.
+//!
+//! What observation alone does not say is when a run should be *ended*. That is
+//! [`cut`]: a decision that rests on strong evidence of no progress, refuses to decide
+//! when the evidence is absent or impossible, and reads a quiet log under a live
+//! cgroup as the buffering launcher it usually is — never as a stall. "No evidence of
+//! progress" and "evidence of no progress" must not produce the same decision.
 
 /// How much weight a source carries. Greater is stronger.
 ///
@@ -221,6 +227,233 @@ fn slot(authority: Authority) -> usize {
         Authority::Output => 0,
         Authority::Cgroup => 1,
         Authority::Lifecycle => 2,
+    }
+}
+
+// --- the cut decision --------------------------------------------------------
+//
+// Everything above observes; what follows decides. The rule it encodes is the one the
+// module exists for: a cut may rest on strong evidence of NO progress — a cgroup (or
+// better) reporting idle or blocked past a stated budget — and never on the absence of
+// progress reports. A silent log is what a buffering launcher produces while working.
+
+/// Limits a caller supplies. There is no default: a budget is a policy decision and the
+/// caller owns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CutBudget {
+    /// Hard wall-clock ceiling. A run past this is cut whatever it is doing.
+    ///
+    /// Zero is a real ceiling, not "no limit": every run, even one of age zero, is at
+    /// or past it. A caller that wants no ceiling passes [`u64::MAX`]; silently
+    /// reinterpreting zero as unlimited is how a config typo disables a safety limit.
+    pub max_total_ms: u64,
+    /// How long a run may be believed `Idle` before it is cut.
+    ///
+    /// Zero cuts on the first `Idle` belief, however fresh it is.
+    pub max_idle_ms: u64,
+    /// How long a run may be believed `Blocked` before it is cut. Separate from
+    /// `max_idle_ms` deliberately: blocked-on-network is ordinary and often
+    /// longer-lived than an idle loop, and collapsing them forces one number to serve
+    /// two behaviours.
+    pub max_blocked_ms: u64,
+}
+
+/// Whether to end a run, and on what grounds.
+///
+/// NOT an exhaustive account of every reason a run can end. It is the set [`cut`]
+/// decides; a caller may end a run for reasons this type knows nothing about — an
+/// operator's kill, a provider refusal, a machine reboot. [`Cut::Keep`] in particular
+/// does NOT mean "this run is healthy": it means this function found no ground to end
+/// it, which is a weaker claim, and callers must not log or relay it as health.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cut {
+    /// Let it run. Carries why, so a caller can log a decision it did not take.
+    Keep {
+        /// Why the run was let run, for the caller's log.
+        because: String,
+    },
+    /// End it. `because` is written for a human reading an incident later.
+    Cut {
+        /// Why the run should end, for the incident record.
+        because: String,
+    },
+    /// Refuse to decide. The evidence does not support ending a run, and ending one on
+    /// insufficient evidence is worse than waiting.
+    Insufficient {
+        /// What evidence is missing, so the caller can go and gather it.
+        missing: String,
+    },
+}
+
+/// Decide whether a run should be cut.
+///
+/// `elapsed_ms` is the run's age. `now_ms` is the current instant, used to age the
+/// belief.
+///
+/// Arbitration order, each step decisive:
+///
+/// 1. An impossible belief refuses to decide — [`Cut::Insufficient`], never [`Cut::Cut`]:
+///    no authority (`Belief::authority` is `None`, so nothing has been observed), a
+///    belief timestamped after `now_ms`, or a belief older than the run itself. Such a
+///    belief means the caller's view of the run is broken, and a decision issued from a
+///    broken view may be about the wrong run; it also means no duration — including the
+///    idle hold — can be computed without wrapping. The refusal says what is missing
+///    instead of saturating silently.
+/// 2. The hard ceiling: `elapsed_ms` at or past `CutBudget::max_total_ms` cuts whatever
+///    the belief says. The wall outranks apparent progress because apparent progress is
+///    a *claim* — one source said so, and every source in [`Authority`] can be wrong or
+///    stale — while `elapsed_ms` is not a claim at all. The ceiling is the caller's
+///    promise that no run outlives the budget, and a promise may not depend on a
+///    belief.
+/// 3. [`Liveness::Gone`] cuts, with grounds that distinguish a finished run from a
+///    stalled one: there is nothing to kill.
+/// 4. [`Liveness::Idle`] and [`Liveness::Blocked`] cut only once held past their own
+///    budget — and only on an authority of at least [`Authority::Cgroup`]. A cut may
+///    not rest on [`Authority::Output`]: a frozen log is the weakest evidence there is,
+///    and an idle claim from it is kept, with the reason logged.
+/// 5. [`Liveness::Working`] is kept, whatever its age and whatever its authority. A
+///    `Working` belief from [`Authority::Cgroup`] with a long-silent log is the
+///    buffering launcher, not a stall. Callers who want stale beliefs to expire
+///    compose [`decay`] before calling this; this function does not second-guess a
+///    standing claim of work.
+/// 6. [`Liveness::Unknown`] refuses to decide: it is a real state, and callers must
+///    not read it as `Gone`.
+///
+/// The limits are inclusive — `elapsed_ms == max_total_ms` is at the ceiling, and a
+/// belief held exactly `max_idle_ms` is at the idle limit — because that is what the
+/// zero cases force and zero is not special-cased: with `max_total_ms: 0` every run,
+/// even one of age zero, is at or past its ceiling, and `max_idle_ms: 0` cuts on the
+/// first `Idle` belief. All comparisons are made without arithmetic that can overflow.
+pub fn cut(belief: &Belief, elapsed_ms: u64, now_ms: u64, budget: &CutBudget) -> Cut {
+    let authority = match belief.authority {
+        Some(a) => a,
+        None => {
+            return Cut::Insufficient {
+                missing: "no observation has ever been held for this run: there is no \
+                          evidence of progress and no evidence of a stall, and the two \
+                          must not produce the same decision"
+                    .to_string(),
+            }
+        }
+    };
+
+    if belief.at_ms > now_ms {
+        return Cut::Insufficient {
+            missing: format!(
+                "the belief is timestamped in the future: at_ms {} is after now_ms {}, so \
+                 the clock or the run identity is broken and no duration can be trusted",
+                belief.at_ms, now_ms
+            ),
+        };
+    }
+
+    // Exact, not saturating in effect: the future case returned above.
+    let held_ms = now_ms.saturating_sub(belief.at_ms);
+    if held_ms > elapsed_ms {
+        return Cut::Insufficient {
+            missing: format!(
+                "the belief is {held_ms} ms old but the run is only {elapsed_ms} ms old: \
+                 the observation predates the run it is supposed to describe"
+            ),
+        };
+    }
+
+    if elapsed_ms >= budget.max_total_ms {
+        return Cut::Cut {
+            because: format!(
+                "the run is {elapsed_ms} ms old, at or past the hard ceiling of {} ms; the \
+                 ceiling is wall-clock policy and cuts whatever the run appears to be doing",
+                budget.max_total_ms
+            ),
+        };
+    }
+
+    match belief.liveness {
+        Liveness::Gone => Cut::Cut {
+            because: format!(
+                "{authority:?} reports the run gone (evidence: {}): it ended on its own, \
+                 so there is nothing to kill — this is reaping a finished run, not \
+                 cutting a stall",
+                belief.evidence
+            ),
+        },
+        Liveness::Working => Cut::Keep {
+            because: format!(
+                "{authority:?} reports the run working (evidence: {}); the belief is \
+                 {held_ms} ms old and the run is within its {} ms ceiling, so there is \
+                 no ground to end it — a quiet log under a live report of work is the \
+                 buffering launcher, not a stall",
+                belief.evidence, budget.max_total_ms
+            ),
+        },
+        Liveness::Idle => {
+            if held_ms >= budget.max_idle_ms {
+                if authority >= Authority::Cgroup {
+                    Cut::Cut {
+                        because: format!(
+                            "idle for {held_ms} ms, at or past the {} ms idle budget \
+                             ({authority:?}; evidence: {}): the strongest standing source \
+                             has reported no progress for past the whole budget",
+                            budget.max_idle_ms, belief.evidence
+                        ),
+                    }
+                } else {
+                    Cut::Keep {
+                        because: format!(
+                            "idle for {held_ms} ms is past the {} ms idle budget, but the \
+                             only source is Output, which this module exists to distrust; \
+                             a cut may not rest on it",
+                            budget.max_idle_ms
+                        ),
+                    }
+                }
+            } else {
+                Cut::Keep {
+                    because: format!(
+                        "idle for {held_ms} ms, within the {} ms idle budget",
+                        budget.max_idle_ms
+                    ),
+                }
+            }
+        }
+        Liveness::Blocked => {
+            if held_ms >= budget.max_blocked_ms {
+                if authority >= Authority::Cgroup {
+                    Cut::Cut {
+                        because: format!(
+                            "blocked for {held_ms} ms, at or past the {} ms blocked budget \
+                             ({authority:?}; evidence: {})",
+                            budget.max_blocked_ms, belief.evidence
+                        ),
+                    }
+                } else {
+                    Cut::Keep {
+                        because: format!(
+                            "blocked for {held_ms} ms is past the {} ms blocked budget, but \
+                             the only source is Output, which may not end a run",
+                            budget.max_blocked_ms
+                        ),
+                    }
+                }
+            } else {
+                Cut::Keep {
+                    because: format!(
+                        "blocked for {held_ms} ms, within the {} ms blocked budget; waiting \
+                         on the world is ordinary and gets its own budget, separate from \
+                         idle",
+                        budget.max_blocked_ms
+                    ),
+                }
+            }
+        }
+        Liveness::Unknown => Cut::Insufficient {
+            missing: format!(
+                "{authority:?} could not decide what the run is doing (evidence: {}); \
+                 Unknown is a real state and must not be treated as Gone, so there is \
+                 nothing to cut on",
+                belief.evidence
+            ),
+        },
     }
 }
 
@@ -746,5 +979,446 @@ mod tests {
         assert_eq!(forward, backward);
         assert_eq!(forward.belief().liveness, Liveness::Gone);
         assert_eq!(forward.belief().evidence, "last");
+    }
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::*;
+
+    /// A hand-built belief, with evidence a source could have logged.
+    fn belief(liveness: Liveness, authority: Option<Authority>, at_ms: u64) -> Belief {
+        Belief {
+            liveness,
+            authority,
+            at_ms,
+            evidence: format!("{liveness:?} per {authority:?} at {at_ms}"),
+        }
+    }
+
+    fn budget(max_total_ms: u64, max_idle_ms: u64, max_blocked_ms: u64) -> CutBudget {
+        CutBudget {
+            max_total_ms,
+            max_idle_ms,
+            max_blocked_ms,
+        }
+    }
+
+    const NOW: u64 = 10_000;
+
+    /// Roomy enough that nothing times out unless a test means it to.
+    fn roomy() -> CutBudget {
+        budget(100_000, 5_000, 20_000)
+    }
+
+    fn reason_of(decision: Cut) -> String {
+        match decision {
+            Cut::Keep { because } | Cut::Cut { because } => because,
+            Cut::Insufficient { missing } => missing,
+        }
+    }
+
+    // --- working is kept (clauses 1, 2, 3) ------------------------------------
+
+    #[test]
+    fn working_from_cgroup_within_the_ceiling_is_kept() {
+        let b = belief(Liveness::Working, Some(Authority::Cgroup), NOW - 100);
+        assert!(matches!(
+            cut(&b, 1_000, NOW, &roomy()),
+            Cut::Keep { .. }
+        ));
+    }
+
+    #[test]
+    fn a_working_belief_from_output_alone_never_cuts_a_run_within_budget() {
+        // A weak source may not end a run.
+        let b = belief(Liveness::Working, Some(Authority::Output), NOW - 100);
+        let decision = cut(&b, 1_000, NOW, &roomy());
+        assert!(!matches!(decision, Cut::Cut { .. }));
+    }
+
+    #[test]
+    fn the_buffering_launcher_silent_log_under_a_live_cgroup_is_kept() {
+        // "The log has gone quiet while the CPU climbs" is exactly: a Working claim
+        // from the cgroup, standing unchallenged far longer than the idle budget,
+        // with no newer observation from any source. That is a keep, not a stall.
+        let b = belief(Liveness::Working, Some(Authority::Cgroup), NOW - 10_000);
+        assert!(matches!(
+            cut(&b, 30_000, NOW, &roomy()),
+            Cut::Keep { .. }
+        ));
+    }
+
+    #[test]
+    fn working_is_kept_whatever_the_belief_age_while_the_ceiling_allows() {
+        // Staleness is decay's job, composed by the caller; cut does not regrade a
+        // standing claim of work into a stall.
+        let b = belief(Liveness::Working, Some(Authority::Cgroup), 0);
+        assert!(matches!(
+            cut(&b, NOW, NOW, &roomy()),
+            Cut::Keep { .. }
+        ));
+    }
+
+    // --- the real stall (clause 4) ----------------------------------------------
+
+    #[test]
+    fn the_real_stall_idle_from_cgroup_past_the_budget_cuts() {
+        // Held for 6s against a 5s idle budget, within the total ceiling.
+        let b = belief(Liveness::Idle, Some(Authority::Cgroup), NOW - 6_000);
+        match cut(&b, 7_000, NOW, &roomy()) {
+            Cut::Cut { because } => assert!(
+                because.contains("6000"),
+                "the grounds must name the idle duration: {because}"
+            ),
+            other => panic!("expected Cut, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn idle_within_the_budget_is_kept() {
+        let b = belief(Liveness::Idle, Some(Authority::Cgroup), NOW - 4_999);
+        assert!(matches!(
+            cut(&b, 5_000, NOW, &roomy()),
+            Cut::Keep { .. }
+        ));
+    }
+
+    // --- blocked has its own budget (clause 5) -----------------------------------
+
+    #[test]
+    fn blocked_past_the_idle_budget_but_within_its_own_is_kept() {
+        // Held 10s: past max_idle_ms (5s), well under max_blocked_ms (20s).
+        let b = belief(Liveness::Blocked, Some(Authority::Cgroup), NOW - 10_000);
+        assert!(matches!(
+            cut(&b, 30_000, NOW, &roomy()),
+            Cut::Keep { .. }
+        ));
+    }
+
+    #[test]
+    fn blocked_past_its_own_budget_cuts() {
+        // Held 10s against a 9s blocked budget.
+        let b = belief(Liveness::Blocked, Some(Authority::Cgroup), 0);
+        assert!(matches!(
+            cut(&b, 30_000, NOW, &budget(100_000, 5_000, 9_000)),
+            Cut::Cut { .. }
+        ));
+    }
+
+    #[test]
+    fn blocked_within_both_budgets_is_kept() {
+        let b = belief(Liveness::Blocked, Some(Authority::Cgroup), NOW - 1_000);
+        assert!(matches!(
+            cut(&b, 2_000, NOW, &roomy()),
+            Cut::Keep { .. }
+        ));
+    }
+
+    // --- the hard ceiling (clause 6) ----------------------------------------------
+
+    #[test]
+    fn the_ceiling_cuts_regardless_of_liveness() {
+        for liveness in [
+            Liveness::Working,
+            Liveness::Idle,
+            Liveness::Blocked,
+            Liveness::Gone,
+            Liveness::Unknown,
+        ] {
+            let b = belief(liveness, Some(Authority::Cgroup), NOW - 100);
+            let decision = cut(&b, 100_001, NOW, &roomy());
+            assert!(
+                matches!(decision, Cut::Cut { .. }),
+                "{liveness:?} must not survive the ceiling"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_ceiling_is_a_real_limit_not_no_limit() {
+        let tight = budget(0, 5_000, 20_000);
+        // A newborn run is over a zero ceiling: zero must not be reinterpreted as
+        // unlimited, or a config typo silently disarms the wall.
+        let newborn = belief(Liveness::Working, Some(Authority::Cgroup), NOW);
+        assert!(matches!(
+            cut(&newborn, 0, NOW, &tight),
+            Cut::Cut { .. }
+        ));
+        let aged = belief(Liveness::Working, Some(Authority::Cgroup), NOW - 1_000);
+        assert!(matches!(
+            cut(&aged, 1_000, NOW, &tight),
+            Cut::Cut { .. }
+        ));
+    }
+
+    #[test]
+    fn a_zero_idle_budget_cuts_on_the_first_idle_observation() {
+        let tight = budget(100_000, 0, 20_000);
+        let b = belief(Liveness::Idle, Some(Authority::Cgroup), NOW);
+        assert!(matches!(cut(&b, 1_000, NOW, &tight), Cut::Cut { .. }));
+    }
+
+    #[test]
+    fn zero_elapsed_with_a_healthy_belief_is_kept() {
+        // A belief can only describe a run it was formed during, so elapsed 0 pairs
+        // with a belief timestamped at now.
+        let working = belief(Liveness::Working, Some(Authority::Cgroup), NOW);
+        assert!(matches!(cut(&working, 0, NOW, &roomy()), Cut::Keep { .. }));
+        let idle = belief(Liveness::Idle, Some(Authority::Cgroup), NOW);
+        assert!(matches!(cut(&idle, 0, NOW, &roomy()), Cut::Keep { .. }));
+    }
+
+    // --- nothing observed is never a cut (clause 7) --------------------------------
+
+    #[test]
+    fn no_authority_is_insufficient_never_a_cut_even_over_the_ceiling() {
+        for liveness in [
+            Liveness::Working,
+            Liveness::Idle,
+            Liveness::Blocked,
+            Liveness::Gone,
+            Liveness::Unknown,
+        ] {
+            let b = belief(liveness, None, NOW - 100);
+            let decision = cut(&b, 100_001, NOW, &roomy());
+            assert!(
+                !matches!(decision, Cut::Cut { .. }),
+                "authority None must never cut, even for {liveness:?}"
+            );
+            assert!(
+                matches!(decision, Cut::Insufficient { .. }),
+                "no evidence of progress is not evidence of no progress ({liveness:?})"
+            );
+        }
+    }
+
+    // --- impossible timestamps (clause 8) --------------------------------------------
+
+    #[test]
+    fn a_belief_from_the_future_is_insufficient() {
+        let b = belief(Liveness::Working, Some(Authority::Cgroup), NOW + 1);
+        assert!(matches!(
+            cut(&b, 1_000, NOW, &roomy()),
+            Cut::Insufficient { .. }
+        ));
+    }
+
+    #[test]
+    fn a_belief_older_than_the_run_itself_is_insufficient() {
+        // The run started at NOW - 1_000; the belief predates it.
+        let b = belief(Liveness::Working, Some(Authority::Cgroup), NOW - 1_001);
+        assert!(matches!(
+            cut(&b, 1_000, NOW, &roomy()),
+            Cut::Insufficient { .. }
+        ));
+    }
+
+    #[test]
+    fn a_belief_from_exactly_the_run_start_is_usable() {
+        let b = belief(Liveness::Working, Some(Authority::Cgroup), NOW - 1_000);
+        assert!(matches!(
+            cut(&b, 1_000, NOW, &roomy()),
+            Cut::Keep { .. }
+        ));
+    }
+
+    #[test]
+    fn saturating_extremes_do_not_panic_or_wrap() {
+        let no_limit = budget(u64::MAX, u64::MAX, u64::MAX);
+        // A belief at the epoch against now = u64::MAX is older than any run the
+        // caller can name, and must be refused, not wrapped into a fresh belief.
+        let epoch = belief(Liveness::Working, Some(Authority::Cgroup), 0);
+        assert!(matches!(
+            cut(&epoch, u64::MAX - 1, u64::MAX, &no_limit),
+            Cut::Insufficient { .. }
+        ));
+        // One millisecond inside the run's life, against unlimited budgets, at the
+        // top of the range: keep, with no arithmetic anywhere near a wrap.
+        let inside = belief(Liveness::Working, Some(Authority::Cgroup), 2);
+        assert!(matches!(
+            cut(&inside, u64::MAX - 1, u64::MAX, &no_limit),
+            Cut::Keep { .. }
+        ));
+        // Future-stamped at the top of the range.
+        let future = belief(Liveness::Working, Some(Authority::Cgroup), u64::MAX);
+        assert!(matches!(
+            cut(&future, u64::MAX, u64::MAX - 1, &no_limit),
+            Cut::Insufficient { .. }
+        ));
+    }
+
+    // --- budgets at u64::MAX never cut on duration ------------------------------------
+
+    #[test]
+    fn unlimited_budgets_never_cut_on_duration_only_gone_cuts() {
+        let no_limit = budget(u64::MAX, u64::MAX, u64::MAX);
+        for liveness in [
+            Liveness::Working,
+            Liveness::Idle,
+            Liveness::Blocked,
+            Liveness::Unknown,
+        ] {
+            let b = belief(liveness, Some(Authority::Cgroup), NOW - 100);
+            let decision = cut(&b, u64::MAX / 2, NOW, &no_limit);
+            assert!(
+                !matches!(decision, Cut::Cut { .. }),
+                "{liveness:?} must not be cut under unlimited budgets"
+            );
+        }
+        let gone = belief(Liveness::Gone, Some(Authority::Cgroup), NOW - 100);
+        assert!(matches!(
+            cut(&gone, u64::MAX / 2, NOW, &no_limit),
+            Cut::Cut { .. }
+        ));
+    }
+
+    // --- gone is reaping, not cutting (clause 9) ----------------------------------------
+
+    #[test]
+    fn gone_cuts_from_any_authority_because_there_is_nothing_to_kill() {
+        for authority in [
+            Authority::Output,
+            Authority::Cgroup,
+            Authority::Lifecycle,
+        ] {
+            let b = belief(Liveness::Gone, Some(authority), NOW - 100);
+            let decision = cut(&b, 1_000, NOW, &roomy());
+            assert!(
+                matches!(decision, Cut::Cut { .. }),
+                "gone per {authority:?} must cut: the run already ended"
+            );
+        }
+    }
+
+    #[test]
+    fn a_gone_cut_does_not_read_like_a_stall_cut() {
+        let gone = belief(Liveness::Gone, Some(Authority::Cgroup), NOW - 100);
+        let stalled = belief(Liveness::Idle, Some(Authority::Cgroup), NOW - 100);
+        let gone_cut = cut(&gone, 1_000, NOW, &budget(100_000, 50, 20_000));
+        let stall_cut = cut(&stalled, 1_000, NOW, &budget(100_000, 50, 20_000));
+        match (gone_cut, stall_cut) {
+            (Cut::Cut { because: gone }, Cut::Cut { because: stall }) => {
+                assert_ne!(
+                    gone, stall,
+                    "the grounds for reaping a finished run must be distinguishable \
+                     from the grounds for killing a stalled one"
+                );
+            }
+            (a, b) => panic!("both must cut, got {a:?} and {b:?}"),
+        }
+    }
+
+    // --- unknown is a refusal (clause 10) -------------------------------------------------
+
+    #[test]
+    fn unknown_is_insufficient_from_every_authority() {
+        for authority in [
+            Authority::Output,
+            Authority::Cgroup,
+            Authority::Lifecycle,
+        ] {
+            let b = belief(Liveness::Unknown, Some(authority), NOW - 100);
+            let decision = cut(&b, 1_000, NOW, &roomy());
+            assert!(!matches!(decision, Cut::Cut { .. }));
+            assert!(matches!(decision, Cut::Insufficient { .. }));
+        }
+    }
+
+    // --- a cut rests on cgroup or better ---------------------------------------------------
+
+    #[test]
+    fn an_idle_claim_from_output_alone_never_cuts() {
+        // The stall cut is pinned to the cgroup; the same principle that keeps a weak
+        // source from ending a Working run keeps it from ending an Idle one. Output
+        // silence is the buffering launcher, whatever the claim.
+        let b = belief(Liveness::Idle, Some(Authority::Output), NOW - 6_000);
+        let decision = cut(&b, 30_000, NOW, &roomy());
+        assert!(!matches!(decision, Cut::Cut { .. }));
+    }
+
+    #[test]
+    fn a_blocked_claim_from_output_alone_never_cuts() {
+        // Held 10s against a 9s blocked budget: past it, were the source admissible.
+        let b = belief(Liveness::Blocked, Some(Authority::Output), 0);
+        let decision = cut(&b, 30_000, NOW, &budget(100_000, 5_000, 9_000));
+        assert!(!matches!(decision, Cut::Cut { .. }));
+    }
+
+    #[test]
+    fn an_idle_claim_from_lifecycle_cuts() {
+        // Lifecycle outranks Cgroup: what the authoritative wrapper says stands.
+        let b = belief(Liveness::Idle, Some(Authority::Lifecycle), NOW - 6_000);
+        assert!(matches!(
+            cut(&b, 30_000, NOW, &roomy()),
+            Cut::Cut { .. }
+        ));
+    }
+
+    // --- the incident, end to end -----------------------------------------------------------
+
+    #[test]
+    fn the_incident_cuts_and_its_healthy_peer_survives() {
+        // 2026-09-17: 26s of CPU across 21 minutes, a 0-byte log, no files written.
+        // Belief: idle per the cgroup, standing unchallenged for 21 minutes.
+        let now = 21 * 60 * 1_000;
+        let incident = budget(60 * 60 * 1_000, 120 * 1_000, 10 * 60 * 1_000);
+        let stalled = belief(Liveness::Idle, Some(Authority::Cgroup), 0);
+        assert!(matches!(
+            cut(&stalled, now, now, &incident),
+            Cut::Cut { .. }
+        ));
+
+        // The peer on the same task: log silent for ten minutes (so the cgroup claim
+        // is the newest thing held), CPU climbing two seconds ago.
+        let peer = budget(60 * 60 * 1_000, 120 * 1_000, 10 * 60 * 1_000);
+        let healthy = belief(Liveness::Working, Some(Authority::Cgroup), now - 2_000);
+        assert!(matches!(
+            cut(&healthy, now, now, &peer),
+            Cut::Keep { .. }
+        ));
+    }
+
+    // --- every decision carries its reason, across the whole input grid -----------------------
+
+    #[test]
+    fn every_decision_carries_a_nonempty_reason() {
+        let budgets = [
+            roomy(),
+            budget(0, 0, 0),
+            budget(u64::MAX, u64::MAX, u64::MAX),
+            budget(1_000, 500, 2_000),
+        ];
+        let livenesses = [
+            Liveness::Working,
+            Liveness::Idle,
+            Liveness::Blocked,
+            Liveness::Gone,
+            Liveness::Unknown,
+        ];
+        let authorities = [
+            None,
+            Some(Authority::Output),
+            Some(Authority::Cgroup),
+            Some(Authority::Lifecycle),
+        ];
+        for &liveness in &livenesses {
+            for &authority in &authorities {
+                for at in [NOW - 10_000, NOW - 1, NOW] {
+                    for budget in &budgets {
+                        for &elapsed in &[0u64, 1_000, 100_001] {
+                            let b = belief(liveness, authority, at);
+                            let decision = cut(&b, elapsed, NOW, budget);
+                            let reason = reason_of(decision);
+                            assert!(
+                                !reason.is_empty(),
+                                "a decision for {liveness:?}/{authority:?} at {at} with \
+                                 elapsed {elapsed} carries no reason"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

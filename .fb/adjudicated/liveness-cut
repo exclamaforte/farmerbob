@@ -1,0 +1,56 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. Four arms, one viable.
+
+  codex-luna       PASS  +2941 lines  SCOPE: 52 departures -- disqualified
+  glm-53-flash     PASS   +674 lines  scope clean, 66 tests (base 39)
+  ifm-k2-horizon   NO-OP  rc=1, 967s, 0 lines -- ran 16 minutes, produced nothing
+  ifm-k2-think     NO-OP  rc=0,  48s, 0 lines
+
+CODEX-LUNA DEPARTED SCOPE FOR THE SECOND CONSECUTIVE TASK: 51 on refusal-norm, 52 here, PASS
+both times because scope is measured and not gated. wave40/scope-gate is queued to close that.
+
+I RAN THE SPEC'S CLAUSES AS AN EXECUTABLE PROBE against the sole viable arm, because an
+unopposed candidate deserves more scrutiny than a contested one, not less. 13 of 14.
+
+The one divergence is MINE. At `elapsed_ms == max_total_ms == u64::MAX` the implementation
+returns Cut, using `>=` and documenting it in the reason string ("at or past the hard ceiling").
+My spec said both "a run PAST this is cut" (which implies `>`) and "all three budget fields at
+u64::MAX: never cut on duration" (which requires `>` AND elapsed < MAX). Those cannot both hold
+at the boundary. The arm picked a reading, disclosed it in the output a human reads, and is not
+scored down for my ambiguity.
+
+Three further probe failures were also mine and not defects: I constructed beliefs with at_ms
+and now_ms such that the belief was older than the run, and the implementation correctly
+answered "the observation predates the run it is supposed to describe" -- which is clause 8
+firing exactly as specified, on malformed input I supplied. Rebuilt with consistent clocks, they
+pass. I have voided a correct arm once before on a defect I invented (port-objective); checking
+the instrument before blaming the subject is the standing correction.
+
+THE ONLY CRITIQUE IS FABRICATED. codex-luna filed two claims against glm-53-flash, both naming an
+"output-authority fast path" and both quoting its return verbatim:
+
+    ACTUAL: Cut::Keep { because: "output is too weak to justify ending a run" }
+    WHERE:  crates/farmerbob-core/src/liveness.rs:283-286
+
+That string occurs ZERO times in the file. Lines 283-286 are the `Insufficient` variant's doc
+comment and two closing braces. There is no early return on Authority::Output anywhere -- its
+only occurrences are a doc line, the rank mapping `Authority::Output => 0`, one doc reference,
+and two test constructions. Measured behaviour is the opposite of both claims and is what the
+spec demanded: Unknown/Output -> Insufficient, Gone/Output -> Cut.
+
+This is a third critic failure mode, distinct from FALSE-ABSENCE (not finishing the file) and
+PROJECTION (describing your own file). Evidence manufactured whole, carrying precisely the
+surface features -- an exact line range, a verbatim quotation -- that make a claim look checked.
+It is the only shape that is more persuasive for being wrong, and it nearly cost the one arm
+that worked. Detector filed as a P0: grep the subject for the quoted literal; if absent, discard
+without testing.
+
+What the merged work is worth: `cut` distinguishes the buffering launcher from the real stall,
+which is the distinction the whole task existed for. A silent log under a live Cgroup report of
+work returns Keep; Idle under Cgroup past the idle budget returns Cut. Its reasons are written
+for a human reading an incident -- "this is reaping a finished run, not cutting a stall" -- and
+`authority: None` returns Insufficient, never Cut, so a belief nobody has observed can never end
+a run. 1146 workspace tests, clippy 0 on the crate.
+
+Still missing, and the reason this task is only half the P0: nothing CALLS `cut`. fb-dispatch
+still has no timeout and still cannot end a stalled run. That remains open.
