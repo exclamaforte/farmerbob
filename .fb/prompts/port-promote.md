@@ -1,4 +1,5 @@
 <!-- fb:creates crates/fb/src/promote.rs -->
+<!-- fb:reads fb-promote.sh -->
 # Task: port fb-promote.sh to Rust, behaviour-for-behaviour
 
 Rust workspace, already builds. Work only inside `crates/fb`.

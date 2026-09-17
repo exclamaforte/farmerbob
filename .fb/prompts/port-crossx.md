@@ -1,4 +1,5 @@
 <!-- fb:creates crates/fb/src/crossx.rs -->
+<!-- fb:reads fb-crossx.sh fb-verdict.sh -->
 # Task: port fb-crossx.sh to Rust, behaviour-for-behaviour
 
 Rust workspace, already builds. Work only inside `crates/fb`.

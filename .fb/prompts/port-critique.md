@@ -1,4 +1,5 @@
 <!-- fb:creates crates/fb/src/critique.rs -->
+<!-- fb:reads fb-critique.sh fb-isolate.sh -->
 # Task: port fb-critique.sh to Rust, behaviour-for-behaviour
 
 Rust workspace, already builds. Work only inside `crates/fb`.

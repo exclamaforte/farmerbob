@@ -90,6 +90,29 @@ rm -f "$WT/.fb"/*.tsv
 # also remove the harness itself: it describes how scoring works
 rm -f "$WT"/fb-*.sh
 
+# EXCEPT a script the task is explicitly about. A port task's deliverable IS one of these
+# scripts, so stripping it makes the task impossible as intended: the arm cannot read the
+# thing it is porting, the scripts it calls, or the formats it consumes. Eight of twelve port
+# runs produced nothing, and the logs show why -- `Glob "**/fb-crossx*" 0 matches`, then an
+# arm exploring a repo with no harness in it.
+#
+# The spec opts in by naming exactly what it needs:
+#     <!-- fb:reads fb-crossx.sh fb-verdict.sh -->
+# Only the named files come back. Everything else stays stripped, so the guard still holds
+# for every ordinary task, and a port cannot quietly grant itself the whole harness.
+for extra in $(grep -ohE '<!-- fb:reads [^>]+ -->' "$PROMPT_FILE" 2>/dev/null \
+               | sed 's/<!-- fb:reads //; s/ -->//'); do
+  case "$extra" in
+    */*|.*) echo "$SRC: refusing fb:reads path outside the repo root: $extra"; exit 1 ;;
+  esac
+  if [ -f "$REPO/$extra" ]; then
+    cp "$REPO/$extra" "$WT/$extra"
+    echo "$SRC: restored $extra for a task that is about it"
+  else
+    echo "$SRC: fb:reads names $extra, which does not exist"; exit 1
+  fi
+done
+
 START=$(date +%s)
 UNIT="fb-${RUN//[^a-zA-Z0-9_-]/_}-$$"
 CGSNAP="$LOG_ROOT/$RUN.cgroup"; : > "$CGSNAP"
