@@ -10,9 +10,40 @@ SLOT_GB=${FB_SLOT_GB:-1.5}        # admission arithmetic: measured p95 was 1.26G
 HARD_GB=${FB_MEM_GB:-2}           # per-run MemoryMax: contains an overrun inside its own scope
 HEADROOM_GB=${FB_HEADROOM_GB:-3}   # orchestrator + one confined verification
 avail() { free -g | awk '/^Mem:/{print $7}'; }
-SLOTS=$(awk -v a="$(avail)" -v h="$HEADROOM_GB" -v g="$SLOT_GB" 'BEGIN{printf "%d", (a-h)/g}')
-[ "$SLOTS" -lt 1 ] && SLOTS=1
-echo "admission: ${SLOT_GB}G/slot (measured), ${HARD_GB}G hard cap, ${HEADROOM_GB}G headroom, $(avail)G avail -> $SLOTS slots, max $PROVIDER_CAP per upstream vendor"
+avail_mb() { free -m | awk '/^Mem:/{print $7}'; }
+
+# The slot count comes from `fb slots`, which charges each admission the HARD cap against
+# farmerbob_core::slots::SlotTable, so committed+requested <= available-headroom bounds the
+# SUM. (farmerbob-89j)
+#
+# This script used to compute it here, in two lines of awk, against SLOT_GB -- the MEASURED
+# p95 per-run size -- while handing every run HARD_GB as its MemoryMax. On this machine that
+# was 7 slots of 2G permits against an 11G ceiling: 3.3GB over-committed, bounded by nothing.
+#
+# The clamp that used to follow is deliberately gone:
+#     [ "$SLOTS" -lt 1 ] && SLOTS=1
+# It admitted one run onto a machine measured as unable to hold it. Zero is an answer, and the
+# dispatcher waits for the next tick rather than being told a comfortable number.
+#
+# PROVIDER_CAP stays here. It is a different constraint -- the provider, not the machine -- and
+# `fb slots` deliberately does not model it.
+FB_BIN=/home/gabe/Documents/farmerbob/target/debug/fb
+HARD_MB=$(awk -v g="$HARD_GB" 'BEGIN{printf "%d", g*1024}')
+HEADROOM_MB=$(awk -v g="$HEADROOM_GB" 'BEGIN{printf "%d", g*1024}')
+if [ -x "$FB_BIN" ] && SLOTS=$("$FB_BIN" slots --available-mb "$(avail_mb)" \
+        --headroom-mb "$HEADROOM_MB" --memory-mb "$HARD_MB" --plan 2>/dev/null \
+        | grep -oE '[0-9]+ slots?' | grep -oE '^[0-9]+'); then
+  echo "admission: ${HARD_GB}G/slot (hard cap), ${HEADROOM_GB}G headroom, $(avail)G avail -> $SLOTS slots, max $PROVIDER_CAP per upstream vendor"
+else
+  # The binary is not built, or could not answer. Refuse rather than fall back to the old
+  # arithmetic: a second copy of this decision is how it stayed wrong for so long.
+  echo "admission: cannot size the machine -- $FB_BIN unavailable or gave no count; refusing to guess" >&2
+  exit 1
+fi
+if [ "$SLOTS" -lt 1 ]; then
+  echo "admission: 0 slots at ${HARD_GB}G/run with ${HEADROOM_GB}G headroom on $(avail)G -- nothing dispatched" >&2
+  exit 0
+fi
 
 # Agents are network-bound (measured: ~5% cpu, do_epoll_wait), so the machine is not the
 # binding constraint -- the PROVIDER is. Poolside rate-limited a run when we burst free-tier
