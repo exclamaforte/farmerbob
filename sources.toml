@@ -253,7 +253,20 @@ price_in = 0.2
 price_out = 1.2
 context = 1050000
 price_checked = "2026-09-16"
-notes = "paid sibling of the plan-based codex-luna arm"
+redundant_with = "codex-luna"
+notes = """paid sibling of the plan-based codex-luna arm. Parked 2026-09-17 by user decision.
+NOT an identical model -- gpt-5.6-luna-pro against the plan arm's gpt-5.6-luna -- so this is not
+the "identical model" case that parks or-gemini-38-flash and or-glm-53-flash. It is parked on the
+evidence instead: 19 runs in 24h, $2.6414 direct plus a share of the shared critic store, for 100%
+completion against codex-luna's 97% over 30 runs at no charge. Three points of completion did not
+justify about $4 a night.
+Recorded as redundant_with rather than status=disabled DELIBERATELY: that rule fires only while
+codex-luna is HEALTHY, so if the plan arm goes down this route returns on its own instead of
+leaving the field a member short. A hard disable would have been a silent capacity cut.
+Triggered by a real question: $4 of OpenRouter spend appeared overnight and was read as codex-luna.
+It was not -- codex authenticates with auth_mode=chatgpt and a null OPENAI_API_KEY and has no route
+to OpenRouter at all -- but our own accounting could not prove that, because codex-luna is UNPRICED
+30/30. The config ruled it out, not the cost data. (farmerbob-h70d is the same shape.)"""
 probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 53s
 quota_bucket = "openai"   # the upstream vendor is what rate-limits, not openrouter
 
