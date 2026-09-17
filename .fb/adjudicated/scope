@@ -1,0 +1,10 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. survival 1.00, discovery 1, discriminating suite, 17 tests, 505 lines,
+clippy 0. or-inkling eliminated on a real defect: it classifies a DELETED lib.rs as `allowed`,
+against a clause the spec states explicitly, and all three rival suites caught it.
+or-ling-30-flash's suite is flagged over-fitted -- it broke all three rivals, and both
+discriminating tests assert on clauses my spec left CONTRADICTORY (rule 2 vs rule 5 on a
+target that is both modified and deleted; and a boundary clause claiming "nothing can equal
+the target" for an empty target, which is false when a change has an empty path). Those
+cross-camp failures are vetoed and nobody is scored on them. Spec now pins both.
+Credited: glm-53-flash, or-qwen38-flash, or-ling-30-flash.

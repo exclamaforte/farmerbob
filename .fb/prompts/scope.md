@@ -31,6 +31,11 @@ pub enum Allowance {
     /// A path that is permitted even though it is not the target.
     ModuleDeclaration,
 }
+// A critic observed that this enum carries no information today -- it has one fieldless
+// variant, `assess` discards it, and `Option<String>` would say the same thing. That is a
+// fair reading and it is deliberate: the allowance list is where a future task-kind adds its
+// own permitted paths (a generated file, a fixture directory), and a one-variant enum is the
+// cheapest honest place to put the second variant later. Keep it as an enum.
 
 pub enum Departure {
     /// Changed a file that is neither the target nor allowed.
@@ -65,8 +70,16 @@ pub fn module_declaration_for(target: &str) -> Option<String>;
    `None` when `target` is itself a `lib.rs`, when `target` has no `/`, and when `target` is
    empty. It does not check whether the file exists; this module performs no I/O.
 
-2. A change whose `path` equals `declared.target` exactly sets `target_changed = true` and
-   appears in neither `allowed` nor `departures`.
+2. A change whose `path` equals `declared.target` exactly, and has `deleted == false`, sets
+   `target_changed = true` and appears in neither `allowed` nor `departures`.
+
+   **If the target appears BOTH deleted and not deleted, the deletion wins:**
+   `target_changed = false` and one `Departure::Deleted` is emitted. This matches the
+   deleted-wins rule pinned for `departures` below. An earlier version of this spec stated
+   rule 2 and rule 5 without saying which governs when both changes are present, and two
+   implementations resolved the contradiction in opposite directions -- caught by
+   cross-examination and independently by a critic, who noted the spec "pins deleted-wins
+   dedup only for `departures`, so this is genuinely underdetermined".
 
 3. A change whose `path` equals `module_declaration_for(&declared.target)` is
    `Allowance::ModuleDeclaration`: it goes in `allowed`, not in `departures`. Adding
@@ -99,8 +112,12 @@ by path.
 
 - `changes` empty: `target_changed = false`, `allowed` and `departures` both empty, and
   `is_clean` is therefore `true`.
-- `declared.target` empty: every change is a `Departure` (nothing can equal the target, and
-  `module_declaration_for("")` is `None`).
+- `declared.target` empty: `module_declaration_for("")` is `None`, so there is no allowance,
+  and a change whose path is the empty string **does** equal the target and therefore sets
+  `target_changed = true` by rule 2 like any other match. An earlier version of this spec
+  claimed "nothing can equal the target" here, which is simply false, and two implementations
+  read it two different ways. Nothing is special about an empty target except that the
+  allowance disappears.
 - A path appearing twice in `changes` with identical `deleted` contributes one entry.
 - Paths are compared as exact strings. Do **not** normalise, canonicalise, resolve `..`, or
   strip prefixes. Two spellings of the same file are two different paths here, by design:

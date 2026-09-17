@@ -46,6 +46,7 @@ pub mod reviewer;
 pub mod router;
 pub mod run;
 pub mod runstate;
+pub mod scope;
 pub mod selection;
 pub mod sensitivity;
 pub mod task;
