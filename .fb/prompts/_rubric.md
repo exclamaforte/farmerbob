@@ -57,6 +57,19 @@ about anything either of them got wrong.
 Three earlier tasks were decided by candidates disagreeing about exactly this, every time
 because a test asserted a case the specification never fixed.
 
+## Reuse the crate's existing types
+
+If this spec names a type that already exists in `farmerbob-core` -- `Verdict`, `Grade`,
+`RunState`, `Outcome`, `Measurement` and so on -- you **use that type**, imported, and you do
+not define your own. A new public type whose name already exists in the crate is a defect,
+scored as one, however good its internals are.
+
+Forty-four modules have been merged, each written without sight of the others, and seven core
+concepts now exist two or three times in mutually incompatible shapes. `Verdict` exists three
+times. That happened one reasonable-looking local decision at a time. If you believe the
+existing type genuinely cannot express what this task needs, say so in your handoff, name the
+type and the clause it cannot express, and extend it rather than shadowing it.
+
 **Not scored:** wallclock. Taking longer to produce better work is the preferred trade.
 There is a generous resource budget; a run is cut early only if it stops making progress or
 regresses past its own best error count.
