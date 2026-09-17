@@ -78,19 +78,38 @@ run_suite() {  # run_suite <dir> <suitefile> -> pass|fail|nocompile
 
 # ---- 1. validate each defect against the reference conformance suite -------------------
 echo "validating defects against the reference implementation"
-VALID=()
+VALID=(); MISSED=()
 for p in "$DEFECTS"/*.patch; do
   [ -f "$p" ] || continue
   name=$(basename "$p" .patch)
   d="$TMP/v.$name"; rm -rf "$d"; cp -r "$REF" "$d"
   if ! apply "$p" "$d" 2>/dev/null; then printf '  %-28s SKIP (anchor missing)\n' "$name"; continue; fi
   r=$(run_suite "$d" "$REPO/.fb/conformance/$BEAD.rs")
-  if [ "$r" = fail ]; then printf '  %-28s valid (conformance detects it)\n' "$name"; VALID+=("$name")
-  else printf '  %-28s EXCLUDED (%s) -- inert, or the spec is silent\n' "$name" "$r"; fi
+  # THREE outcomes, not two.
+  #
+  #   fail       the reference suite detects it -> a valid, spec-relevant defect
+  #   pass       the reference suite MISSES it -> either semantically inert, or a real defect
+  #              the reference is blind to. These were discarded, and they are the only
+  #              mutants that can DISCRIMINATE between candidate suites.
+  #   nocompile  a syntax error, not a defect
+  #
+  # Keeping only `fail` selects for defects every competent suite catches, and guarantees the
+  # measure reads ~100% for everyone. Measured: on `budget` all four suites caught 4 of 4, on
+  # `gate` all four caught 12 of 12. The filter was removing exactly the evidence that would
+  # have separated them -- 2 of gate's 24 mutants were excluded this way.
+  #
+  # A mutant the reference misses but SOME candidate catches proves that candidate's suite is
+  # strictly better than the reference. That is the most informative result available here, so
+  # it is now measured instead of thrown away.  (bead farmerbob-jd2.11)
+  case "$r" in
+    fail) printf '  %-28s valid (conformance detects it)\n' "$name"; VALID+=("$name") ;;
+    pass) printf '  %-28s BEYOND the reference (it misses this one)\n' "$name"; MISSED+=("$name") ;;
+    *)    printf '  %-28s excluded (%s) -- not a defect\n' "$name" "$r" ;;
+  esac
   rm -rf "$d"
 done
-echo "  ${#VALID[@]} validated defects"
-[ "${#VALID[@]}" -eq 0 ] && { echo "nothing to measure"; exit 1; }
+echo "  ${#VALID[@]} validated defects, ${#MISSED[@]} beyond the reference"
+[ "${#VALID[@]}" -eq 0 ] && [ "${#MISSED[@]}" -eq 0 ] && { echo "nothing to measure"; exit 1; }
 
 # ---- 2. every candidate suite against every validated defect ---------------------------
 ARMS=()
@@ -107,7 +126,8 @@ done
 echo "  ${#ARMS[@]} candidate suites"
 
 for a in "${ARMS[@]}"; do
-  for name in "${VALID[@]}"; do
+  for name in "${VALID[@]}" "${MISSED[@]}"; do
+    [ -n "$name" ] || continue
     while [ "$(jobs -rp | wc -l)" -ge "$SLOTS" ]; do sleep 1; done
     (
       d="$TMP/r.$a.$name"; rm -rf "$d"; cp -r "$REF" "$d"
@@ -119,9 +139,14 @@ for a in "${ARMS[@]}"; do
 done
 wait
 
-python3 - "$OUT" "$TMP" "${#VALID[@]}" "${ARMS[*]}" "${VALID[*]}" <<'PY'
+python3 - "$OUT" "$TMP" "${#VALID[@]}" "${ARMS[*]}" "${VALID[*]}" "${MISSED[*]}" <<'PY'
 import json, os, sys
 out, tmp, nvalid, arms, valid = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4].split(), sys.argv[5].split()
+beyond = sys.argv[6].split() if len(sys.argv) > 6 else []
+
+def verdict(a, n):
+    p = os.path.join(tmp, f"o.{a}.{n}")
+    return open(p).read().strip() if os.path.exists(p) else "nocompile"
 res = {}
 for a in arms:
     caught = comparable = 0
@@ -136,14 +161,29 @@ for a in arms:
             caught += 1
         else:
             missed.append(n)
+    # Defects the REFERENCE suite misses. Catching one proves this suite is strictly
+    # better than the reference, and it is the only figure here that can separate a field
+    # in which everyone catches the obvious defects.
+    beyond_caught = sum(1 for n in beyond if verdict(a, n) == "fail")
+    beyond_comparable = sum(1 for n in beyond if verdict(a, n) != "nocompile")
     res[a] = {"caught": caught, "comparable": comparable,
               "sensitivity": (caught / comparable) if comparable else None,
+              "beyond_reference_caught": beyond_caught,
+              "beyond_reference_of": beyond_comparable,
               "missed": missed}
-json.dump({"validated_defects": nvalid, "arms": res}, open(out, "w"), indent=1)
+json.dump({"validated_defects": nvalid, "beyond_reference_defects": len(beyond),
+           "arms": res}, open(out, "w"), indent=1)
 print()
-print(f"{'SUITE':<24}{'CAUGHT':>9}{'OF':>5}{'SENSITIVITY':>13}")
-for a, v in sorted(res.items(), key=lambda kv: -(kv[1]['sensitivity'] or -1)):
+print(f"{'SUITE':<24}{'CAUGHT':>9}{'OF':>5}{'SENSITIVITY':>13}{'BEYOND REF':>12}")
+for a, v in sorted(res.items(),
+                   key=lambda kv: (-kv[1]['beyond_reference_caught'], -(kv[1]['sensitivity'] or -1))):
     s = f"{v['sensitivity']:.0%}" if v['sensitivity'] is not None else "n/a"
-    print(f"{a:<24}{v['caught']:>9}{v['comparable']:>5}{s:>13}")
+    b = f"{v['beyond_reference_caught']}/{v['beyond_reference_of']}" if v['beyond_reference_of'] else "-"
+    print(f"{a:<24}{v['caught']:>9}{v['comparable']:>5}{s:>13}{b:>12}")
+if beyond:
+    print()
+    print("  BEYOND REF counts defects the reference conformance suite does NOT detect.")
+    print("  Catching one proves a suite is strictly better than the reference; it is the")
+    print("  only column here that can separate a field where everyone catches the rest.")
 PY
 echo "-> $OUT"
