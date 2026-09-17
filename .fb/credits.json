@@ -149,6 +149,30 @@
    "critic": "or-hy3",
    "found_on": "or-ling-30-flash",
    "tests": 1
+  },
+  {
+   "task": "consensus",
+   "critic": "or-qwen38-flash",
+   "found_on": "glm-53-flash",
+   "tests": 1
+  },
+  {
+   "task": "consensus",
+   "critic": "or-ling-30-flash",
+   "found_on": "or-qwen38-flash",
+   "tests": 1
+  },
+  {
+   "task": "consensus",
+   "critic": "or-hy3",
+   "found_on": "or-ling-30-flash",
+   "tests": 1
+  },
+  {
+   "task": "consensus",
+   "critic": "glm-53-flash",
+   "found_on": "or-hy3",
+   "tests": 1
   }
  ]
 }

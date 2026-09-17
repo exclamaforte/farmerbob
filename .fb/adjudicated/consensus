@@ -1,0 +1,14 @@
+MERGED or-qwen38-flash
+Adjudicated 2026-09-17. 53 tests to the others' 45, clippy 0. Third consecutive full-consensus
+matrix, so survival is n/a; DefectSensitivity, Survival and TestDepth all read NEVER MEASURED
+for the whole field. NO objective criterion separated these four, and the decision rests
+entirely on the critiques -- the design working exactly as intended.
+or-qwen38-flash ran a MUTATION TEST BY HAND on a rival: it replaced glm-53-flash's arms.sort()
+with a case-insensitive sort_by, re-ran the suite, got 51/51 green, and concluded the suite
+does not pin the spec's byte-order requirement. Verified independently: all four
+IMPLEMENTATIONS are correct on byte order, so the finding is a suite gap and not a defect,
+exactly as the critic characterised it -- and or-qwen38-flash is the only arm whose own suite
+pins the mixed-case case.
+or-ling-30-flash found that is_discriminating's stated rationale contradicted the rule it
+justified. The rule was right, my wording was wrong; both are now fixed.
+Credited: or-qwen38-flash, or-ling-30-flash, or-hy3, glm-53-flash.

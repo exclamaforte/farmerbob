@@ -93,8 +93,14 @@ pub enum Shape {
         /// Every arm whose own suite did not pass on its own code, sorted.
         broken: Vec<String>,
     },
-    /// Every cell passes.
-    Consensus,
+    /// Every off-diagonal cell passed. The arms agree; whether they are
+    /// correct is UNKNOWN and no cell in this matrix bears on it.
+    Consensus {
+        /// Arms in the matrix, sorted ascending. Never empty when this
+        /// variant is returned for a non-empty matrix; the 0-arm matrix
+        /// reports it with an empty list, as it always has.
+        arms: Vec<String>,
+    },
     /// Camps that pass within themselves and fail across. Names each camp,
     /// sorted.
     SpecAmbiguous {
@@ -128,7 +134,9 @@ pub fn shape(m: &Matrix) -> Shape {
     }
 
     if m.cells.iter().all(|&c| c == Cell::Pass) {
-        return Shape::Consensus;
+        let mut arms = m.arms.clone();
+        arms.sort();
+        return Shape::Consensus { arms };
     }
 
     let fully_measured = (0..n * n).all(|k| {
@@ -198,6 +206,36 @@ fn camps(m: &Matrix) -> Option<Vec<Vec<String>>> {
         .collect();
     named.sort();
     Some(named)
+}
+
+/// Whether a shape's classification rests on evidence about the IMPLEMENTATIONS.
+///
+/// The phrasing matters and an earlier version had it wrong. It read "evidence that could
+/// have contradicted it", and a critic showed that definition contradicts the rule it
+/// justifies: a `Void` matrix's broken diagonal cells COULD have passed, so by that wording
+/// Void would be discriminating, while the rule says it is not. The rule is right; the
+/// rationale was wrong. `Void` rests on evidence about the INSTRUMENT, and `Consensus` on
+/// agreement a shared fault produces just as readily as correctness. Neither says anything
+/// about the implementations, which is the question this answers.
+///   (credit or-ling-30-flash, on `consensus`)
+///
+/// `false` for [`Shape::Consensus`] and [`Shape::Void`], `true` for every
+/// other variant. A `Consensus` matrix only shows the arms agree; with every
+/// suite passing on every implementation there is no cell that could have
+/// caught a fault shared by all of them, so its agreement says nothing about
+/// correctness. A `Void` matrix has a broken diagonal — an instrument that
+/// cannot run against the code it shipped with — so nothing it reports is
+/// trustworthy either.
+///
+/// The match is exhaustive with no wildcard arm on purpose: adding a variant
+/// to [`Shape`] becomes a compile error here rather than a silent `true`.
+pub fn is_discriminating(shape: &Shape) -> bool {
+    match shape {
+        Shape::Void { .. } => false,
+        Shape::Consensus { .. } => false,
+        Shape::SpecAmbiguous { .. } => true,
+        Shape::Discriminating => true,
+    }
 }
 
 /// How one arm's SUITE behaved, judged across the whole matrix.
@@ -303,7 +341,10 @@ pub fn discoveries(m: &Matrix, arm: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cell, Matrix, Shape, SuiteQuality, discoveries, shape, suite_quality, survival};
+    use super::{
+        Cell, Matrix, Shape, SuiteQuality, discoveries, is_discriminating, shape, suite_quality,
+        survival,
+    };
 
     const P: Cell = Cell::Pass;
     const F: Cell = Cell::Fail;
@@ -450,7 +491,12 @@ mod tests {
     #[test]
     fn consensus_when_every_cell_passes() {
         let matrix = m(&["a", "b", "c"], &[&[P, P, P], &[P, P, P], &[P, P, P]]);
-        assert_eq!(shape(&matrix), Shape::Consensus);
+        assert_eq!(
+            shape(&matrix),
+            Shape::Consensus {
+                arms: vec!["a".to_string(), "b".to_string(), "c".to_string()]
+            }
+        );
     }
 
     #[test]
@@ -462,7 +508,12 @@ mod tests {
     #[test]
     fn single_arm_consensus() {
         let matrix = m(&["solo"], &[&[P]]);
-        assert_eq!(shape(&matrix), Shape::Consensus);
+        assert_eq!(
+            shape(&matrix),
+            Shape::Consensus {
+                arms: vec!["solo".to_string()]
+            }
+        );
         assert_eq!(survival(&matrix, "solo"), None);
     }
 
@@ -743,5 +794,276 @@ mod tests {
             &[&[P, P, X, F], &[P, P, F, F], &[F, F, P, P], &[F, F, P, P]],
         );
         assert_eq!(shape(&matrix), Shape::Discriminating);
+    }
+
+    // ---- Rule 1: Consensus reports the arms, sorted, de-duplicated --------
+
+    #[test]
+    fn rule1_all_pass_yields_consensus_with_every_arm() {
+        let matrix = m(
+            &["a", "b", "c", "d"],
+            &[
+                &[P, P, P, P],
+                &[P, P, P, P],
+                &[P, P, P, P],
+                &[P, P, P, P],
+            ],
+        );
+        assert_eq!(
+            shape(&matrix),
+            Shape::Consensus {
+                arms: vec![
+                    "a".to_string(),
+                    "b".to_string(),
+                    "c".to_string(),
+                    "d".to_string()
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn rule1_arms_are_sorted_regardless_of_matrix_order() {
+        // Arms supplied out of order must come back byte-sorted, unfiltered
+        // and in full: every cell passed, so there is no status to select by.
+        let matrix = m(
+            &["delta", "alpha", "charlie", "bravo"],
+            &[
+                &[P, P, P, P],
+                &[P, P, P, P],
+                &[P, P, P, P],
+                &[P, P, P, P],
+            ],
+        );
+        assert_eq!(
+            shape(&matrix),
+            Shape::Consensus {
+                arms: vec![
+                    "alpha".to_string(),
+                    "bravo".to_string(),
+                    "charlie".to_string(),
+                    "delta".to_string()
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn rule1_arms_sorted_by_byte_order() {
+        // Byte order places every uppercase letter before any lowercase one.
+        let matrix = m(
+            &["b", "A", "a", "B"],
+            &[
+                &[P, P, P, P],
+                &[P, P, P, P],
+                &[P, P, P, P],
+                &[P, P, P, P],
+            ],
+        );
+        assert_eq!(
+            shape(&matrix),
+            Shape::Consensus {
+                arms: vec![
+                    "A".to_string(),
+                    "B".to_string(),
+                    "a".to_string(),
+                    "b".to_string()
+                ]
+            }
+        );
+    }
+
+    // ---- Rule 2: Void still runs first and still wins ---------------------
+
+    #[test]
+    fn rule2_broken_diagonal_voids_an_all_pass_off_diagonal_matrix() {
+        // Every off-diagonal cell passes, but arm b's own suite failed on b's
+        // own code: a broken instrument's agreement is worthless, so Void.
+        let matrix = m(&["a", "b", "c"], &[&[P, P, P], &[P, F, P], &[P, P, P]]);
+        assert_eq!(
+            shape(&matrix),
+            Shape::Void {
+                broken: vec!["b".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn rule2_void_wins_over_consensus_on_four_arms() {
+        // Diagonal cell for `c` is NoCompile (not Pass), every off-diagonal
+        // cell passes: the broken-instrument check still outranks Consensus.
+        let matrix = m(
+            &["a", "b", "c", "d"],
+            &[
+                &[P, P, P, P],
+                &[P, P, P, P],
+                &[P, P, X, P],
+                &[P, P, P, P],
+            ],
+        );
+        assert_eq!(
+            shape(&matrix),
+            Shape::Void {
+                broken: vec!["c".to_string()]
+            }
+        );
+    }
+
+    // ---- Rule 3: one off-diagonal Fail prevents Consensus -----------------
+
+    #[test]
+    fn rule3_single_offdiagonal_fail_prevents_consensus() {
+        let matrix = m(
+            &["a", "b", "c"],
+            &[&[P, P, P], &[P, P, P], &[F, P, P]],
+        );
+        assert_eq!(shape(&matrix), Shape::Discriminating);
+    }
+
+    #[test]
+    fn rule3_single_offdiagonal_fail_prevents_consensus_on_five_arms() {
+        // The lone failure sits far from the diagonal; everything else passes.
+        let matrix = m(
+            &["a", "b", "c", "d", "e"],
+            &[
+                &[P, P, P, P, P],
+                &[P, P, P, P, P],
+                &[P, P, P, P, P],
+                &[P, P, P, P, P],
+                &[P, F, P, P, P],
+            ],
+        );
+        assert_eq!(shape(&matrix), Shape::Discriminating);
+    }
+
+    // ---- Rule 4: an off-diagonal NoCompile prevents Consensus -------------
+
+    #[test]
+    fn rule4_offdiagonal_nocompile_prevents_consensus() {
+        let matrix = m(&["a", "b"], &[&[P, X], &[P, P]]);
+        let s = shape(&matrix);
+        assert!(
+            !matches!(s, Shape::Consensus { .. }),
+            "a NoCompile pair must not read as consensus: {s:?}"
+        );
+        assert_eq!(s, Shape::Discriminating);
+    }
+
+    #[test]
+    fn rule4_no_offdiagonal_fail_still_not_consensus_under_nocompile() {
+        // Diagonal all-Pass, every other cell Pass *or* NoCompile, at least
+        // one NoCompile: agreement was never measured on that pair.
+        let matrix = m(
+            &["a", "b", "c"],
+            &[&[P, P, X], &[P, P, P], &[P, P, P]],
+        );
+        let s = shape(&matrix);
+        assert!(
+            !matches!(s, Shape::Consensus { .. }),
+            "expected non-Consensus, got {s:?}"
+        );
+        assert_eq!(s, Shape::Discriminating);
+    }
+
+    // ---- Rule 5: is_discriminating, exhaustive over Shape -----------------
+
+    #[test]
+    fn rule5_consensus_is_not_discriminating() {
+        let consensus = Shape::Consensus {
+            arms: vec!["a".to_string(), "b".to_string()],
+        };
+        assert!(!is_discriminating(&consensus));
+    }
+
+    #[test]
+    fn rule5_void_is_not_discriminating() {
+        assert!(!is_discriminating(&Shape::Void {
+            broken: vec!["a".to_string()]
+        }));
+        assert!(!is_discriminating(&Shape::Void { broken: vec![] }));
+    }
+
+    #[test]
+    fn rule5_other_shapes_are_discriminating() {
+        assert!(is_discriminating(&Shape::Discriminating));
+        assert!(is_discriminating(&Shape::SpecAmbiguous {
+            camps: vec![
+                vec!["a".to_string(), "b".to_string()],
+                vec!["c".to_string(), "d".to_string()]
+            ]
+        }));
+    }
+
+    #[test]
+    fn rule5_every_shape_the_classifier_can_emit_matches_its_own_reading() {
+        // A real matrix per shape, run through the classifier, then checked.
+        let consensus = m(&["a", "b"], &[&[P, P], &[P, P]]);
+        let void_ = m(&["a", "b"], &[&[F, P], &[P, P]]);
+        let discriminating = m(&["a", "b"], &[&[P, F], &[F, P]]);
+        let ambiguous = partition();
+        assert!(!is_discriminating(&shape(&consensus)));
+        assert!(!is_discriminating(&shape(&void_)));
+        assert!(is_discriminating(&shape(&discriminating)));
+        assert!(is_discriminating(&shape(&ambiguous)));
+        assert!(matches!(shape(&ambiguous), Shape::SpecAmbiguous { .. }));
+    }
+
+    // ---- Boundaries --------------------------------------------------------
+
+    #[test]
+    fn boundary_one_arm_matrix_is_vacuous_consensus() {
+        let matrix = m(&["solo"], &[&[P]]);
+        let s = shape(&matrix);
+        assert_eq!(
+            s,
+            Shape::Consensus {
+                arms: vec!["solo".to_string()]
+            }
+        );
+        assert!(!is_discriminating(&s), "one arm agreeing with itself");
+    }
+
+    #[test]
+    fn boundary_empty_matrix_keeps_its_reading_with_empty_arms() {
+        // Whatever the classifier returned for an empty matrix before stays;
+        // today that is Consensus, now carrying an empty arm list.
+        let matrix = Matrix::new(Vec::new(), Vec::new()).expect("empty matrix");
+        let s = shape(&matrix);
+        assert!(
+            matches!(s, Shape::Consensus { ref arms } if arms.is_empty()),
+            "empty matrix reading changed: {s:?}"
+        );
+    }
+
+    #[test]
+    fn boundary_two_by_two_all_pass_is_consensus_with_two_arms() {
+        let matrix = m(&["b", "a"], &[&[P, P], &[P, P]]);
+        assert_eq!(
+            shape(&matrix),
+            Shape::Consensus {
+                arms: vec!["a".to_string(), "b".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn boundary_all_nocompile_off_diagonal_is_not_consensus() {
+        // Four arms, diagonal passing, every cross cell unmeasured: they did
+        // not agree, they failed to be comparable.
+        let matrix = m(
+            &["a", "b", "c", "d"],
+            &[
+                &[P, X, X, X],
+                &[X, P, X, X],
+                &[X, X, P, X],
+                &[X, X, X, P],
+            ],
+        );
+        let s = shape(&matrix);
+        assert!(
+            !matches!(s, Shape::Consensus { .. }),
+            "all-NoCompile field read as consensus: {s:?}"
+        );
+        assert_eq!(s, Shape::Discriminating);
     }
 }

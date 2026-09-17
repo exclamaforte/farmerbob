@@ -70,7 +70,12 @@ adding a second variant; if it carries no fields today, add exactly that one.
    express. `Consensus` requires actual passing cells.
 
 5. `is_discriminating(shape)` is `false` for `Consensus` and for `Void`, and `true` for every
-   other variant of `Shape`. **The `Shape` enum is exhaustive as it exists after your change —
+   other variant of `Shape`. Its question is **"does this classification rest on evidence
+   about the IMPLEMENTATIONS?"** -- not, as an earlier version of this spec said, "evidence
+   that could have contradicted it". A critic showed those differ: a `Void` matrix's broken
+   diagonal cells could have passed, so the old wording implied Void was discriminating while
+   the rule says it is not. `Void` is evidence about the instrument and `Consensus` is
+   agreement a shared fault produces as readily as correctness. **The `Shape` enum is exhaustive as it exists after your change —
    do not add variants beyond the one specified, and write this function with no wildcard
    `_ =>` arm, so that a future variant is a compile error here rather than a silent `true`.**
 
