@@ -81,15 +81,19 @@ pub fn missing_evidence(candidates: &[Evidence]) -> Vec<Criterion>;
 ## Required behaviour
 
 - Criteria apply in exactly this order: `Conformance`, `ScopeDiscipline`,
-  `DefectSensitivity`, `Survival`, `Clippy`, `Cost`, `Simplicity`. The first that separates
+  `DefectSensitivity`, `Survival`, `Clippy`, `Cost`, `TestDepth`, `Simplicity`. The first that separates
   the field decides, and later criteria are never consulted.
 - `ScopeDiscipline` prefers FEWER `crates_touched`; a candidate touching more crates than
   the minimum loses to one touching fewer, whatever else is true of it.
 - `Clippy` and `Cost` prefer lower; `Simplicity` prefers fewer `lines`.
 - A criterion where any contender's value is `None` is SKIPPED, not treated as zero, and it
   appears in the `next` list of an `Undecided` verdict.
-- `tests` is never a criterion. It is a proxy for `defect_sensitivity`; when sensitivity is
-  measured the count adds nothing, and when it is not, a count still cannot substitute for it.
+- `tests` is a FALLBACK criterion, never a peer. It is consulted only when neither
+  `defect_sensitivity` nor `survival` was measured for any contender. If even one has a real
+  measurement, the count stays out of the ordering entirely -- a proxy must never outrank the
+  thing it proxies for. But an absent measurement must not silently promote `Simplicity`
+  either: discarding the proxy made every undiscriminating field fall through to "fewest
+  lines", which systematically favours the candidate that also wrote the fewest tests.
 - Differences below `epsilon` are ties. With every criterion tied or skipped the verdict is
   `Undecided`, listing every still-tied arm sorted by name.
 - `margin` is the winner's advantage over the best other contender, always positive.

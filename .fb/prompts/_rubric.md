@@ -16,7 +16,10 @@ optimise for the real bar rather than guess at it.
 2. **Panic-freedom** — no `unwrap()`, `expect()`, `panic!`, `todo!` or `unimplemented!` on
    any path reachable from input, outside `#[cfg(test)]`.
 3. **`cargo clippy -- -D warnings` clean.**
-4. **Test depth and generality** — number of distinct behaviours covered, not number of
+4. **Test depth and generality** — measured directly where possible, by injecting known
+   defects and by running your suite against rival implementations. Where neither
+   measurement could be taken, the number of distinct behaviours you covered stands in for
+   it. Count is the fallback, not the target:
    assertions. Your tests must be good enough to catch a bug in **any** correct-looking
    implementation of this spec, not only your own: test the behaviour the specification
    requires, not your particular implementation's internals. Asserting on exact error

@@ -39,6 +39,13 @@ pub enum Criterion {
     Clippy,
     /// Measured dollar cost.
     Cost,
+    /// Number of tests the candidate wrote. A PROXY for DefectSensitivity, consulted ONLY
+    /// when both direct measures of suite quality -- DefectSensitivity and Survival -- are
+    /// unmeasured for the whole field. A proxy must never outrank the thing it proxies for,
+    /// but an ABSENT measurement must not silently promote Simplicity either: discarding the
+    /// proxy entirely made every consensus-matrix task fall through to "fewest lines", which
+    /// systematically favours the candidate that also wrote the fewest tests.
+    TestDepth,
     /// Changed-line count.
     Simplicity,
 }
@@ -90,11 +97,34 @@ pub fn adjudicate(candidates: &[Evidence], epsilon: f64) -> Verdict {
         Criterion::Survival,
         Criterion::Clippy,
         Criterion::Cost,
+        Criterion::TestDepth,
         Criterion::Simplicity,
     ];
     let mut next = Vec::new();
 
+    // TestDepth is a fallback, not a peer. It is consulted only when neither direct measure
+    // of suite quality was obtained for ANY contender; if even one has a real measurement,
+    // the proxy stays out of the ordering entirely.
+    // ALL, not ANY. A criterion is only applied when every contender has a value for it, so
+    // a field where one arm's survival is unmeasured SKIPS Survival -- and gating the proxy
+    // on `any` then suppressed TestDepth as well, leaving Simplicity to decide. That is how
+    // four adjudications came out as "fewest lines" on fields that had a real quality signal
+    // for three of their four candidates.
+    // Only DefectSensitivity suppresses it, NOT Survival. They measure different things:
+    // Survival is a property of the IMPLEMENTATION (did rival suites break it), while
+    // DefectSensitivity is a property of the SUITE (does it catch injected defects). TestDepth
+    // proxies for the latter. Gating on Survival suppressed the proxy with a number that says
+    // nothing about suite quality, and on resume that let a three-way survival tie fall
+    // through to Simplicity -- selecting an 8-test candidate over a 12-test one on length.
+    let direct_quality_measured = !contenders.is_empty()
+        && contenders
+            .iter()
+            .all(|c| c.defect_sensitivity.is_some_and(f64::is_finite));
+
     for criterion in criteria {
+        if criterion == Criterion::TestDepth && direct_quality_measured {
+            continue;
+        }
         let values: Option<Vec<f64>> = contenders
             .iter()
             .map(|candidate| value(candidate, criterion))
@@ -106,7 +136,10 @@ pub fn adjudicate(candidates: &[Evidence], epsilon: f64) -> Verdict {
 
         let higher_is_better = matches!(
             criterion,
-            Criterion::Conformance | Criterion::DefectSensitivity | Criterion::Survival
+            Criterion::Conformance
+                | Criterion::DefectSensitivity
+                | Criterion::Survival
+                | Criterion::TestDepth
         );
         let best = values.iter().copied().fold(values[0], |best, current| {
             if (higher_is_better && current > best) || (!higher_is_better && current < best) {
@@ -174,6 +207,7 @@ pub fn missing_evidence(candidates: &[Evidence]) -> Vec<Criterion> {
         Criterion::Survival,
         Criterion::Clippy,
         Criterion::Cost,
+        Criterion::TestDepth,
         Criterion::Simplicity,
     ]
     .into_iter()
@@ -195,6 +229,7 @@ fn value(candidate: &Evidence, criterion: Criterion) -> Option<f64> {
         Criterion::Survival => candidate.survival,
         Criterion::Clippy => candidate.clippy.map(f64::from),
         Criterion::Cost => candidate.cost_usd,
+        Criterion::TestDepth => candidate.tests.map(f64::from),
         Criterion::Simplicity => candidate.lines.map(f64::from),
     }?;
     value.is_finite().then_some(value)
@@ -308,5 +343,72 @@ mod tests {
     #[test]
     fn empty_field_is_no_candidate() {
         assert_eq!(adjudicate(&[], 0.001), Verdict::NoCandidate);
+    }
+}
+
+#[cfg(test)]
+mod test_depth_fallback {
+    //! TestDepth exists because discarding the test-count proxy entirely made every
+    //! consensus-matrix task fall through to Simplicity, which rewards the shortest
+    //! implementation -- usually also the one with the fewest tests. It must never outrank
+    //! a direct measurement, and must never be silently skipped when none exists.
+    use super::*;
+
+    fn cand(arm: &str, tests: u32, lines: u32) -> Evidence {
+        Evidence {
+            arm: arm.into(),
+            conformance: Some(1.0),
+            defect_sensitivity: None,
+            survival: None,
+            clippy: Some(0),
+            crates_touched: Some(1),
+            tests: Some(tests),
+            lines: Some(lines),
+            cost_usd: None,
+        }
+    }
+
+    #[test]
+    fn test_depth_decides_when_no_direct_quality_measure_exists() {
+        // the confinement field: nothing discriminates, so the proxy is all that remains
+        let field = [cand("codex-luna", 7, 226), cand("glm-53-flash", 14, 320)];
+        match adjudicate(&field, 0.001) {
+            Verdict::Winner { arm, on, .. } => {
+                assert_eq!(arm, "glm-53-flash");
+                assert_eq!(on, Criterion::TestDepth);
+            }
+            other => panic!("expected a TestDepth winner, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn survival_decides_before_the_proxy_but_does_not_suppress_it() {
+        let mut field = [cand("few-tests", 7, 100), cand("many-tests", 14, 320)];
+        field[0].survival = Some(1.0);
+        field[1].survival = Some(0.0);
+        match adjudicate(&field, 0.001) {
+            Verdict::Winner { arm, on, .. } => {
+                assert_eq!(arm, "few-tests", "a direct measure must beat the proxy");
+                assert_eq!(on, Criterion::Survival);
+            }
+            other => panic!("expected a Survival winner, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_tied_survival_falls_through_to_the_proxy_not_to_length() {
+        // Both survived everything. Survival is a property of the IMPLEMENTATION and says
+        // nothing about suite quality, so a tie there must not suppress TestDepth -- doing
+        // so picked the shorter candidate over the better-tested one.
+        let mut field = [cand("short", 7, 100), cand("long", 14, 320)];
+        field[0].survival = Some(1.0);
+        field[1].survival = Some(1.0);
+        match adjudicate(&field, 0.001) {
+            Verdict::Winner { arm, on, .. } => {
+                assert_eq!(arm, "long", "12 tests beats 7 when survival ties");
+                assert_eq!(on, Criterion::TestDepth);
+            }
+            other => panic!("expected a TestDepth winner, got {other:?}"),
+        }
     }
 }
