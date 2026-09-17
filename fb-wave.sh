@@ -23,6 +23,37 @@ if ! flock -n 9; then
   exit 1
 fi
 
+# CLAIM THE MATRIX HERE, not in the caller.
+#
+# The lock above stops two waves running AT ONCE. It cannot stop a wave being launched again
+# AFTER the first finishes, because the only record that a matrix was ever dispatched is
+# which directory its .tsv sits in -- and this script never moved it. Only fb-autopilot did,
+# as a caller-side step. So a hand-launched wave left its .tsv in the queue permanently, and
+# the autopilot tripped it the moment the machine went idle.
+#
+# That is exactly what happened to wave24: launched by hand at 20:34, three arms finished and
+# the fourth ran for two hours, and at 22:51 -- seconds after the last agent exited -- the
+# autopilot found the .tsv still queued and relaunched the whole wave. fb-dispatch removes and
+# recreates each worktree, so all four completed runs were destroyed unscored. Roughly three
+# hours of agent time, no data.
+#
+# The `flock -n` above was added after the SAME root cause on wave20 and fixed only the
+# concurrent half of it. Claiming here makes a hand launch and an autopilot launch identical,
+# which is the actual invariant: whoever launches a wave claims it, because this is the only
+# code that knows a wave was launched.
+#   (bead farmerbob-bal)
+QUEUE="/home/gabe/Documents/farmerbob/.fb/queue"
+if [ "$(dirname "$(readlink -f "$M")")" = "$(readlink -f "$QUEUE")" ]; then
+  mkdir -p "$QUEUE/dispatched"
+  if mv "$M" "$QUEUE/dispatched/$(basename "$M")"; then
+    M="$QUEUE/dispatched/$(basename "$M")"
+    echo "claimed $(basename "$M") -> dispatched/"
+  else
+    echo "REFUSING: cannot claim $M" >&2
+    exit 1
+  fi
+fi
+
 # The lock is held by THIS shell; hand it to the background job by keeping fd 9 open there.
 setsid bash -c '
   exec 9>"'"$LOCK"'"
