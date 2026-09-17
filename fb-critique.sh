@@ -96,6 +96,29 @@ $(cat "$sw/$TARGET")"
     outside=$( { cd "$sw" && git diff --name-only HEAD -- crates/ 2>/dev/null
                  cd "$sw" && git ls-files --others --exclude-standard crates/ 2>/dev/null; } \
                | grep -vxF "$TARGET" | grep -vxF "$own_lib" | sort -u )
+    # A deliverable may legitimately span several files. fnd-store's spec says "split into
+    # modules if you like", and two arms did -- so the declared target became a 12-line list
+    # of `mod` declarations and every substantive behaviour sat in files the critic never saw.
+    # Two critics diagnosed it themselves rather than reviewing the header:
+    #   or-deepseek-v4-flash: "every substantive behaviour lives in modules that are NOT part
+    #     of the shown patch ... the reviewable artefact is a header."
+    #   glm-53-flash: "if it is this candidate's output, the frozen patch has lost virtually
+    #     all of its work and a patch-level comparison is invalid."
+    # Showing the target alone was the fix for farmerbob-4ur; this is that fix's own next
+    # failure. Carry the sibling sources too, bounded, so a split implementation is reviewable.
+    #   (bead farmerbob-4ur, second occurrence)
+    if [ "$scope_readable" = yes ] && [ -n "$outside" ]; then
+      tdir=$(dirname "$TARGET")
+      sibs=$(printf '%s\n' "$outside" | grep "^$tdir/" | grep '\.rs$' | head -12)
+      for sib in $sibs; do
+        [ -f "$sw/$sib" ] || continue
+        patch="$patch
+
+=== ALSO PART OF THIS DELIVERABLE: $sib ($(wc -l < "$sw/$sib") lines) ===
+$(head -c 20000 "$sw/$sib")"
+      done
+    fi
+
     if [ "$scope_readable" = no ]; then
       patch="$patch
 

@@ -1,0 +1,10 @@
+VOID (evidence destroyed, and the frozen patches were unrepresentative)
+Adjudicated 2026-09-17. No passing candidate. Four arms INDETERMINATE because git cannot read
+their worktrees (farmerbob-13p); two genuinely NO-TESTS, which is a real arm failure since
+cargo runs without git. No winner is possible and none was invented.
+The subjective tier still paid. Two critics independently found that the critique harness was
+showing them only the declared target, so a split-module implementation appeared as a 12-line
+header -- the second occurrence of farmerbob-4ur, caused by its own fix, now fixed again.
+or-deepseek-v4-flash also found a real defect by reading the worktree directly: raw
+BEGIN/COMMIT with no ROLLBACK wedges the store's update path permanently after one failure.
+Not escalatable -- the deliverable is not merged.
