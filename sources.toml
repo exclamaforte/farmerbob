@@ -181,7 +181,8 @@ quota_bucket = "inclusionai"   # the upstream vendor is what rate-limits, not op
 parked_until = "2026-09-17T00:00:00+00:00"   # OpenRouter free-tier DAILY cap, shared by every :free model
 
 [source.or-mercury-25]
-status = "verified"                            # confirmed 2026-09-15 as the unnamed "0.04/0.15" line
+status = "disabled"                            # confirmed 2026-09-15 as the unnamed "0.04/0.15" line
+disabled_reason = "user instruction, 2026-09-16: \"I don't trust mercury. there are free models better, probably.\" Recorded here rather than remembered by the orchestrator, so router::eligibility enforces it on every selection instead of it depending on whether I happen to recall it."
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
