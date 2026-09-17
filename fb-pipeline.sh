@@ -29,20 +29,42 @@ echo "== pipeline $T ($CRATE, $TARGET)"
 # for the field it was computed over: reviewer was cross-examined 2x2 while five passing
 # candidates sat in the worktrees, and the stale matrix reported a TIE between two arms
 # neither of which was best. Staleness inverted the answer rather than delaying it.
+# The set of gate-PASSING candidates. TOTAL: it always prints exactly one of three things,
+# and never an empty string.
+#
+# It used to print nothing both when no candidate passed and when the task had never been
+# scored, and run_stage's guard was `[ -n "$now" ] && ...`, so an empty field could never
+# trigger a re-run. Every task whose whole field failed was therefore frozen at whatever it
+# was first scored as -- gpu-lease sat at four stale NO-OPs while eight worktrees existed.
+# Same failure as always: "nothing passed" and "nothing was measured" produced one value.
 field() {
   python3 -c "
 import json,sys
 try: d=json.load(open('$LOGS/$T.score.json'))
-except Exception: sys.exit(0)
-print(','.join(sorted(r['source'] for r in d if r.get('verdict')=='PASS')))" 2>/dev/null
+except Exception: print('UNSCORED'); sys.exit(0)
+p=sorted(r['source'] for r in d if r.get('verdict')=='PASS')
+print(','.join(p) if p else 'NONE')" 2>/dev/null
 }
 
-run_stage() { # run_stage <name> <artefact> <command...>
-  local name="$1" artefact="$2"; shift 2
+# The set of CANDIDATES on disk. This is what the score stage must be keyed on.
+#
+# score.json is the root every other artefact derives from, and it was the only stage with
+# no freshness check at all -- `run_stage` skipped it whenever the file merely existed. The
+# fingerprint could not have caught it either, because the fingerprint is COMPUTED FROM
+# score.json: a stale root yields a stale fingerprint that every downstream artefact then
+# validates against successfully. The check certified staleness as freshness.
+#   (bead farmerbob-oad)
+wtfield() {
+  ls -d "$HOME/.local/share/farmerbob/worktrees/$T--"*/ 2>/dev/null \
+    | sed "s|.*/$T--||; s|/$||" | sort | paste -sd, - | sed 's/^$/NOCANDIDATES/'
+}
+
+run_stage() { # run_stage <name> <artefact> <keyfn> <command...>
+  local name="$1" artefact="$2" keyfn="$3"; shift 3
   local now sig="$artefact.field"
-  now=$(field)
+  now=$($keyfn)
   if [ -s "$artefact" ]; then
-    if [ -n "$now" ] && [ "$now" != "$(cat "$sig" 2>/dev/null)" ]; then
+    if [ "$now" != "$(cat "$sig" 2>/dev/null)" ]; then
       echo "  $name: field changed -> re-running"
       echo "     was: $(cat "$sig" 2>/dev/null || echo '<unrecorded>')"
       echo "     now: $now"
@@ -55,11 +77,12 @@ run_stage() { # run_stage <name> <artefact> <command...>
   else echo "  $name: FAILED (see $LOGS/$T.pipeline.log)"; return 1; fi
 }
 
-run_stage score    "$LOGS/$T.score.json"   bash ./fb-score.sh   "$T" "$CRATE"
-run_stage crossx   "$LOGS/$T.crossx.json"  bash ./fb-crossx.sh  "$T" "$CRATE" "$TARGET"
-run_stage critique "$LOGS/$T.claims.json"  bash ./fb-critique.sh "$T" "$CRATE" "$TARGET"
-run_stage promote  "$LOGS/$T.promoted.json" bash ./fb-promote.sh "$T" "$CRATE" "$TARGET"
-run_stage prove    "$LOGS/$T.proved.json"  bash ./fb-prove.sh   "$T" "$CRATE" "$TARGET"
+# score is keyed on the CANDIDATES ON DISK; everything downstream on who PASSED.
+run_stage score    "$LOGS/$T.score.json"    wtfield bash ./fb-score.sh   "$T" "$CRATE"
+run_stage crossx   "$LOGS/$T.crossx.json"   field   bash ./fb-crossx.sh  "$T" "$CRATE" "$TARGET"
+run_stage critique "$LOGS/$T.claims.json"   field   bash ./fb-critique.sh "$T" "$CRATE" "$TARGET"
+run_stage promote  "$LOGS/$T.promoted.json" field   bash ./fb-promote.sh "$T" "$CRATE" "$TARGET"
+run_stage prove    "$LOGS/$T.proved.json"   field   bash ./fb-prove.sh   "$T" "$CRATE" "$TARGET"
 
 # ESCALATE. A confirmed finding should sharpen the gate for every future candidate on this
 # task, not settle one adjudication and vanish. fb-prove already wrote the test and ran it
