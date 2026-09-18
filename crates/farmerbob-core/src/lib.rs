@@ -27,6 +27,7 @@ pub mod divergence;
 pub mod envelope;
 pub mod error;
 pub mod experiment;
+pub mod field_shape;
 pub mod finding_fate;
 pub mod gate;
 pub mod grade;

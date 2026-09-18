@@ -1,0 +1,56 @@
+MERGED or-nemotron-ultra
+first four-arm field this project has run. 4/4 PASS, clippy 0 across the board.
+
+  arm                 tests  lines  suite verdict
+  codex-luna              3    381  no signal (passes every implementation)
+  gemini-38-flash        15    570  OVER-FITTED, FoundSeparateFaults(3)
+  glm-53-flash           13    524  no signal (passes every implementation)
+  or-nemotron-ultra      42    862  DISCRIMINATING, FoundSeparateFaults(2)
+
+THE PARTITION LINE IS VOID. crossx printed "SPEC-AMBIGUOUS: {codex-luna,or-nemotron-ultra} |
+{gemini-38-flash} | {glm-53-flash}" and instructed that every cross-camp failure be vetoed.
+cell(impl=gemini-38-flash, suite=codex-luna) is a PASS and those two are printed in different
+camps, so it is not a partition. detect_partition builds camps as sets of SUITES and prints
+them as camps of ARMS; a suite that passes everything sits inside every camp-set, so the
+validity check's `if camp.contains(other) { continue }` skips the cells that refute it. It is
+vacuous exactly when the field contains a non-discriminating suite, which is this field twice
+over. Filed farmerbob-gzxg, P0. The matrix reading stands on its own.
+
+WHAT THE FIELD ACTUALLY SPLIT ON WAS MY SPEC. Three of the four critics raise the same
+boundary: what to do with an arm whose every off-diagonal cell is Error. My spec delegated it
+-- "State what you do with it and pin the answer you chose" -- and codex-luna pinned Mixed,
+glm put it in a camp of one, or-nemotron excluded it from camps. All four honoured the one
+rule I did pin (it must not silently become Isolated). or-nemotron's two discriminating cells
+are that boundary, so they are vetoed as spec ambiguity, not counted as defects; gemini's
+three likewise. Both spec critics named this exact clause BEFORE implementation, and speclint
+was blind to the phrasing until this morning.
+
+ONE REAL DEFECT, and gemini-38-flash found it: glm-53-flash's Partition "executes a disjoint-
+set union over pair_pass and checks only !internal_fail. It never validates that cells between
+distinct camps are Cell::Fail." Confirmed by reading: `clean_split` tests camps.len() >= 2, a
+camp of >= 2, and no failure INSIDE a camp -- and nothing else -- while its own doc comment
+promises "every measured cell across camps Fail". A documented invariant the code does not
+enforce, and the same defect as the harness's own detect_partition. gemini also correctly
+faults glm's pair_pass/pair_fail for collapsing directed cells with `||`, so a pair that
+passes one way and fails the other satisfies both. or-nemotron, gemini and codex-luna all
+enforce (Some(Fail), Some(Fail)) strictly; only glm does not.
+
+winner: or-nemotron-ultra. 42 tests against gemini's 15, and they are not padding -- seven
+cover Error cells specifically, plus zero and one arms, axes mismatch, Mixed, points_at_spec
+and narrate, every one of which codex-luna omits entirely. It is the only discriminating suite
+in the field and it enforces the cross-camp invariant strictly. glm's criticism of it is real
+and glm routed it correctly as an ambiguity rather than a claim: or-nemotron honours Error
+exclusion for Unanimous and MutualRejection and abandons it inside the structural checks. That
+is an internal inconsistency on the boundary I failed to pin.
+
+codex-luna: 3 tests, and or-nemotron's critique of it is exactly right -- "no tests for
+Zero/One arms, axes-mismatch, all-Error, mixed-Error, two-arm Unanimous/MutualRejection,
+Mixed, points_at_spec, or narrate". Its inflated tests_run=4566 (farmerbob-xbu1) had it
+leading the wave log on test count.
+
+THE MOST IMPORTANT FINDING IS ABOUT THIS SPEC. glm-53-flash's FOLLOWUP: farmerbob_core::matrix
+already exports `Shape` and `shape(&Matrix)`, answering the same question in an incompatible
+vocabulary (Consensus/SpecAmbiguous vs Unanimous/Partition). My own rubric forbids exactly
+this and my spec ordered four arms to do it. Filed farmerbob-293m, P0. It is the first time
+the FOLLOWUPS section has caught something about the specification rather than about a peer,
+and it was only visible because fb brief was fixed this morning to print that section at all.
