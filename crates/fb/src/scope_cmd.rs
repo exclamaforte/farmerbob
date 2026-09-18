@@ -212,10 +212,27 @@ fn assess_arm(wt_path: &Path, target: &str) -> ArmAssessment {
         return ArmAssessment::WorktreeMissing(wt_path.to_path_buf());
     }
 
-    // Step 2: git diff --name-only HEAD
+    // Step 2: git diff --name-only HEAD -- crates/
+    //
+    // The `crates/` pathspec is NOT decoration and its absence made this command
+    // unusable. Worktrees here are provisioned SPARSE: about sixteen entries are
+    // checked out and git reports every other file in the repository as deleted. Run
+    // without the pathspec, `fb scope` reported 777 departures for an arm that had
+    // done nothing wrong -- .beads, .agents, docs, every path the provisioner did not
+    // materialise.
+    //
+    // The two readers that already existed both scope it, and now all three agree:
+    //     fb-score.sh:67     git -C "$WT" diff --name-only HEAD -- crates/
+    //     fb-critique.sh:96  git diff --name-only HEAD -- crates/
+    //
+    // The spec pinned the command without the pathspec, so all three candidates
+    // implemented exactly what was asked and every unit test passed -- they construct
+    // `Change` values directly, because the spec's own Rules forbade shelling out to
+    // git. The defect was invisible until the merged code was run against a real
+    // worktree. (filed)
     let diff_tracked = match Command::new("git")
         .current_dir(wt_path)
-        .args(["diff", "--name-only", "HEAD"])
+        .args(["diff", "--name-only", "HEAD", "--", "crates/"])
         .output()
     {
         Ok(out) if out.status.success() => out,
@@ -238,10 +255,11 @@ fn assess_arm(wt_path: &Path, target: &str) -> ArmAssessment {
         }
     };
 
-    // Step 2: git ls-files --others --exclude-standard
+    // Step 2: git ls-files --others --exclude-standard -- crates/
+    // Same pathspec, same reason: an unchecked-out file is not a change.
     let untracked = match Command::new("git")
         .current_dir(wt_path)
-        .args(["ls-files", "--others", "--exclude-standard"])
+        .args(["ls-files", "--others", "--exclude-standard", "--", "crates/"])
         .output()
     {
         Ok(out) if out.status.success() => out,
