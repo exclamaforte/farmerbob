@@ -1,0 +1,63 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-18. Three arms, three PASS, nine crossx cells, nine passes.
+
+  glm-53-flash      PASS  509L  21 tests  485s
+  gemini-38-flash   PASS  422L  25 tests  486s
+  or-ling-30-flash  PASS  325L  23 tests  174s
+
+Cross-examination ranks nobody. I tried to measure DefectSensitivity by removing each
+implementation's same-call collision tracking (clause 8) and the mutation matched only glm's
+code shape -- one site in glm, zero in the other two. A zero there means MY MUTATION DID NOT
+APPLY, not that the suite is blind, and reporting it as a measurement would have been a
+fabricated number. Second time this week a shape-dependent shortcut of mine produced a false
+zero; recorded rather than used.
+
+THE FIELD'S BEST CRITIQUE DECIDES IT, AND I VERIFIED ITS CLAIMS. glm on or-ling:
+
+  "Two tests pin less than their names claim. `every_wave_appears_exactly_once` asserts only
+   that the lengths sum to 3 -- a bug that drops w2 while launching w1 twice still passes, and
+   clause 7 names exactly that the least-noticeable failure."
+
+Checked, and exact:
+
+    let result = plan(&queued, &[], 2, 2);
+    let total: usize = result.launch.len() + result.held.len();
+    assert_eq!(total, 3);
+
+A test whose failure state is indistinguishable from its success state, in the test named for
+the partition. That is this project's recurring bug, written into an assertion about the very
+clause that warns against it.
+
+  "`queue_order_preserved` launches all three waves, so held-side ordering is never exercised;
+   a rival emitting `held` in reverse queue order passes this suite unchanged."
+
+  "Reason-order coverage stops one short. TargetBusy-over-NES and TargetBusy-over-TooManyWaves
+   are pinned; NotEnoughSlots-over-TooManyWaves is not -- and the author's own Risk section
+   names check ordering as the likeliest failure point. The one ordering whose slip would
+   mislabel every starved wave on a full machine is the untested one."
+
+  "No module-level contract ... where this crate's convention states the boundaries."
+
+Also checked:
+
+  arm                 //! lines
+  glm-53-flash               50
+  gemini-38-flash             7
+  or-ling-30-flash            0
+
+My spec asks in Composition that the reader be told why `launch` is not sorted. glm writes fifty
+lines of module contract, or-ling none.
+
+or-ling on gemini is the round's most interesting design point and I am recording it though it
+did not decide anything: `saturating_sub` is reached only after a guard proves no underflow, so
+"a future edit that loosens the guard would silently produce `free_slots = 0` rather than
+panicking in debug, corrupting every subsequent launch decision with no diagnostic signal."
+Defensive arithmetic hiding a future bug is the same family as everything else in this file.
+
+DECISION. gemini has four more tests. glm has a module contract seven times the size, and it
+wrote the critique that found a vacuous partition test in a rival -- a claim I verified by
+reading the code rather than accepting. Twenty-one tests that say what they claim beat
+twenty-five where the naming outruns the assertion; that is exactly what glm demonstrated about
+the third arm.
+
+1398 core tests, clippy 9, farmerbob-core clippy 0.

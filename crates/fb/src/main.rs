@@ -9,13 +9,13 @@ mod eligible;
 mod escalate;
 mod import;
 mod ledger_cmd;
-mod reap_cmd;
 mod mutants;
 mod objective;
 mod pareto;
 mod paths;
 mod promote;
 mod prove;
+mod reap_cmd;
 mod score;
 mod select;
 mod slots_cmd;
@@ -590,7 +590,10 @@ fn main() {
         Some(Command::Status) => status::run_cmd(),
         Some(Command::Eligible { arm }) => eligible::run_cmd(&arm),
         Some(Command::Differential { task }) => differential::run_cmd(&task),
-        Some(Command::Reap { execute, unregister }) => reap_cmd::run_cmd(execute, unregister),
+        Some(Command::Reap {
+            execute,
+            unregister,
+        }) => reap_cmd::run_cmd(execute, unregister),
         Some(Command::Ledger {
             record,
             arm,

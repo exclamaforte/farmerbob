@@ -67,6 +67,7 @@ pub mod testout;
 pub mod timing;
 pub mod verifier;
 pub mod vrouter;
+pub mod wave_plan;
 pub mod witness;
 pub mod wtalloc;
 pub mod wtreap;

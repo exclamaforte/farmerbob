@@ -14,9 +14,9 @@
 //! worktree under a live arm. A command that prints what it would do, and needs a second flag to
 //! do it, is the shape that failure argues for.
 
-use farmerbob_core::reap_exec::{admit_plan, Admitted, Stale};
-use farmerbob_core::reap_plan::{plan, Skip, Step};
-use farmerbob_core::wtreap::{census, conflicts, Worktree};
+use farmerbob_core::reap_exec::{Admitted, Stale, admit_plan};
+use farmerbob_core::reap_plan::{Skip, Step, plan};
+use farmerbob_core::wtreap::{Worktree, census, conflicts};
 use std::collections::BTreeSet;
 use std::process::Command;
 
@@ -150,7 +150,9 @@ fn run_step(repo: &std::path::Path, root: &std::path::Path, step: &Step) -> Resu
             // basenames, so this can only fail if one carried a separator -- but a bug that
             // deletes outside the root is the one bug worth a second check.
             if dir.contains('/') || dir.contains("..") || !path.starts_with(root) {
-                return Err(format!("refusing to delete {dir}: not a plain name under the root"));
+                return Err(format!(
+                    "refusing to delete {dir}: not a plain name under the root"
+                ));
             }
             std::fs::remove_dir_all(&path).map_err(|e| format!("rm {dir}: {e}"))
         }
@@ -198,9 +200,15 @@ pub fn run_cmd(execute: bool, may_unregister: bool) -> i32 {
     );
     let conf = conflicts(&wts);
     if !conf.is_empty() {
-        println!("{} contradictory listing(s), excluded from every plan:", conf.len());
+        println!(
+            "{} contradictory listing(s), excluded from every plan:",
+            conf.len()
+        );
         for k in conf.iter().take(10) {
-            println!("  {} ({} say registered, {} say not)", k.dir, k.registered, k.unregistered);
+            println!(
+                "  {} ({} say registered, {} say not)",
+                k.dir, k.registered, k.unregistered
+            );
         }
     }
 
