@@ -1219,11 +1219,32 @@ fn is_compile_error(out: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Top-level `use` lines that appear before the first `#[cfg(test)]`.
+/// Whether this line IS the `#[cfg(test)]` attribute, rather than merely mentioning it.
+///
+/// `contains` was wrong and cost a whole matrix. `crossx.rs` names that literal four times in
+/// its own comments and code -- it is the file that strips test modules -- so extracting a
+/// suite FROM crossx.rs found its boundary at a doc comment on line 918, took 1400 lines of
+/// implementation as "the test body", and dropped every import after it. All three diagonal
+/// cells failed to compile and the matrix VOIDed.
+///
+/// Third occurrence of this exact shape in this project: the awk strip truncated on
+/// mutate.rs's quoted literal, `strip_test_modules_text` was rewritten to scan outside
+/// strings and comments for the same reason, and these two extractors were left behind
+/// because nothing had yet asked crossx to read itself.
+///
+/// The rule is STARTS WITH, not equals. `#[cfg(test)] mod tests {` puts the attribute and the
+/// module on one line and is valid Rust -- an existing regression test pins it, and my first
+/// version of this function used `==` and broke it. A line that merely discusses the attribute
+/// begins with `///`, `//`, or code, never with the attribute itself.
+fn is_cfg_test_attr(line: &str) -> bool {
+    line.trim_start().starts_with("#[cfg(test)]")
+}
+
 fn top_level_uses(src: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut lines = src.lines();
     while let Some(line) = lines.next() {
-        if line.contains("#[cfg(test)]") {
+        if is_cfg_test_attr(line) {
             break;
         }
         if !line.trim_start().starts_with("use ") {
@@ -1326,7 +1347,7 @@ fn test_body(src: &str, idx: usize) -> String {
     let mut out = String::new();
     let mut st = ScanState::default();
     for line in src.lines() {
-        if line.contains("#[cfg(test)]") {
+        if is_cfg_test_attr(line) {
             in_test = true;
         }
         if !in_test {
@@ -2121,6 +2142,26 @@ mod tests {
     /// the test module -- an opening brace with no close, so the module ended with an
     /// unclosed delimiter and the suite failed against its own code.
     #[test]
+    /// crossx.rs names "#[cfg(test)]" in its own comments, so extracting a suite from it
+    /// found the boundary at a doc comment, lost every later import, and swept 1400 lines of
+    /// implementation into the graft. All three diagonals failed and the matrix VOIDed.
+    #[test]
+    fn a_line_that_only_mentions_cfg_test_is_not_the_boundary() {
+        assert!(is_cfg_test_attr("#[cfg(test)]"));
+        assert!(is_cfg_test_attr("    #[cfg(test)]  "));
+        // Attribute and module on one line is valid Rust and must still be the boundary.
+        assert!(is_cfg_test_attr("#[cfg(test)] mod tests {"));
+        assert!(!is_cfg_test_attr("/// used to be take_while(|l| !l.contains(\"#[cfg(test)]\"))"));
+        assert!(!is_cfg_test_attr("        // \"#[cfg(test)]\" -- it strips test modules itself"));
+        assert!(!is_cfg_test_attr("if src[i..].starts_with(\"#[cfg(test)]\") {"));
+    }
+
+    #[test]
+    fn top_level_uses_survives_a_file_that_quotes_the_attribute() {
+        let src = "use a::B;\n// mentions #[cfg(test)] in prose\nuse c::D;\n#[cfg(test)]\nmod tests {}\n";
+        assert_eq!(top_level_uses(src), vec!["use a::B;", "use c::D;"]);
+    }
+
     fn top_level_uses_keeps_a_wrapped_import_whole() {
         let src = "use farmerbob_core::scope::{\n    assess, Change,\n    Declared,\n};\nuse std::path::Path;\n#[cfg(test)]\nmod tests {}\n";
         let uses = top_level_uses(src);
