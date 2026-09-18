@@ -1,0 +1,59 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. Four arms, two PASS:
+
+  glm-53-flash   PASS  493L  22 tests
+  codex-luna     PASS  364L  11 tests
+  or-hy3         NO-OP   0L  rc=1 at 6s
+  or-qwen38-flash NO-OP  0L  rc=1 at 7s
+
+CROSS-EXAMINATION. Second non-VOID matrix in a row, and this one is all four cells pass:
+
+  impl \ suite            codex-lun glm-53-fl
+  codex-luna               .         .
+  glm-53-flash             .         .
+
+Neither suite discriminates. That is not nothing and it is not much: the spec pinned eight
+clauses, five boundaries and two composition rules by name, so a field that agrees is a field
+reading the same tightly-written page. Consensus is not corroboration when it shares a cause.
+
+THE CRITIQUES ARE THE DECIDING HALF, AND THEY POINT OPPOSITE WAYS.
+
+glm on codex-luna, having traced every clause: NO MATERIAL DEFECTS FOUND, and then the thing
+worth having --
+
+  "One genuinely unpinned input shape remains: the same `dir` twice with contradictory
+   `registered` flags. Classification is per entry, so by clause 10 `reapable` will emit a
+   name that one observation says git lists -- a name unsafe to delete."
+
+That is correct and it is MY gap. I pinned the duplicate case and pinned it only for IDENTICAL
+duplicates. A listing that says a directory is both registered and not is exactly the state
+this module exists to be careful about, and the spec's own composition clause forces the unsafe
+answer. Filed. The behaviour is the spec's, so it is not a defect in either arm.
+
+codex-luna on glm, its only claim:
+
+  "CLAIM: `census` violates the required count-sum invariant for a valid listing larger than
+   `u32::MAX` entries.  WHERE: crates/farmerbob-core/src/wtreap.rs:117-121
+   ACTUAL: `registered` saturates at `u32::MAX` ..."
+
+glm's census does not saturate. It is `c.registered += 1` at line 189. The code that saturates
+is at lines 117-121 of CODEX-LUNA'S OWN FILE, which is the line range the claim cites. The
+critic described its own implementation and attributed it to the one it was reviewing: the
+PROJECTION failure mode, with the critic's own line numbers still attached. The verifier caught
+it -- 1 TESTABLE, 1 REFUSED-BY-VERIFICATION, 0 confirmed -- which is the instrument working.
+
+Worth saying plainly: the underlying observation is real, just about the wrong arm, and it is
+unreachable either way. Four billion Worktree structs cannot be constructed. glm's `+= 1` would
+panic in debug rather than silently lose an entry, which is the better of the two failures.
+
+DECISION. glm on 22 tests to 11, one per pinned clause and boundary, and on a critique that
+traced all ten clauses and returned a real spec gap. codex-luna's suite is good -- glm called
+its reapable/disposal agreement test "genuinely adversarial", and it is: live-settled overlap,
+registered entries, unmatched keys and a duplicate all in one listing -- but eleven tests
+against fifteen pinned behaviours cannot name which one broke, and its one claim was a
+projection of its own code.
+
+Nothing calls this yet. 327 directories against 124 registrations still sit on disk; this
+decides which of them may go, and a caller that acts on it is separate work.
+
+1490 tests, clippy 9, farmerbob-core clippy 0.

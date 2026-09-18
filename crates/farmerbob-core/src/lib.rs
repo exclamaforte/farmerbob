@@ -59,6 +59,7 @@ pub mod timing;
 pub mod verifier;
 pub mod vrouter;
 pub mod wtalloc;
+pub mod wtreap;
 
 pub use agent::{Agent, AgentKind};
 pub use error::DomainError;
