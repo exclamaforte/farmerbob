@@ -1,0 +1,65 @@
+MERGED gemini-38-flash
+Adjudicated 2026-09-18. Three arms, THREE PASS -- the first wave at the reduced size, and the
+size held: three dispatched, three candidates.
+
+  gemini-38-flash    PASS  574L  28 tests  242s  survival 1.00
+  or-nemotron-ultra  PASS  625L  37 tests  345s  survival 0.00
+  glm-53-flash       PASS  455L  23 tests  824s  suite discriminating
+
+  impl \ suite            gemini-38 glm-53-fl or-nemotr
+  gemini-38-flash          .         .         .
+  glm-53-flash             .         .         .
+  or-nemotron-ultra        .         FAIL      .
+
+ONE FAILING CELL, AND THIS TIME IT IS REAL. I ran it rather than trusting the label, having
+been wrong twice this week by not doing so. glm's `the_same_arm_name_on_two_witnesses_stays_
+two_witnesses` against or-nemotron:
+
+    left: [("t", "a"), ("u", "a")]   right: [("u", "a")]
+
+Two witnesses both named "a", one failing {t}, the other failing {u}. Clause 7 says
+`unique_failures` returns a test name "exactly when exactly one witness lists it". Each of t
+and u is listed by exactly one witness, so both are unique failures. or-nemotron collapses
+same-named witnesses before counting, which the spec never asks for, and loses one. Traceable
+to a clause the spec pins by number -- a real defect, not an unpinned boundary.
+
+Which matters, because or-nemotron wrote 37 tests, more than anyone in the field, and metrics
+alone would have handed it the task on TestDepth by a margin of 14. It has the deepest suite
+and a confirmed defect. Those are not in tension: a suite cannot catch what its author did not
+think of.
+
+THE SHARPEST CRITIQUE FOUND TWO CONTRADICTIONS IN MY OWN SPEC. gemini on glm:
+
+  "The specification contains a direct contradiction between the 'Reuse existing types'
+   directive ... and two stricter gate constraints: the task's single-file modification
+   boundary, and the verbatim 'Exact API' fixing `pub enum Verdict` with five distinct
+   variants. Because `gate::Verdict` is a closed 8-variant enum ... it cannot express
+   witness-level matrix semantics."
+
+Correct. The rubric says a new public type whose name already exists in the crate is a defect;
+the Exact API orders one; the scope gate makes extending `gate::Verdict` an `OutOfScope`
+failure. Three rules, no legal move. Every arm had to break one.
+
+  "The variant documentation suggests `NoEvidence` applies whenever no test names were
+   recorded, but Clause 6 explicitly commands that non-empty slices with empty `failed` sets
+   yield `Clean`."
+
+Also correct, and also mine: the doc comment I wrote for the variant and the clause I wrote for
+the boundary say different things. Both arms resolved it the same way -- `NoEvidence` only for
+an empty slice -- and both documented the call-site contract. Filed.
+
+or-nemotron on gemini is six findings, all real and all cosmetic: an unreachable `else`, a
+redundant emptiness check after dedup, a `dedup()` on a BTreeMap-derived vector that cannot
+have duplicates, and an `Occurrence` struct storing one arm name while relying on a later
+`count == 1` filter to keep it correct. Nothing behavioural. Worth having; not worth a task.
+
+DECISION. gemini on survival -- the only arm to survive the field's one discriminating suite --
+on 28 in-spec tests, and on the critique that found two contradictions in the specification
+rather than in a rival. glm's suite is the better instrument here and caught the defect; its
+implementation simply never met a foreign discriminating suite to be tested by.
+
+gemini-38-flash's fourth dispatch, third merge, and the third distinct thing it has been best
+at: the discriminating suite on precondition, the surviving implementation on marker-grammar,
+the deepest in-spec suite on availability, and now the critique.
+
+1562 tests, clippy 9, farmerbob-core clippy 0.

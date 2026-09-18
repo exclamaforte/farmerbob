@@ -60,6 +60,7 @@ pub mod taskid;
 pub mod timing;
 pub mod verifier;
 pub mod vrouter;
+pub mod witness;
 pub mod wtalloc;
 pub mod wtreap;
 
