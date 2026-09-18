@@ -1,0 +1,55 @@
+MERGED gemini-38-flash
+Adjudicated 2026-09-18. Three arms, three PASS. A wiring task: real worktrees, real git.
+
+  gemini-38-flash    PASS  815L  22 tests  897s
+  glm-53-flash       PASS  794L  28 tests  1132s
+  or-nemotron-ultra  PASS  506L  11 tests  1573s
+
+CROSSX VOID, twice, and the first cause is now fixed. gemini's suite would not compile against
+its own code because `top_level_uses` injected the first line of a wrapped import --
+`use farmerbob_core::scope::{` -- an opening brace with no close. That is why crates/fb tasks
+kept voiding and core ones rarely did, and it is fixed and regression-tested. The matrix still
+voids for a second, separate reason, which I have not found and am not conflating with the
+first. No portability signal here, so none was used.
+
+OR-NEMOTRON IS OUT, and glm said exactly why:
+
+  "All three defects share one root: the most load-bearing readers are hand-rolled where the
+   spec said import. The marker grammar duplicates `precondition::declarations` and diverges
+   (single space only, no fence skipping, no close-delimiter check) ... `run_git`'s tri-state
+   overloads 'git refused' with 'no output', inviting every caller to resolve the ambiguity
+   toward clean."
+
+Verified: `precondition::` appears twice in gemini, twice in glm, and ZERO times in
+or-nemotron. The spec says "Use them, imported. Do not reimplement either rule here." Clause 7
+exists precisely to stop "git refused" reading as "stayed in scope", and a hand-rolled tri-state
+reintroduces it.
+
+glm also noted that or-nemotron's flagged main.rs change is the wiring the task text instructs,
+not a departure -- defending the arm it was reviewing against a misreading. That is the critic
+role working.
+
+GEMINI OVER GLM on two things, with the unpinned aggregate exit code vetoed (gemini raised it
+itself: some arms clean, others unassessable, and the spec never said; both readings defensible).
+
+First, it models the unassessable states separately -- `ArmAssessment::{Clean, Departed,
+WorktreeMissing, GitFailed}` against glm's single `Unassessable`. A missing worktree and a git
+that refused are different facts and clause 7 turns on telling them apart.
+
+Second, it closes a hole in a GATE. A newly created `lib.rs` is untracked, so `git diff HEAD`
+is empty and glm classifies it `Untouched` -- clean. gemini reads the file. glm's is the
+literal reading of the command I pinned; gemini's is the one that cannot be fooled, and for a
+gate that is the point. or-nemotron confirmed the behaviour in review.
+
+glm has six more tests and the better architecture note; it does not outweigh a gate that
+passes an unread file.
+
+WHAT RUNNING IT FOUND, WHICH NO TEST COULD. `fb scope wave-plan` reports 777 departures for a
+clean arm. Worktrees here are provisioned SPARSE -- sixteen entries checked out, everything
+else reported deleted -- and my spec pinned the git command without the `crates/` pathspec that
+fb-score.sh:67 and fb-critique.sh:96 both already use. All three arms implemented what was
+asked; the result is unusable against a real worktree. The unit tests pass because the spec's
+own Rules told them to construct `Change` values rather than shell out. Mine, filed, and the
+reason a wiring task is worth dispatching: the defect was invisible until something ran.
+
+1416 core tests, clippy 9.

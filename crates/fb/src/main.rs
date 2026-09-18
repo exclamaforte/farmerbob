@@ -17,6 +17,7 @@ mod paths;
 mod promote;
 mod prove;
 mod reap_cmd;
+mod scope_cmd;
 mod score;
 mod select;
 mod slots_cmd;
@@ -152,6 +153,18 @@ enum Command {
         #[arg(long, default_value_t = 3600)]
         backoff_secs: u64,
     },
+    /// Assess whether a run stayed inside its declared deliverable.
+    ///
+    /// Joins scope::assess (paths) with lib_diff::classify (what the lib.rs diff did),
+    /// two merged gates that had no caller.
+    Scope {
+        /// The task to assess.
+        task: String,
+        /// One arm, or every arm of the task when omitted.
+        #[arg(long)]
+        arm: Option<String>,
+    },
+
     /// Show which worktree directories may be removed, and with --execute, remove them.
     ///
     /// The first caller of the wtreap chain. Every rule lives in farmerbob-core and is
@@ -617,6 +630,7 @@ fn main() {
             execute,
             unregister,
         }) => reap_cmd::run_cmd(execute, unregister),
+        Some(Command::Scope { task, arm }) => scope_cmd::run_cmd(&task, arm.as_deref()),
         Some(Command::Ledger {
             record,
             arm,

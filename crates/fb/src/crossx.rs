@@ -2125,7 +2125,11 @@ mod tests {
         let src = "use farmerbob_core::scope::{\n    assess, Change,\n    Declared,\n};\nuse std::path::Path;\n#[cfg(test)]\nmod tests {}\n";
         let uses = top_level_uses(src);
         assert_eq!(uses.len(), 2, "{uses:?}");
-        assert!(uses[0].ends_with("};"), "wrapped import truncated: {:?}", uses[0]);
+        assert!(
+            uses[0].ends_with("};"),
+            "wrapped import truncated: {:?}",
+            uses[0]
+        );
         let joined = uses.join("\n");
         assert_eq!(
             joined.matches('{').count(),
