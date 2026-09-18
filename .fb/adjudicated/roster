@@ -1,0 +1,60 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-18. Three arms, two PASS.
+
+  glm-53-flash       PASS  611L  27 tests   788s
+  gemini-38-flash    PASS  597L  25 tests   534s
+  or-nemotron-ultra  NO-OP   0L  rc=1 after 1023s
+
+  impl \ suite            gemini-38 glm-53-fl
+  gemini-38-flash          .         .
+  glm-53-flash             .         .
+
+All-pass at N=2. Cross-examination says nothing and I read nothing into it.
+
+MEASURED, since DefectSensitivity is listed NEVER MEASURED. Injected the exact defect the spec
+critique caught before dispatch -- remove the guard that makes `refusal_cutoff = 0` turn the
+rule off, so `0 >= 0` excludes every arm and empties every roster:
+
+  gemini-38-flash  1 test fails
+  glm-53-flash     1 test fails
+
+Tied. Both suites pin the clause that the contradiction would have broken, which is what the
+spec critique was for.
+
+THE CRITIQUES DECIDE IT, AND BOTH ARE REAL.
+
+glm on gemini:
+
+  "Clause 2's mandated doc content is missing. The spec says the doc must state that a
+   `refusal_cutoff` of 0 turns the rule off entirely, and why ... `choose`'s doc reproduces the
+   spec's baseline paragraph and stops. The behavior is right; a caller reading docs alone is
+   left with exactly the misreading the spec said the doc must prevent."
+
+Checked: gemini mentions the cutoff-zero rule once, glm twice. The behaviour is correct in both;
+the documentation of it is not.
+
+gemini on glm found no defect and instead identified a flaw in MY revised spec:
+
+  "The author correctly identified the tension in the spec's phrasing: 'the LAST entry wins,
+   matching `availability::neglected`'s own pinned rule' (where `neglected` actually uses
+   `.max()` on timestamps, which coincidentally equals the last entry in chronological records).
+   Resolving in favor of delegation directly honors the overarching requirement that the two
+   functions agree on identical inputs."
+
+That phrasing is mine, written HOURS AGO while fixing the five findings the spec critique
+raised. `neglected` takes the maximum timestamp; "last entry wins" only coincides with that
+when the input happens to be chronological. glm spotted the difference and delegated rather
+than implementing my words literally, which is the correct resolution and the one that keeps
+the two functions from ever disagreeing. A fix introducing a smaller version of the bug it
+fixed. Recorded against the spec, not the arm.
+
+DECISION. glm on 27 tests to 25, on documenting the clause the spec singles out, and on
+resolving a spec inaccuracy by delegating instead of transcribing. gemini's own critique calls
+glm's delegation "the exact right architectural decision"; both arms delegate in six places, so
+the difference is in what each did when the spec and the delegate disagreed.
+
+or-nemotron-ultra ran 1023 seconds and produced nothing at rc=1 -- its first NO-OP of this
+shape, after twelve accepted spec findings across the same period. It is the strongest spec
+critic in the field and has now failed to implement twice in a row.
+
+1377 core tests, clippy 9, farmerbob-core clippy 0.

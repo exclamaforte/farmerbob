@@ -51,6 +51,7 @@ pub mod reap_plan;
 pub mod resource;
 pub mod resume;
 pub mod reviewer;
+pub mod roster;
 pub mod router;
 pub mod run;
 pub mod runstate;
