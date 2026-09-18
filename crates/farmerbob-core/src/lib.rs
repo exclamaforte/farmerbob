@@ -17,6 +17,7 @@ pub mod attempt_log;
 pub mod autopilot;
 pub mod availability;
 pub mod budget;
+pub mod cell_record;
 pub mod compare;
 pub mod confinement;
 pub mod corpus;

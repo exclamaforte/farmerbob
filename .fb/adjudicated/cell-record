@@ -1,0 +1,63 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-18. Three arms, two PASS.
+
+  gemini-38-flash    PASS  671L  17 tests  360s
+  glm-53-flash       PASS  645L  21 tests  987s
+  or-nemotron-ultra  NO-OP   0L  rc=1 after 963s
+
+  impl \ suite            gemini-38 glm-53-fl
+  gemini-38-flash          .         FAIL
+  glm-53-flash             .         .
+
+glm's suite is labelled OVER-FITTED because at N=2 every failing suite is N-1-of-N. That label
+is meaningless at this size, which is what `suite_verdict` was merged to say, and it is wrong
+here: the two failures are real.
+
+    an_error_printed_by_a_failing_test_does_not_void_the_names
+      left:  NoCompile { why: Other, first_error: "error: expected 4 exits, got 3" }
+      right: Fail { failed: ["error_scan"] }
+
+    failed_run_with_unparseable_names_and_an_error_line_is_other
+      left:  NoCompile { why: Environment, first_error: "(no output)" }
+      right: NoCompile { why: Other, first_error: "error: test failed, to rerun pass ..." }
+
+The second is a boundary I PINNED: a `Fail` with no parseable names returns `Other` carrying the
+error line when one exists, and `Environment`/`(no output)` only when none does. gemini returns
+the fallback while the line is right there. The first is the same hazard one level out -- a
+failing test that PRINTS an error-shaped line. My spec pinned that a test NAME cannot trip the
+scan and said nothing about a test's OUTPUT, and glm's reading is the one that keeps the names.
+
+BOTH CRITIQUES FOUND A REAL DEFECT, FROM OPPOSITE SIDES OF THE SAME CONTRADICTION IN MY SPEC.
+
+gemini on glm:
+
+  "any unclassified compiler error ... occurring in a multi-crate invocation alongside an
+   earlier crate's `test result: ok.` is completely swallowed and reported as `Cell::Pass`.
+   This directly contradicts Clause 1 and the superset requirement that an unrecognised build
+   failure is `Other` and never `Pass`."
+
+glm on gemini:
+
+  "The `read_cell` doc promises '`test result: ok.` and no failures -> `Pass`', but a bare
+   error-initial line preempts ok ... Genuinely two-readable -- but their own doc contradicts
+   their code, so one of the two is wrong regardless of which reading wins."
+
+They are describing one hole from either end. Clause 1 says output containing `test result: ok.`
+and no failures is `Pass`; the superset section says an unrecognised build failure is never
+`Pass`. When both appear, my spec says both things. N-of-N, mine, filed.
+
+glm was also scrupulous about its own advantage: it flagged that gemini's tests pin whitespace-
+only output and a bare `Killed` sentinel, neither of which the spec fixes, and added "Both are
+reasonable resolutions (I made the same ones)". A critic disclosing that it shares the flaw it
+is reporting is the behaviour this stage exists to produce.
+
+DECISION. glm on 21 tests to 17, on the only discriminating suite in the field, and on gemini
+violating a boundary the spec pins by name. Its own defect -- swallowing an unclassified error
+after an earlier crate's `ok.` -- is real, was found by gemini, and is filed rather than fixed
+on the way in, because editing a winner's diff during a merge puts the adjudicator's preferences
+into the record unmeasured.
+
+or-nemotron-ultra produced nothing at rc=1 after 963s. Third such failure in recent waves from
+the arm with the best spec-critique record in the project.
+
+1437 core tests, clippy 9, farmerbob-core clippy 0.

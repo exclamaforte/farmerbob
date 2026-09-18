@@ -259,7 +259,13 @@ fn assess_arm(wt_path: &Path, target: &str) -> ArmAssessment {
     // Same pathspec, same reason: an unchecked-out file is not a change.
     let untracked = match Command::new("git")
         .current_dir(wt_path)
-        .args(["ls-files", "--others", "--exclude-standard", "--", "crates/"])
+        .args([
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "crates/",
+        ])
         .output()
     {
         Ok(out) if out.status.success() => out,
