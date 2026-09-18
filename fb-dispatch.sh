@@ -17,6 +17,31 @@ META="$LOG_ROOT/$RUN.json"; BRANCH="fb/$BEAD/$SRC"
 
 git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1
 # `worktree remove` REFUSES a worktree whose admin directory is gone -- "is not a working
+
+# SHARED lock on this bead, held for the whole run, taken BEFORE anything touches the worktree
+# path. Two bugs in one fix.
+#
+# ORDER. The first version acquired this just before launching the agent -- after the block
+# below had already cleared and recreated the worktree. So it stopped a spec critique and a
+# dispatch from RUNNING at once but not from dispatch deleting the directory a critique was
+# working in, which is the thing it was added for. Observed on wave73: "clearing an orphaned
+# worktree directory" printed while fb-speccheck still held the lock and was still writing
+# there.
+#
+# MODE. It was also EXCLUSIVE, and dispatch holds it for its entire run -- so every arm of a
+# wave queued behind the first one. wave73 dispatched three arms and ran them sequentially,
+# each waiting 15-40 minutes for the last. That is a throughput regression I introduced hours
+# after establishing that queue depth, not machinery, was the parallelism bottleneck.
+#
+# Dispatchers never contend with each other: each arm owns its own <bead>--<arm> directory.
+# They contend only with fb-speccheck, which owns every one of those paths for the bead. That
+# is a reader/writer relationship, so dispatch takes it SHARED and fb-speccheck EXCLUSIVE:
+# many dispatchers together, no dispatcher while a critique runs, no critique while one
+# dispatches.  (farmerbob: lock-ordering and lock-serialisation beads)
+LOCKDIR="$HOME/.local/share/farmerbob"; mkdir -p "$LOCKDIR"
+exec 8>"$LOCKDIR/speccheck.$BEAD.lock"
+flock -s 8
+
 # tree" -- and leaves the directory sitting there, at which point `worktree add` refuses too
 # because the path exists and is not empty. 103 worktrees were left in exactly that state
 # (farmerbob-13p), so every one of their tasks was permanently un-redispatchable and the
@@ -190,13 +215,6 @@ CGPID=$!
   # Best effort, never load-bearing: if no session exists the launcher starts cold and the
   # prompt is self-contained. A stage that only works when the agent remembers has a failure
   # state that looks like a slightly worse answer instead of an obvious one.
-  # Block while a spec critique of this bead is running: it owns this worktree path until it
-  # finishes and would remove the tree this dispatch is about to create. Blocking (no -n) is
-  # right here -- a spec critique is minutes and the alternative is racing it.
-  LOCKDIR="$HOME/.local/share/farmerbob"; mkdir -p "$LOCKDIR"
-  exec 8>"$LOCKDIR/speccheck.$BEAD.lock"
-  flock 8
-
   CONT=""
   [ -f "$LOG_ROOT/speccheck/$BEAD/$SRC.findings.md" ] && CONT=yes
   a_c=(); z_c=(); o_c=(); c_c=()
