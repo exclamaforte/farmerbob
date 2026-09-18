@@ -145,13 +145,34 @@ run_differential() {
   esac
 }
 
+# FAILURE IS RECORDED AND RETURNED, not just printed.
+#
+# run_stage returns 1 on a failed stage and every caller below discarded it, so this script
+# always exited 0 -- the last command being an echo. fb-autopilot guards its retry with
+#
+#     if ! ./fb-pipeline.sh "$pending" ...; then touch "$DONE/.skip.$pending"; fi
+#
+# and that condition was therefore NEVER true. The skip marker was never written -- there are
+# zero of them on disk -- and the autopilot re-ran the same broken pipeline on every idle tick
+# it ever had: 228 identical failures of port-objective across all four stages, plus five other
+# tasks, 918 FAILED lines in one log. A guard whose trigger cannot fire, protecting a loop that
+# cannot notice it is stuck.
+#
+# It also printed "ready for adjudication" with crossx, critique, promote and prove all failed,
+# which is the same defect at the top level: the pipeline announced its own success regardless
+# of whether anything in it worked.
+FAILED_STAGES=""
+stage() { # stage <name> <artefact> <keyfn> <command...>
+  run_stage "$@" || FAILED_STAGES="$FAILED_STAGES $1"
+}
+
 # score is keyed on the CANDIDATES ON DISK; everything downstream on who PASSED.
-run_stage score    "$LOGS/$T.score.json"    wtfield bash ./fb-score.sh   "$T" "$CRATE"
-run_differential
-run_stage crossx   "$LOGS/$T.crossx.json"   field   bash ./fb-crossx.sh  "$T" "$CRATE" "$TARGET"
-run_stage critique "$LOGS/$T.claims.json"   field   bash ./fb-critique.sh "$T" "$CRATE" "$TARGET"
-run_stage promote  "$LOGS/$T.promoted.json" field   bash ./fb-promote.sh "$T" "$CRATE" "$TARGET"
-run_stage prove    "$LOGS/$T.proved.json"   field   bash ./fb-prove.sh   "$T" "$CRATE" "$TARGET"
+stage score    "$LOGS/$T.score.json"    wtfield bash ./fb-score.sh   "$T" "$CRATE"
+run_differential || FAILED_STAGES="$FAILED_STAGES differential"
+stage crossx   "$LOGS/$T.crossx.json"   field   bash ./fb-crossx.sh  "$T" "$CRATE" "$TARGET"
+stage critique "$LOGS/$T.claims.json"   field   bash ./fb-critique.sh "$T" "$CRATE" "$TARGET"
+stage promote  "$LOGS/$T.promoted.json" field   bash ./fb-promote.sh "$T" "$CRATE" "$TARGET"
+stage prove    "$LOGS/$T.proved.json"   field   bash ./fb-prove.sh   "$T" "$CRATE" "$TARGET"
 
 # ESCALATE. A confirmed finding should sharpen the gate for every future candidate on this
 # task, not settle one adjudication and vanish. fb-prove already wrote the test and ran it
@@ -179,4 +200,10 @@ else
   ./fb-escalate.sh auto "$T" 2>&1 | sed 's/^/  escalate: /'
 fi
 
+if [ -n "$FAILED_STAGES" ]; then
+  echo "== $T NOT ready for adjudication -- failed stage(s):$FAILED_STAGES"
+  echo "   Fix the stage or the artefact path it names. The caller is told by the exit"
+  echo "   status as well as by this line, so a retry loop can stop retrying."
+  exit 1
+fi
 echo "== $T ready for adjudication"
