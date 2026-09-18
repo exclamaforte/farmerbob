@@ -1,0 +1,80 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-18. Six arms, four PASS -- the widest field yet, and the first with two
+newly-enabled arms in it:
+
+  gemini-38-flash    PASS  695L  26 tests  293s   <- first run as an implementer arm
+  glm-53-flash       PASS  452L  24 tests  887s
+  or-nemotron-ultra  PASS  310L  20 tests  108s   <- first run since the free tier reopened
+  codex-luna         PASS  294L   9 tests  322s
+  ifm-k2-think       NO-OP   0L   rc=1 in 8s
+  or-qwen38-flash    NO-OP   0L   rc=1 in 10s
+
+THE MATRIX PARTITIONS, AND THE HARNESS IS RIGHT ABOUT WHY.
+
+  impl \ suite            codex-lun gemini-38 glm-53-fl or-nemotr
+  codex-luna               .         FAIL      .         .
+  gemini-38-flash          .         .         .         .
+  glm-53-flash             .         FAIL      .         .
+  or-nemotron-ultra        .         .         .         .
+
+One test does all of it -- gemini's `test_trailing_comment_text_on_marker_line`:
+
+    "<!-- fb:creates foo.rs -->  comment\n"   ->  is this a declaration?
+
+gemini and or-nemotron say yes. glm and codex-luna say no. My spec pinned clause 6 (a marker
+counts only at the start of a line) and said NOTHING about what may follow the closing `-->`.
+Two readings, both faithful.
+
+THE CRITICS FOUND THE SAME HOLE THREE MORE TIMES, INDEPENDENTLY. None of them saw the matrix.
+
+  gemini on glm: "`parse_declaration` extracts the path via `rest.strip_suffix("-->")?.trim()`
+    ... If a prompt contains multiple declarations or trailing comments on one line ...
+    `strip_suffix` matches the trailing `-->`, capturing the intermediate markup into the path
+    ... an unpinned boundary rather than a defect."
+
+  glm on or-nemotron: "the parser accepts `<!-- fb:\tcreates a.rs -->` and
+    `<!-- fb: creates a.rs -->` ... yet rejects `creates\ta.rs`. Under a strict single-space
+    grammar the acceptance is the defect; under a flexible grammar the rejection is.
+    Whichever reading the spec takes, exactly one of these two behaviours is wrong."
+
+  or-nemotron on codex-luna: "rejects valid HTML comments like `<!--fb:creates path-->`
+    (no space after opener) ... The author acknowledges this as intentional narrowness."
+
+Four separate findings, one cause: I pinned WHERE a marker may appear and never pinned WHAT A
+MARKER IS. How much whitespace around `fb:`, whether a line may carry two markers, what may
+follow `-->`. A defect in every implementation is evidence about the specification.
+
+THE RULING. Trailing text after `-->` means the line is PROSE and declares nothing.
+
+That is glm's and codex-luna's reading and I am adopting it after the fact, which I note
+plainly because ruling post hoc on an axis the field split on is the thing that most easily
+launders a preference into a verdict. The reason is not that two arms chose it. It is that
+clauses 6 and 7 exist for exactly one purpose -- stopping a prose EXAMPLE of a marker from
+being read as a live declaration -- and wave60 proved the cost of getting that wrong when this
+very spec's own example line refused all four arms. A line reading
+
+    <!-- fb:creates x.rs -->   must NOT exist on the base
+
+is prose with a marker in it. The permissive reading parses it as a declaration, which is the
+live shell's behaviour and the bug the task was written to fix.
+
+Every cross-camp failure is therefore VETOED and does not count against glm or codex-luna, per
+the partition rule. or-nemotron-ultra's survival=1.00 is real but measures robustness across
+both readings, not correctness under the ruling one.
+
+DECISION, with the ambiguous axis removed. glm on 24 tests to gemini's 26, because all 24 sit
+on a pinned clause or boundary and five of gemini's do not -- CRLF, unclosed comments, plain
+HTML comments, a large slice, and the trailing-text case itself. The rubric is explicit that a
+suite may not assert outside the spec, precisely because it can fail a correct rival, and
+gemini's did, twice. glm also carries the most documentation in the field (87 lines to 62 and
+41) and wrote the sharpest critique in it.
+
+Said fairly: gemini's out-of-spec tests are what EXPOSED the gap. The rubric penalty and the
+value are both real, and the finding is why crossx exists. On its first dispatch as an
+implementer arm it produced the only discriminating suite in a four-arm field.
+
+or-nemotron-ultra deserves its own line: 310 lines and 20 tests in 108 seconds, a third of
+glm's wallclock, on an arm that had been parked on a fabricated reset for 29 hours. It is
+already on the Pareto frontier at $0.0000.
+
+1490 tests, clippy 9, farmerbob-core clippy 0.
