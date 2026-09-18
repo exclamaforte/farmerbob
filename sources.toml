@@ -196,7 +196,16 @@ price_in = 0.0
 price_out = 0.0
 context = 1000000
 quota_bucket = "nvidia"   # the upstream vendor is what rate-limits, not openrouter
-parked_until = "2026-09-17T00:00:00+00:00"   # OpenRouter free-tier DAILY cap, shared by every :free model
+# UNPARKED 2026-09-18T04:55Z, by probe rather than by arithmetic. OpenRouter's refusal is
+# "Rate limit exceeded: free-models-per-day." (also "-high-balance") -- it names the bucket and
+# states NO reset instant. The park this replaces read 2026-09-17T00:00:00Z, which was a GUESS
+# at the next UTC midnight: exactly the invented reset quota::park_after forbids, written into
+# the registry before park_after existed. It expired 28.8 hours ago and nothing noticed.
+# Probe: or-nemotron-ultra on precondition, PASS rc=0 in 108s, +309 lines, 2026-09-18T04:53Z.
+# That establishes the tier is OPEN NOW. It does not establish what hour it rolls -- one
+# observation of "no longer refused" cannot locate the boundary, and the message never carried
+# one to begin with. Treat the cadence as daily and unpinned until a refusal and a recovery are
+# timestamped either side of it.
 
 [source.or-laguna-s-21]
 status = "verified"
@@ -208,7 +217,16 @@ model  = "openrouter/poolside/laguna-s-2.1:free"
 price_in = 0.0
 price_out = 0.0
 quota_bucket = "poolside"   # the upstream vendor is what rate-limits, not openrouter
-parked_until = "2026-09-17T00:00:00+00:00"   # OpenRouter free-tier DAILY cap, shared by every :free model
+# UNPARKED 2026-09-18T04:55Z, by probe rather than by arithmetic. OpenRouter's refusal is
+# "Rate limit exceeded: free-models-per-day." (also "-high-balance") -- it names the bucket and
+# states NO reset instant. The park this replaces read 2026-09-17T00:00:00Z, which was a GUESS
+# at the next UTC midnight: exactly the invented reset quota::park_after forbids, written into
+# the registry before park_after existed. It expired 28.8 hours ago and nothing noticed.
+# Probe: or-nemotron-ultra on precondition, PASS rc=0 in 108s, +309 lines, 2026-09-18T04:53Z.
+# That establishes the tier is OPEN NOW. It does not establish what hour it rolls -- one
+# observation of "no longer refused" cannot locate the boundary, and the message never carried
+# one to begin with. Treat the cadence as daily and unpinned until a refusal and a recovery are
+# timestamped either side of it.
 
 [source.or-inkling]
 status = "verified"
@@ -220,7 +238,16 @@ model  = "openrouter/thinkingmachines/inkling:free"
 price_in = 0.0
 price_out = 0.0
 quota_bucket = "thinkingmachines"   # the upstream vendor is what rate-limits, not openrouter
-parked_until = "2026-09-17T00:00:00+00:00"   # OpenRouter free-tier DAILY cap, shared by every :free model
+# UNPARKED 2026-09-18T04:55Z, by probe rather than by arithmetic. OpenRouter's refusal is
+# "Rate limit exceeded: free-models-per-day." (also "-high-balance") -- it names the bucket and
+# states NO reset instant. The park this replaces read 2026-09-17T00:00:00Z, which was a GUESS
+# at the next UTC midnight: exactly the invented reset quota::park_after forbids, written into
+# the registry before park_after existed. It expired 28.8 hours ago and nothing noticed.
+# Probe: or-nemotron-ultra on precondition, PASS rc=0 in 108s, +309 lines, 2026-09-18T04:53Z.
+# That establishes the tier is OPEN NOW. It does not establish what hour it rolls -- one
+# observation of "no longer refused" cannot locate the boundary, and the message never carried
+# one to begin with. Treat the cadence as daily and unpinned until a refusal and a recovery are
+# timestamped either side of it.
 
 [source.or-ling-30-flash]
 status = "verified"
@@ -233,7 +260,16 @@ price_in = 0.0
 price_out = 0.0            # (!) plain ling-3.0-flash has no free variant; -vl:free chosen
 context = 262144
 quota_bucket = "inclusionai"   # the upstream vendor is what rate-limits, not openrouter
-parked_until = "2026-09-17T00:00:00+00:00"   # OpenRouter free-tier DAILY cap, shared by every :free model
+# UNPARKED 2026-09-18T04:55Z, by probe rather than by arithmetic. OpenRouter's refusal is
+# "Rate limit exceeded: free-models-per-day." (also "-high-balance") -- it names the bucket and
+# states NO reset instant. The park this replaces read 2026-09-17T00:00:00Z, which was a GUESS
+# at the next UTC midnight: exactly the invented reset quota::park_after forbids, written into
+# the registry before park_after existed. It expired 28.8 hours ago and nothing noticed.
+# Probe: or-nemotron-ultra on precondition, PASS rc=0 in 108s, +309 lines, 2026-09-18T04:53Z.
+# That establishes the tier is OPEN NOW. It does not establish what hour it rolls -- one
+# observation of "no longer refused" cannot locate the boundary, and the message never carried
+# one to begin with. Treat the cadence as daily and unpinned until a refusal and a recovery are
+# timestamped either side of it.
 
 [source.or-mercury-25]
 status = "disabled"                            # confirmed 2026-09-15 as the unnamed "0.04/0.15" line
@@ -438,4 +474,13 @@ price_out = 0.0
 context = 262144
 price_checked = "2026-09-16"
 quota_bucket = "nex-agi"   # the upstream vendor is what rate-limits, not openrouter
-parked_until = "2026-09-17T00:00:00+00:00"   # OpenRouter free-tier DAILY cap, shared by every :free model
+# UNPARKED 2026-09-18T04:55Z, by probe rather than by arithmetic. OpenRouter's refusal is
+# "Rate limit exceeded: free-models-per-day." (also "-high-balance") -- it names the bucket and
+# states NO reset instant. The park this replaces read 2026-09-17T00:00:00Z, which was a GUESS
+# at the next UTC midnight: exactly the invented reset quota::park_after forbids, written into
+# the registry before park_after existed. It expired 28.8 hours ago and nothing noticed.
+# Probe: or-nemotron-ultra on precondition, PASS rc=0 in 108s, +309 lines, 2026-09-18T04:53Z.
+# That establishes the tier is OPEN NOW. It does not establish what hour it rolls -- one
+# observation of "no longer refused" cannot locate the boundary, and the message never carried
+# one to begin with. Treat the cadence as daily and unpinned until a refusal and a recovery are
+# timestamped either side of it.
