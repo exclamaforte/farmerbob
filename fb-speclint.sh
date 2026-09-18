@@ -25,7 +25,38 @@ for f in "$@"; do
     echo "$name:$n:   'your tests may not assert on it'. Four specs have split a field on this."
     echo "$name:$n:   > $(printf '%s' "$line" | sed 's/^ *//' | cut -c1-90)"
     rc=1
-  done < <(grep -nEi 'state (what|which|whether)[^.]*and pin it|pin (it|them) (yourself|explicitly for every)' "$f")
+  #
+  #    The pattern was a LITERAL: `state (what|which|whether) ... and pin it`. It matched the
+  #    exact four sentences that had already caused damage and nothing else, so the fifth
+  #    spelling walked straight through it. field-shape shipped "State what you do with it and
+  #    pin the answer you chose" -- eight words from the banned phrase, clean per speclint --
+  #    and codex-luna and gemini-38-flash both returned it as KIND: delegation before either
+  #    had written a line of code. A check that only recognises the sentences it has already
+  #    seen is a check that only works on defects that have stopped happening.
+  #
+  #    It is now SHAPE-based: any second-person decision verb followed, in the same sentence,
+  #    by "pin". That is the whole of the defect -- the spec asks the implementer to decide,
+  #    then asks them to pin their own decision, and two implementers pin two decisions.
+  done < <(grep -nEi '\b(state|say|choose|decide|resolve|declare|determine)\b[^.]{0,140}\bpin\b|pin (it|them) (yourself|explicitly for every)' "$f")
+
+  # 1b. Asking the ARM to pin a FORMAT the spec did not fix.
+  #
+  # known-defect-body clause 1 said "Pin the heading's exact shape, since `parse` must read
+  # what `render` writes." Every arm did -- three arms, three different claim-line shapes --
+  # and the cross-examination matrix came back with every off-diagonal cell failing, because
+  # clauses 4, 5 and 7 all require `parse` to be tested on hand-written text and hand-written
+  # text can only be written in one arm's format. The field disagreed about nothing else.
+  #
+  # "Pin both sides of that boundary" and "pin it as a property" are fine: they ask for a TEST
+  # of a value the spec has already fixed. What is not fine is asking the arm to fix the value.
+  # The objects below are the ones that are only ever the SPEC's to fix.
+  while IFS=: read -r n line; do
+    [ -n "$n" ] || continue
+    echo "$name:$n: asks the ARM to pin a FORMAT -- the spec must fix it, or every arm fixes"
+    echo "$name:$n:   a different one. known-defect-body lost its whole matrix to this."
+    echo "$name:$n:   > $(printf '%s' "$line" | sed 's/^ *//' | cut -c1-90)"
+    rc=1
+  done < <(grep -nEi 'pin (the|its|their|your|an|a) [a-z'"'"']*( [a-z'"'"']*)? ?(shape|format|layout|wording|spelling|ordering|order|separator|delimiter|prefix|encoding)\b' "$f")
 
   # 2. A literal marker in prose. The dispatcher greps the whole prompt, so an EXAMPLE of a
   #    declaration is parsed as a declaration: wave60 refused all four of its own arms that way.
