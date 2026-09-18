@@ -67,6 +67,11 @@ pub struct Admitted {
 }
 
 /// Re-check a whole plan.
+///
+/// **Only `plan.steps` is re-checked.** `plan.skipped` is carried by neither
+/// return field and is not consulted: those directories were already refused
+/// when the plan was built, and re-deriving that here would put the same
+/// decision in two places.
 pub fn admit_plan(
     plan: &Plan,
     live: &[&str],
@@ -78,7 +83,14 @@ pub fn admit_plan(
 ## Falsifiable clauses
 
 1. A `Delete` whose directory is in `live` yields `Stop { why: NowInUse }`, **whatever** the
-   other two slices say. Liveness outranks every other signal, as it does in `wtreap`.
+   other two slices say. Liveness outranks every other signal HERE.
+   **This is deliberately the opposite of `wtreap`'s precedence and you must not carry
+   `wtreap`'s order across.** `wtreap` puts registration first, because it is deciding what MAY
+   be deleted and a registered directory is not ours to touch. This module is deciding whether
+   to ACT NOW, and the question "is an agent writing to this directory this second" dominates
+   everything else. An earlier draft of this spec cited `wtreap` as precedent for liveness-first
+   and was wrong; a spec critic checked the citation and found it asserted the opposite of what
+   `wtreap` pins.
 2. An `Unregister` whose directory is in `live` also yields `NowInUse`. Removing the
    registration under a running agent is as damaging as deleting the tree.
 3. An `Unregister` for a directory NOT in `registered` yields `NoLongerRegistered`. Something
@@ -89,12 +101,35 @@ pub fn admit_plan(
    `admit_plan` is where the sequence is understood (clause 7).
 5. A `Delete` for a directory not in `present` yields `Absent`. Already gone is not an error
    and not a success; it is a step that need not run.
-6. `Stale` is checked in the order the enum declares, so a directory that is both live and
-   absent reports `NowInUse`. Pin the precedence explicitly for every pair you can construct.
-7. **`admit_plan` accounts for its own earlier steps.** If it admits an `Unregister` for a
-   directory, the following `Delete` for that same directory is judged against a `registered`
-   set with that directory REMOVED. Otherwise every correctly-ordered plan refuses its own
-   second half, which is clause 4 read without clause 7 and is the trap in this task.
+6. `Stale` is checked in the order the enum declares. The full table is PINNED HERE, not
+   delegated -- an earlier draft said "pin the precedence explicitly for every pair you can
+   construct", which reads as an instruction to the implementer rather than as a rule, and is
+   the third time this phrasing has split a field in this project:
+
+   For an `Unregister` of `d`:
+   - `d` in `live`                              -> `NowInUse`
+   - else `d` NOT in `registered`               -> `NoLongerRegistered`
+   - else                                       -> `Go`
+
+   For a `Delete` of `d`:
+   - `d` in `live`                              -> `NowInUse`
+   - else `d` in `registered`                   -> `NowRegistered`
+   - else `d` NOT in `present`                  -> `Absent`
+   - else                                       -> `Go`
+
+   Every combination resolves through these two ladders and no other rule applies. Pin at
+   least: live+registered, live+absent, live+registered+absent, registered+absent, and each
+   ladder's fall-through to `Go`.
+7. **`admit_plan` accumulates the effect of every step it admits, not just `Unregister`.**
+   It walks the steps in order over a running copy of the three sets:
+   - admitting an `Unregister` of `d` REMOVES `d` from `registered`;
+   - admitting a `Delete` of `d` REMOVES `d` from `present`;
+   - a refused step changes nothing.
+   So the `Delete` following an admitted `Unregister` is judged with `d` no longer registered
+   -- otherwise every correctly-ordered plan refuses its own second half, which is the trap in
+   this task. And a REPEATED step resolves without a special case: a second `Unregister` of `d`
+   is `NoLongerRegistered`, a second `Delete` of `d` is `Absent`. `Plan::steps` is `pub` and a
+   suite can construct both, so both are pinned rather than left to the reader.
 8. Every step of the input plan appears exactly once across `go` and `stopped`, in the plan's
    original order within each. Pin the partition.
 

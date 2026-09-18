@@ -125,6 +125,12 @@ for arm in "${ARMS[@]}"; do
     # question.
     cw="$WT/$BEAD--$arm"
     rm -rf "$cw"; mkdir -p "$cw/.fb"
+    # Clean up on SIGTERM too, not only on the normal path. A `timeout` around this script
+    # killed it mid-run and left a scratch directory at a worktree path, which then blocks
+    # `git worktree add` AND trips the guard above -- so a timeout turned into a task that
+    # could not be dispatched at all. The trap uses the same never-delete-a-real-worktree
+    # test as the normal exit.
+    trap 'if [ -e "$cw/.git" ] || (cd "$cw" 2>/dev/null && git rev-parse --git-dir >/dev/null 2>&1); then :; else rm -rf "$cw"; fi' TERM INT EXIT
     p="$LOGS/speccheck/$BEAD/$arm.prompt.md"
     python3 - "$REPO/.fb/prompts/_speccheck.md" "$p" "$SPEC" <<PY
 import sys
