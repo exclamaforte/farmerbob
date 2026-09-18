@@ -46,6 +46,7 @@ pub mod prior;
 pub mod promote;
 pub mod proto;
 pub mod quota;
+pub mod reap_exec;
 pub mod reap_plan;
 pub mod resource;
 pub mod resume;

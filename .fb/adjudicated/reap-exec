@@ -1,0 +1,57 @@
+MERGED gemini-38-flash
+Adjudicated 2026-09-18. Three arms, two PASS.
+
+  gemini-38-flash    PASS  945L  34 tests   996s
+  or-nemotron-ultra  PASS  543L  24 tests  2175s
+  glm-53-flash       NO-OP   0L  rc=0 after 1252s
+
+  impl \ suite            gemini-38 or-nemotr
+  gemini-38-flash          .         .
+  or-nemotron-ultra        .         .
+
+Four cells, four passes, at N=2. Cross-examination cannot rank a field of two that agree, and
+the OVER-FITTED / DISCRIMINATING shapes are undefined at that size. It says nothing here and I
+did not read anything into it.
+
+SO I MEASURED THE AXIS THE HARNESS LISTS AS NEVER MEASURED, by injecting the defect this module
+exists to prevent: neuter every liveness check so `admit` stops refusing a directory a live run
+holds -- the exact failure that destroyed eight of ten runs once and looked like arms producing
+nothing.
+
+  gemini-38-flash    9 tests fail
+  or-nemotron-ultra  9 tests fail
+
+A genuine tie, and worth saying rather than quietly breaking. Both suites are sensitive to the
+thing that matters.
+
+THE ONLY CRITIQUE IN THE FIELD is gemini on or-nemotron, and it is narrow but accurate:
+
+  "The author copied the doc comments from the prompt's API block verbatim, but missed two doc
+   requirements explicitly pinned in the specification: Clause 4 required explaining ... why
+   single-step `admit(&Step::Delete)` on a registered directory reports `NowRegistered` even if
+   preceded by an unregister step ... Boundaries required stating ... that a plan whose every
+   step is refused constitutes a successful re-check rather than a failure."
+
+Checked, because a critic faulting a rival for a doc omission should meet the same bar:
+
+  arm                clause-4 explanation   successful-recheck note
+  gemini-38-flash                       3                        1
+  or-nemotron-ultra                     0                        1
+
+Clause 4 is the trap in this task -- `admit` sees one step and cannot know whether an earlier
+one ran, which is why `admit_plan` exists -- and or-nemotron ships it undocumented. gemini meets
+its own bar. Its third point, preferring `BTreeSet` over `retain` on a vector, is a preference
+at 327 directories and it says so.
+
+or-nemotron wrote no critique of gemini.
+
+DECISION. gemini on 34 tests to 24 and on being the only arm that documented the clause the
+task turns on, with defect sensitivity tied. or-nemotron's implementation is sound and half the
+size; if the doc omission were the only difference I would call this close, but 34 tests to 24
+on a module whose whole job is refusing at the last moment is not close.
+
+glm-53-flash ran 1252 seconds and produced nothing. rc=0, build passed, zero lines. Not a
+refusal and not a crash -- twenty minutes of work with no deliverable, which is its second
+NO-OP of this kind. Worth watching.
+
+1333 core tests, clippy 9, farmerbob-core clippy 0.
