@@ -21,8 +21,10 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use farmerbob_core::cell_record::{self, Breakage, is_instrument_fault};
 use farmerbob_core::crossx::{Cell, Matrix};
 use farmerbob_core::measurement::Measurement;
+use farmerbob_core::witness::Witness;
 use serde::Serialize;
 
 /// Default number of `cargo test` cycles run concurrently.
@@ -119,7 +121,8 @@ fn run(bead: &str, krate: &str, file: &str) -> Result<i32> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(CX_SLOTS_DEFAULT)
         .max(1);
-    let results = run_matrix(&root, bead, krate, &srcdir, tmp.path(), &arms, slots)?;
+    let (results, cell_records) =
+        run_matrix(&root, bead, krate, &srcdir, tmp.path(), &arms, slots)?;
 
     // Build the square matrix of cells, impl × suite.
     let cells = build_matrix(&arms, &results)?;
@@ -135,6 +138,8 @@ fn run(bead: &str, krate: &str, file: &str) -> Result<i32> {
         );
         println!("A suite that cannot run against the code it shipped with is a grafting failure.");
         println!("Scores are NOT written; fix the transplant before trusting any cell.");
+        let void_report = format_void_report(&arms, &cell_records);
+        print!("{void_report}");
         return Ok(3);
     }
 
@@ -154,7 +159,8 @@ fn run(bead: &str, krate: &str, file: &str) -> Result<i32> {
     print!("{}", format_matrix(&arms, &cells));
 
     // 8. Survival/discovery per arm, the JSON, and the summary table.
-    let stats = compute_stats(&arms, &cells);
+    let mut stats = compute_stats(&arms, &cells);
+    attach_suite_verdicts(&arms, &mut stats, &cell_records);
     let out = logs_dir().join(format!("{bead}.crossx.json"));
     write_json(&out, &stats).with_context(|| format!("writing {}", out.display()))?;
     print!("{}", format_summary(&arms, &stats));
@@ -281,6 +287,7 @@ pub fn detect_partition(arms: &[String], cells: &Matrix) -> Option<String> {
 /// discriminating foreign suite ran against this implementation there is no
 /// fraction to compute, and reporting `0.0` would be a lie that the script told
 /// (its `survival = None` became `"n/a"`). Here the absence is the type.
+#[derive(Clone, Debug)]
 pub struct ArmRow {
     /// The arm this row describes.
     pub arm: String,
@@ -301,6 +308,8 @@ pub struct ArmRow {
     pub suite_discriminating: bool,
     /// True when this arm's suite is over-fitted (breaks essentially every implementation).
     pub suite_overfitted: bool,
+    /// Classified suite verdict across implementations, if computed.
+    pub suite_verdict: Option<farmerbob_core::suite_verdict::Suite>,
 }
 
 /// Compute per-arm survival and discovery, mirroring the script's inner python.
@@ -381,6 +390,7 @@ pub fn compute_stats(arms: &[String], cells: &Matrix) -> Vec<ArmRow> {
             api_incompatible_with: incompat.len(),
             suite_discriminating: disc.contains(a),
             suite_overfitted: overfit,
+            suite_verdict: None,
         });
     }
     rows
@@ -422,10 +432,18 @@ pub fn format_matrix(arms: &[String], cells: &Matrix) -> String {
 /// matching the script's `sorted(..., key=lambda kv: (-(survival or 0), -discovery))`.
 pub fn format_summary(_arms: &[String], stats: &[ArmRow]) -> String {
     let mut out = String::new();
-    out.push_str(&format!(
-        "{:<24}{:>10}{:>11}{:>14}  SUITE",
-        "ARM", "SURVIVAL", "DISCOVERY", "API-INCOMPAT"
-    ));
+    let has_verdicts = stats.iter().any(|r| r.suite_verdict.is_some());
+    if has_verdicts {
+        out.push_str(&format!(
+            "{:<24}{:>10}{:>11}{:>14}  {:<16}  SUITE_VERDICT",
+            "ARM", "SURVIVAL", "DISCOVERY", "API-INCOMPAT", "SUITE"
+        ));
+    } else {
+        out.push_str(&format!(
+            "{:<24}{:>10}{:>11}{:>14}  SUITE",
+            "ARM", "SURVIVAL", "DISCOVERY", "API-INCOMPAT"
+        ));
+    }
     out.push('\n');
 
     let mut ordered: Vec<&ArmRow> = stats.iter().collect();
@@ -450,10 +468,21 @@ pub fn format_summary(_arms: &[String], stats: &[ArmRow]) -> String {
         } else {
             "no signal"
         };
-        out.push_str(&format!(
-            "{:<24}{:>10}{:>11}{:>14}  {}",
-            r.arm, s, r.discovery, r.api_incompatible_with, tag
-        ));
+        if has_verdicts {
+            let v_str = match &r.suite_verdict {
+                Some(v) => format_suite_verdict(v),
+                None => String::new(),
+            };
+            out.push_str(&format!(
+                "{:<24}{:>10}{:>11}{:>14}  {:<16}  {}",
+                r.arm, s, r.discovery, r.api_incompatible_with, tag, v_str
+            ));
+        } else {
+            out.push_str(&format!(
+                "{:<24}{:>10}{:>11}{:>14}  {}",
+                r.arm, s, r.discovery, r.api_incompatible_with, tag
+            ));
+        }
         out.push('\n');
     }
     out
@@ -485,6 +514,12 @@ fn write_json(path: &Path, stats: &[ArmRow]) -> Result<()> {
             "suite_overfitted".to_string(),
             serde_json::json!(r.suite_overfitted),
         );
+        if let Some(ref v) = r.suite_verdict {
+            m.insert(
+                "suite_verdict".to_string(),
+                serde_json::json!(format_suite_verdict(v)),
+            );
+        }
         root.insert(r.arm.clone(), serde_json::Value::Object(m));
     }
 
@@ -497,6 +532,179 @@ fn write_json(path: &Path, stats: &[ArmRow]) -> Result<()> {
         .context("serialising cross-examination results")?;
     std::fs::write(path, buf).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
+}
+
+/// Format a [`farmerbob_core::suite_verdict::Suite`] classification for display in the summary table.
+pub fn format_suite_verdict(v: &farmerbob_core::suite_verdict::Suite) -> String {
+    match v {
+        farmerbob_core::suite_verdict::Suite::NoSignal => "NoSignal".to_string(),
+        farmerbob_core::suite_verdict::Suite::FoundSeparateFaults { implementations } => {
+            format!("FoundSeparateFaults({implementations})")
+        }
+        farmerbob_core::suite_verdict::Suite::OneDisagreement {
+            shared,
+            implementations,
+        } => {
+            format!(
+                "OneDisagreement({implementations}, shared: {})",
+                shared.join(",")
+            )
+        }
+        farmerbob_core::suite_verdict::Suite::Inconclusive { reason } => {
+            if reason.contains("empty witness slice") || reason.contains("no implementations") {
+                "Inconclusive (NoEvidence)".to_string()
+            } else {
+                format!("Inconclusive ({reason})")
+            }
+        }
+    }
+}
+
+/// Render the per-arm summary table with explicit suite verdicts.
+#[allow(dead_code)]
+pub fn format_summary_with_verdicts(
+    arms: &[String],
+    stats: &[ArmRow],
+    verdicts: &BTreeMap<String, farmerbob_core::suite_verdict::Suite>,
+) -> String {
+    let mut with_verdicts = stats.to_vec();
+    for row in &mut with_verdicts {
+        row.suite_verdict = verdicts.get(&row.arm).cloned();
+    }
+    format_summary(arms, &with_verdicts)
+}
+
+/// Format the VOID report from an explicit slice of failing diagonal items:
+/// `(arm, Breakage, is_instrument_fault, first_error)`.
+pub fn format_diagonal_breakages(items: &[(String, Breakage, bool, String)]) -> String {
+    let mut out = String::new();
+    let mut all_instrument_faults = true;
+
+    for (arm, breakage, is_fault, first_error) in items {
+        if !*is_fault {
+            all_instrument_faults = false;
+        }
+        let fault_str = if *is_fault {
+            "instrument fault: true"
+        } else {
+            "instrument fault: false, candidate fault"
+        };
+        out.push_str(&format!(
+            "  {arm}: {breakage:?} ({fault_str}): {first_error}\n"
+        ));
+    }
+
+    if !items.is_empty() && all_instrument_faults {
+        out.push_str("the matrix was lost to the harness, not to any candidate.\n");
+    }
+
+    out
+}
+
+/// Render the VOID report for failing diagonal cells in arm order.
+///
+/// Prints for each failing diagonal cell:
+/// - the arm name
+/// - the [`Breakage`]
+/// - whether it is an instrument fault
+/// - the `first_error` line verbatim
+///
+/// When every failing diagonal cell is an instrument fault, the harness-fault
+/// sentence is printed after them:
+/// `the matrix was lost to the harness, not to any candidate.`
+pub fn format_void_report(
+    arms: &[String],
+    cell_records: &BTreeMap<(String, String), cell_record::Cell>,
+) -> String {
+    let mut items = Vec::new();
+    for arm in arms {
+        let cell = cell_records.get(&(arm.clone(), arm.clone()));
+        if let Some(cell_record::Cell::Pass) = cell {
+            continue;
+        }
+        let fallback = cell_record::read_cell("");
+        let effective = cell.unwrap_or(&fallback);
+        match effective {
+            cell_record::Cell::Pass => continue,
+            cell_record::Cell::NoCompile { why, first_error } => {
+                items.push((
+                    arm.clone(),
+                    *why,
+                    is_instrument_fault(*why),
+                    first_error.clone(),
+                ));
+            }
+            cell_record::Cell::Fail { failed } => {
+                let err = failed
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "(failed tests)".to_string());
+                items.push((arm.clone(), Breakage::Other, false, err));
+            }
+        }
+    }
+    format_diagonal_breakages(&items)
+}
+
+/// Format the VOID report lines from a slice of (arm, Cell) pairs representing diagonal cells.
+#[allow(dead_code)]
+pub fn format_diagonal_cells_void_report(diagonal: &[(String, cell_record::Cell)]) -> String {
+    let mut map = BTreeMap::new();
+    let mut arms = Vec::new();
+    for (arm, cell) in diagonal {
+        arms.push(arm.clone());
+        map.insert((arm.clone(), arm.clone()), cell.clone());
+    }
+    format_void_report(&arms, &map)
+}
+
+/// Build a vector of [`Witness`] records for one suite across the implementation arms.
+///
+/// If no suite across the field recorded any failing test names, returns an empty vector
+/// so that [`farmerbob_core::witness::read`] yields [`farmerbob_core::witness::Verdict::NoEvidence`].
+pub fn build_witnesses(
+    arms: &[String],
+    suite: &str,
+    cell_records: &BTreeMap<(String, String), cell_record::Cell>,
+) -> Vec<Witness> {
+    let field_has_test_names = cell_records.values().any(|c| match c {
+        cell_record::Cell::Fail { failed } => !failed.is_empty(),
+        _ => false,
+    });
+    if !field_has_test_names {
+        return Vec::new();
+    }
+
+    let mut witnesses = Vec::new();
+    for imp in arms {
+        let failed = match cell_records.get(&(imp.clone(), suite.to_string())) {
+            Some(cell_record::Cell::Fail { failed }) => failed.clone(),
+            _ => Vec::new(),
+        };
+        witnesses.push(Witness {
+            impl_arm: imp.clone(),
+            failed,
+        });
+    }
+    witnesses
+}
+
+/// Classify a suite from its witnesses across the field.
+pub fn classify_suite(witnesses: &[Witness]) -> farmerbob_core::suite_verdict::Suite {
+    farmerbob_core::suite_verdict::classify(witnesses)
+}
+
+/// Compute and attach suite verdicts to each [`ArmRow`] in `stats`.
+pub fn attach_suite_verdicts(
+    arms: &[String],
+    stats: &mut [ArmRow],
+    cell_records: &BTreeMap<(String, String), cell_record::Cell>,
+) {
+    for row in stats.iter_mut() {
+        let witnesses = build_witnesses(arms, &row.arm, cell_records);
+        let verdict = classify_suite(&witnesses);
+        row.suite_verdict = Some(verdict);
+    }
 }
 
 /// Build the square [`Matrix`] of cells from the indexed results.
@@ -732,7 +940,16 @@ fn read_changed(wt: &Path, srcdir: &str) -> Vec<String> {
     out.into_iter().collect()
 }
 
-/// Run the full N² matrix, returning `impl × suite -> Cell`.
+/// Both readings of every cell: the historical pass/fail/nocompile `Cell` that the matrix and
+/// its stats are computed from, and the `cell_record::Cell` that carries the evidence a VOID
+/// needs to explain itself. Kept side by side deliberately -- the old reading is what other
+/// code parses and is not being replaced.
+type Cells = (
+    BTreeMap<(String, String), Cell>,
+    BTreeMap<(String, String), cell_record::Cell>,
+);
+
+/// Run the full N² matrix, returning `impl × suite -> Cell` and `impl × suite -> cell_record::Cell`.
 fn run_matrix(
     root: &Path,
     bead: &str,
@@ -741,14 +958,15 @@ fn run_matrix(
     tmp: &Path,
     arms: &[String],
     slots: usize,
-) -> Result<BTreeMap<(String, String), Cell>> {
+) -> Result<Cells> {
     let tasks: Vec<(String, String)> = arms
         .iter()
         .flat_map(|imp| arms.iter().map(move |suite| (imp.clone(), suite.clone())))
         .collect();
 
-    let results: std::sync::Arc<std::sync::Mutex<BTreeMap<(String, String), Cell>>> =
-        std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+    let results: std::sync::Arc<
+        std::sync::Mutex<BTreeMap<(String, String), (Cell, cell_record::Cell)>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::new()));
     let queue: std::sync::Arc<std::sync::Mutex<std::vec::IntoIter<(String, String)>>> =
         std::sync::Arc::new(std::sync::Mutex::new(tasks.into_iter()));
 
@@ -771,9 +989,9 @@ fn run_matrix(
                         Err(_) => break,
                     };
                     let Some((imp, suite)) = task else { break };
-                    let cell = run_one(&root, &bead, &krate, &srcdir, &tmp, &imp, &suite);
+                    let cell_pair = run_one(&root, &bead, &krate, &srcdir, &tmp, &imp, &suite);
                     if let Ok(mut r) = results.lock() {
-                        r.insert((imp, suite), cell);
+                        r.insert((imp, suite), cell_pair);
                     }
                 }
             })
@@ -789,10 +1007,17 @@ fn run_matrix(
     let results_map = locked
         .into_inner()
         .map_err(|_| anyhow::anyhow!("results map poisoned"))?;
-    Ok(results_map)
+
+    let mut cx_map = BTreeMap::new();
+    let mut rec_map = BTreeMap::new();
+    for ((imp, suite), (cx, rec)) in results_map {
+        cx_map.insert((imp.clone(), suite.clone()), cx);
+        rec_map.insert((imp, suite), rec);
+    }
+    Ok((cx_map, rec_map))
 }
 
-/// Run one `impl`'s copy with `suite`'s tests grafted in, returning the cell.
+/// Run one `impl`'s copy with `suite`'s tests grafted in, returning the cell pair.
 fn run_one(
     root: &Path,
     bead: &str,
@@ -801,17 +1026,18 @@ fn run_one(
     tmp: &Path,
     imp: &str,
     suite: &str,
-) -> Cell {
+) -> (Cell, cell_record::Cell) {
+    let empty_cell = cell_record::read_cell("");
     let dest = tmp.join(format!("run.{imp}.{suite}"));
     let _ = std::fs::remove_dir_all(&dest);
     if std::fs::create_dir_all(&dest).is_err() {
-        return Cell::Error;
+        return (Cell::Error, empty_cell);
     }
 
     let wt = root.join(format!("{bead}--{imp}"));
     if copy_worktree(&wt, &dest).is_err() {
         let _ = std::fs::remove_dir_all(&dest);
-        return Cell::Error;
+        return (Cell::Error, empty_cell);
     }
 
     // Strip every test module from the copied sources: keep lines before the
@@ -819,7 +1045,7 @@ fn run_one(
     let src_path = dest.join(srcdir);
     if strip_test_modules(&src_path).is_err() {
         let _ = std::fs::remove_dir_all(&dest);
-        return Cell::Error;
+        return (Cell::Error, empty_cell);
     }
 
     // Graft `suite`'s collected tests into the modules they belong to.
@@ -828,7 +1054,7 @@ fn run_one(
         Ok(r) => r,
         Err(_) => {
             let _ = std::fs::remove_dir_all(&dest);
-            return Cell::Error;
+            return (Cell::Error, empty_cell);
         }
     };
     let mut grafted = 0usize;
@@ -856,19 +1082,20 @@ fn run_one(
     // The implementation has no file this suite tests: a genuine API divergence.
     if grafted == 0 {
         let _ = std::fs::remove_dir_all(&dest);
-        return Cell::Error;
+        return (Cell::Error, empty_cell);
     }
 
     let (ok, output) = match run_cargo_test(&dest, krate, Duration::from_secs(CARGO_TIMEOUT_SECS)) {
         Ok(pair) => pair,
         Err(_) => {
             let _ = std::fs::remove_dir_all(&dest);
-            return Cell::Error;
+            return (Cell::Error, empty_cell);
         }
     };
     let _ = std::fs::remove_dir_all(&dest);
 
-    match ok {
+    let rec_cell = cell_record::read_cell(&output);
+    let cx_cell = match ok {
         true => Cell::Pass,
         false => {
             if is_compile_error(&output) {
@@ -877,7 +1104,8 @@ fn run_one(
                 Cell::Fail
             }
         }
-    }
+    };
+    (cx_cell, rec_cell)
 }
 
 /// Copy `Cargo.toml`, `Cargo.lock`, `rustfmt.toml` and `crates/` into `dest`.
@@ -991,20 +1219,20 @@ fn strip_test_modules_text(src: &str) -> String {
             }
             _ => {}
         }
-        if src[byte_index(&chars, i)..].starts_with("#[cfg(test)]") {
-            if let Some(end) = end_of_attributed_item(&chars, i) {
-                // Drop the partial line already emitted, then any doc comments and
-                // attributes directly above: leaving them orphans the doc and yields
-                // "expected item after doc comment", which is what broke lease.rs.
-                out.truncate(line_start_in_out);
-                trim_trailing_doc_block(&mut out);
-                i = end;
-                // Swallow the rest of that line, which is only whitespace in practice.
-                while i < chars.len() && chars[i] != '\n' {
-                    i += 1;
-                }
-                continue;
+        if src[byte_index(&chars, i)..].starts_with("#[cfg(test)]")
+            && let Some(end) = end_of_attributed_item(&chars, i)
+        {
+            // Drop the partial line already emitted, then any doc comments and
+            // attributes directly above: leaving them orphans the doc and yields
+            // "expected item after doc comment", which is what broke lease.rs.
+            out.truncate(line_start_in_out);
+            trim_trailing_doc_block(&mut out);
+            i = end;
+            // Swallow the rest of that line, which is only whitespace in practice.
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
             }
+            continue;
             // Unparseable: keep it. A file that still compiles beats one silently gutted.
         }
         out.push(chars[i]);
@@ -2151,14 +2379,21 @@ mod tests {
         assert!(is_cfg_test_attr("    #[cfg(test)]  "));
         // Attribute and module on one line is valid Rust and must still be the boundary.
         assert!(is_cfg_test_attr("#[cfg(test)] mod tests {"));
-        assert!(!is_cfg_test_attr("/// used to be take_while(|l| !l.contains(\"#[cfg(test)]\"))"));
-        assert!(!is_cfg_test_attr("        // \"#[cfg(test)]\" -- it strips test modules itself"));
-        assert!(!is_cfg_test_attr("if src[i..].starts_with(\"#[cfg(test)]\") {"));
+        assert!(!is_cfg_test_attr(
+            "/// used to be take_while(|l| !l.contains(\"#[cfg(test)]\"))"
+        ));
+        assert!(!is_cfg_test_attr(
+            "        // \"#[cfg(test)]\" -- it strips test modules itself"
+        ));
+        assert!(!is_cfg_test_attr(
+            "if src[i..].starts_with(\"#[cfg(test)]\") {"
+        ));
     }
 
     #[test]
     fn top_level_uses_survives_a_file_that_quotes_the_attribute() {
-        let src = "use a::B;\n// mentions #[cfg(test)] in prose\nuse c::D;\n#[cfg(test)]\nmod tests {}\n";
+        let src =
+            "use a::B;\n// mentions #[cfg(test)] in prose\nuse c::D;\n#[cfg(test)]\nmod tests {}\n";
         assert_eq!(top_level_uses(src), vec!["use a::B;", "use c::D;"]);
     }
 
@@ -2492,5 +2727,344 @@ pub mod x {
             body.contains("mod xtests_3"),
             "mod tests should become mod xtests_3"
         );
+    }
+}
+
+#[cfg(test)]
+mod crossx_cells_tests {
+    use super::*;
+    use farmerbob_core::cell_record::{self, Breakage};
+    use farmerbob_core::crossx::Cell as CrossxCell;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn void_report_prints_each_failing_diagonal_cell_in_arm_order_with_verbatim_error() {
+        let arms = vec!["beta".to_string(), "alpha".to_string()];
+        let mut records = BTreeMap::new();
+        // alpha fails with DuplicateImport
+        records.insert(
+            ("alpha".to_string(), "alpha".to_string()),
+            cell_record::Cell::NoCompile {
+                why: Breakage::DuplicateImport,
+                first_error: "error[E0252]: the name `BTreeMap` is defined multiple times"
+                    .to_string(),
+            },
+        );
+        // beta fails with UnclosedDelimiter
+        records.insert(
+            ("beta".to_string(), "beta".to_string()),
+            cell_record::Cell::NoCompile {
+                why: Breakage::UnclosedDelimiter,
+                first_error: "error: this file contains an unclosed delimiter".to_string(),
+            },
+        );
+
+        let report = format_void_report(&arms, &records);
+        let lines: Vec<&str> = report.lines().collect();
+
+        // Must be in arm order: beta first, then alpha
+        assert!(lines.len() >= 2);
+        assert!(lines[0].contains("beta"));
+        assert!(lines[0].contains("UnclosedDelimiter"));
+        assert!(lines[0].contains("error: this file contains an unclosed delimiter"));
+        assert!(lines[0].contains("instrument fault: true"));
+
+        assert!(lines[1].contains("alpha"));
+        assert!(lines[1].contains("DuplicateImport"));
+        assert!(lines[1].contains("error[E0252]: the name `BTreeMap` is defined multiple times"));
+        assert!(lines[1].contains("instrument fault: true"));
+    }
+
+    #[test]
+    fn void_report_all_instrument_faults_prints_lost_to_harness_sentence() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut records = BTreeMap::new();
+        records.insert(
+            ("a".to_string(), "a".to_string()),
+            cell_record::Cell::NoCompile {
+                why: Breakage::Environment,
+                first_error: "error: Disk quota exceeded".to_string(),
+            },
+        );
+        records.insert(
+            ("b".to_string(), "b".to_string()),
+            cell_record::Cell::NoCompile {
+                why: Breakage::UnclosedDelimiter,
+                first_error: "error: this file contains an unclosed delimiter".to_string(),
+            },
+        );
+
+        let report = format_void_report(&arms, &records);
+        assert!(
+            report.contains("the matrix was lost to the harness, not to any candidate."),
+            "harness-fault sentence must be present when every failing diagonal cell is an instrument fault"
+        );
+        // Appears at most once
+        assert_eq!(
+            report.matches("the matrix was lost to the harness").count(),
+            1
+        );
+        // Sentence is at the end, after the cell lines
+        let last_line = report.trim_end().lines().last().unwrap();
+        assert!(last_line.contains("the matrix was lost to the harness, not to any candidate."));
+    }
+
+    #[test]
+    fn void_report_missing_item_does_not_blame_harness() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut records = BTreeMap::new();
+        records.insert(
+            ("a".to_string(), "a".to_string()),
+            cell_record::Cell::NoCompile {
+                why: Breakage::MissingItem,
+                first_error: "error[E0599]: no method named `bar` found".to_string(),
+            },
+        );
+        records.insert(
+            ("b".to_string(), "b".to_string()),
+            cell_record::Cell::NoCompile {
+                why: Breakage::DuplicateImport,
+                first_error: "error[E0252]: name redefined".to_string(),
+            },
+        );
+
+        let report = format_void_report(&arms, &records);
+        assert!(
+            !report.contains("the matrix was lost to the harness"),
+            "when at least one failing diagonal cell is MissingItem, harness-fault sentence must not appear"
+        );
+        // Both cells must still be reported
+        assert!(report.contains("a:"));
+        assert!(report.contains("MissingItem"));
+        assert!(report.contains("error[E0599]: no method named `bar` found"));
+        assert!(report.contains("b:"));
+        assert!(report.contains("DuplicateImport"));
+    }
+
+    #[test]
+    fn void_report_unclassified_output_yields_other_and_is_reported() {
+        let arms = vec!["candidate".to_string()];
+        let mut records = BTreeMap::new();
+        records.insert(
+            ("candidate".to_string(), "candidate".to_string()),
+            cell_record::Cell::NoCompile {
+                why: Breakage::Other,
+                first_error: "error[E9999]: obscure compiler error".to_string(),
+            },
+        );
+
+        let report = format_void_report(&arms, &records);
+        assert!(report.contains("candidate:"));
+        assert!(report.contains("Other"));
+        assert!(report.contains("error[E9999]: obscure compiler error"));
+        assert!(
+            report.contains("the matrix was lost to the harness"),
+            "Breakage::Other is an instrument fault"
+        );
+    }
+
+    #[test]
+    fn void_report_empty_output_reported_as_environment_no_output() {
+        let arms = vec!["c".to_string()];
+        let mut records = BTreeMap::new();
+        // read_cell on empty output
+        records.insert(
+            ("c".to_string(), "c".to_string()),
+            cell_record::read_cell(""),
+        );
+
+        let report = format_void_report(&arms, &records);
+        assert!(report.contains("c:"));
+        assert!(report.contains("Environment"));
+        assert!(report.contains("(no output)"));
+        assert!(report.contains("the matrix was lost to the harness"));
+    }
+
+    #[test]
+    fn void_report_no_failing_diagonal_cells_emits_nothing() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut records = BTreeMap::new();
+        records.insert(("a".to_string(), "a".to_string()), cell_record::Cell::Pass);
+        records.insert(("b".to_string(), "b".to_string()), cell_record::Cell::Pass);
+
+        let report = format_void_report(&arms, &records);
+        assert!(
+            report.is_empty(),
+            "sound matrix must produce no VOID report"
+        );
+    }
+
+    #[test]
+    fn build_witnesses_constructs_witnesses_per_suite_and_classifies_disagreements() {
+        let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let mut records = BTreeMap::new();
+        // Suite 'a' run against 'b' and 'c' fails on same test
+        records.insert(("a".to_string(), "a".to_string()), cell_record::Cell::Pass);
+        records.insert(
+            ("b".to_string(), "a".to_string()),
+            cell_record::Cell::Fail {
+                failed: vec!["test_one".to_string()],
+            },
+        );
+        records.insert(
+            ("c".to_string(), "a".to_string()),
+            cell_record::Cell::Fail {
+                failed: vec!["test_one".to_string()],
+            },
+        );
+
+        let witnesses = build_witnesses(&arms, "a", &records);
+        assert_eq!(witnesses.len(), 3);
+        let verdict = classify_suite(&witnesses);
+        match verdict {
+            farmerbob_core::suite_verdict::Suite::OneDisagreement {
+                shared,
+                implementations,
+            } => {
+                assert_eq!(implementations, 2);
+                assert_eq!(shared, vec!["test_one".to_string()]);
+            }
+            other => panic!("expected OneDisagreement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_witnesses_separate_faults_when_different_tests_fail() {
+        let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let mut records = BTreeMap::new();
+        records.insert(
+            ("b".to_string(), "a".to_string()),
+            cell_record::Cell::Fail {
+                failed: vec!["test_foo".to_string()],
+            },
+        );
+        records.insert(
+            ("c".to_string(), "a".to_string()),
+            cell_record::Cell::Fail {
+                failed: vec!["test_bar".to_string()],
+            },
+        );
+
+        let witnesses = build_witnesses(&arms, "a", &records);
+        let verdict = classify_suite(&witnesses);
+        match verdict {
+            farmerbob_core::suite_verdict::Suite::FoundSeparateFaults { implementations } => {
+                assert_eq!(implementations, 2);
+            }
+            other => panic!("expected FoundSeparateFaults, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_witnesses_no_evidence_boundary_when_field_has_no_test_names() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let mut records = BTreeMap::new();
+        records.insert(("a".to_string(), "a".to_string()), cell_record::Cell::Pass);
+        records.insert(
+            ("b".to_string(), "a".to_string()),
+            cell_record::Cell::NoCompile {
+                why: Breakage::Other,
+                first_error: "could not compile".to_string(),
+            },
+        );
+
+        let witnesses = build_witnesses(&arms, "a", &records);
+        assert!(
+            witnesses.is_empty(),
+            "field with no test names must return empty witness list"
+        );
+        let verdict = classify_suite(&witnesses);
+        match verdict {
+            farmerbob_core::suite_verdict::Suite::Inconclusive { ref reason } => {
+                assert!(
+                    reason.contains("empty witness slice") || reason.contains("no implementations"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected Inconclusive(NoEvidence), got {other:?}"),
+        }
+        let formatted = format_suite_verdict(&verdict);
+        assert!(formatted.contains("NoEvidence"), "{formatted}");
+    }
+
+    #[test]
+    fn format_summary_shows_suite_and_suite_verdict_side_by_side() {
+        let arms = vec!["alpha".to_string(), "beta".to_string()];
+        let cells = vec![
+            CrossxCell::Pass,
+            CrossxCell::Fail,
+            CrossxCell::Fail,
+            CrossxCell::Pass,
+        ];
+        let m = Matrix::new(arms.clone(), arms.clone(), cells).unwrap();
+        let mut stats = compute_stats(&arms, &m);
+
+        let mut records = BTreeMap::new();
+        records.insert(
+            ("alpha".to_string(), "alpha".to_string()),
+            cell_record::Cell::Pass,
+        );
+        records.insert(
+            ("beta".to_string(), "alpha".to_string()),
+            cell_record::Cell::Fail {
+                failed: vec!["t1".to_string()],
+            },
+        );
+        records.insert(
+            ("alpha".to_string(), "beta".to_string()),
+            cell_record::Cell::Fail {
+                failed: vec!["t2".to_string()],
+            },
+        );
+        records.insert(
+            ("beta".to_string(), "beta".to_string()),
+            cell_record::Cell::Pass,
+        );
+
+        attach_suite_verdicts(&arms, &mut stats, &records);
+        let summary = format_summary(&arms, &stats);
+
+        // SUITE column header and SUITE_VERDICT header both present
+        assert!(summary.contains("SUITE"));
+        assert!(summary.contains("SUITE_VERDICT"));
+
+        // Legacy values still present
+        assert!(
+            summary.contains("discriminating")
+                || summary.contains("no signal")
+                || summary.contains("OVER-FITTED")
+        );
+        // New verdicts present
+        assert!(
+            summary.contains("Inconclusive")
+                || summary.contains("NoSignal")
+                || summary.contains("OneDisagreement")
+        );
+    }
+
+    #[test]
+    fn format_diagonal_breakages_and_cells_helpers() {
+        let diagonal = vec![
+            (
+                "arm1".to_string(),
+                cell_record::Cell::NoCompile {
+                    why: Breakage::UnclosedDelimiter,
+                    first_error: "error: unclosed delimiter".to_string(),
+                },
+            ),
+            (
+                "arm2".to_string(),
+                cell_record::Cell::NoCompile {
+                    why: Breakage::MissingItem,
+                    first_error: "error[E0425]: cannot find value".to_string(),
+                },
+            ),
+        ];
+        let rep = format_diagonal_cells_void_report(&diagonal);
+        assert!(rep.contains("arm1: UnclosedDelimiter"));
+        assert!(rep.contains("instrument fault: true"));
+        assert!(rep.contains("arm2: MissingItem"));
+        assert!(rep.contains("instrument fault: false"));
+        assert!(!rep.contains("the matrix was lost to the harness"));
     }
 }

@@ -1,0 +1,57 @@
+MERGED gemini-38-flash (grafted, not copied)
+Adjudicated 2026-09-18. Three arms, three PASS.
+
+  gemini-38-flash    PASS  +598  66 tests  clippy 1   643s
+  or-nemotron-ultra  PASS  +293  55 tests  clippy n/a 1741s
+  glm-53-flash       PASS  +276  55 tests  clippy n/a 2700s (killed at the cap, rc=143)
+
+THE MATRIX VOIDED WITH ALL THREE DIAGONALS NOCOMPILE, AND THAT WAS THE HARNESS. The task was to
+modify `crossx.rs`, so for the first time crossx extracted a suite FROM ITSELF, and
+`top_level_uses`/`test_body` located the test module with `line.contains("#[cfg(test)]")` -- a
+literal `crossx.rs` names four times in its own comments. The boundary landed on a doc comment,
+every later import was dropped and 1400 lines of implementation were swept into the graft.
+Fixed and regression-tested this tick; re-running the matrix gives an all-pass diagonal and a
+scoring matrix. The remaining nocompile cells are genuine API divergence between arms.
+
+MERGED AS A GRAFT. All three arms branched from 31aeff5, before `is_cfg_test_attr` landed, so
+copying any arm's `crossx.rs` would have REVERTED the fix that un-VOIDed this very matrix.
+gemini's diff applies cleanly onto the current file with `git apply --3way`; verified after
+merging that both survive -- 9 references to my fix, 42 to gemini's `cell_record` wiring.
+
+OR-NEMOTRON IS OUT ON A PINNED CLAUSE. glm found it:
+
+  "The live summary header becomes `  SUITE  VERDICT` while
+   `summary_table_format_is_byte_for_byte` still passes: it pins the now-dead `format_summary`.
+   The test passes for the wrong reason, and any consumer matching the old header line exactly
+   silently breaks."
+
+Clause 6 says the SUITE column keeps its current values and the new reading is printed
+ALONGSIDE, never overwriting. glm also found the mirror of clause 5: a `Fail{..}` diagonal cell
+counted as an instrument fault, which lets the harness sentence claim a matrix was "lost to the
+harness" when a suite genuinely ran and failed against its own code.
+
+GEMINI WINS AND ITS CRITIC WAS RIGHT ABOUT IT. or-nemotron on gemini, four findings, all real:
+
+  "`build_witnesses` ... conflates 'the field has evidence' with 'this suite has evidence'. A
+   suite whose column is all Pass/NoCompile should be NoEvidence regardless of other suites."
+
+  "The `run_one` error homogenization is a significant observability regression ... disk full,
+   missing worktree, parse failure, timeout -- all collapse to `Environment: (no output)`."
+
+That second one is the task's own purpose turned inside out: the wiring that exists to make a
+VOID explain itself makes cell errors less distinguishable than before. It is filed, not fixed
+on merge, and or-nemotron's FOLLOWUP names the fix -- distinct variants per error path.
+
+Also filed: the field-wide witness check, and `format_void_report` reporting a missing diagonal
+cell as `Environment` when a missing cell is a harness bug, not an environment fault.
+
+gemini on 66 tests to 55 and 55, and on 42 `cell_record` references to 9 and 4 -- it wired what
+the task asked for and the others wired a fraction of it. Its clippy regression was one
+`very complex type` on the tuple it threads through; I factored it into a named `Cells` alias on
+merge and said so, because a clippy regression against a zero baseline is a scored criterion and
+merging one silently is the thing I refuse elsewhere.
+
+glm's run was killed at the 45-minute cap with rc=143 and nobody reviewed it -- gemini's critique
+of glm is empty. Its 276 lines may be partial and I have not treated them as complete.
+
+396 fb tests, clippy 9.
