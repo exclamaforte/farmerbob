@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::limit_signal::parse_reset;
 use crate::outcome::OutcomeClass;
@@ -354,6 +354,229 @@ pub fn park_after(
     }
 }
 
+/// How far a refusal reaches.
+///
+/// A CLOSED set of three. There is no fourth radius and there are no sub-radii:
+/// a caller holding a [`Blast`] can match every case exhaustively, and a future
+/// radius arriving here is a decision made in the open, not a variant snuck
+/// into a return value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Blast {
+    /// Only the arm that was refused.
+    Arm,
+    /// Every arm sharing the refused arm's `quota_bucket` -- one upstream vendor.
+    Bucket,
+    /// Every arm sharing the refused arm's `provider` -- one credential.
+    Credential,
+}
+
+/// One arm's record: the two axes a refusal can widen along.
+///
+/// A mirror of the per-arm entry the `fb` crate parses from `sources.toml`,
+/// carrying exactly the fields [`arms_in_blast`] reads. The full record --
+/// status, model, price, eligibility -- lives in `fb`'s `Source`, which cannot
+/// be imported here because `fb` depends on this crate, not the reverse. The
+/// field names and the `source` table name match that registry deliberately, so
+/// that when a bridge is built it hands a parsed registry over unchanged
+/// instead of rewriting it field by field.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Source {
+    /// Which credential pays for this arm. Many arms share one, which is
+    /// exactly why a spent key is a wide refusal. Absent when the registry
+    /// does not record it.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Which upstream vendor rate-limits this arm. For arms behind a router
+    /// this is the vendor behind the router, not the router: OpenRouter is a
+    /// credential, and it was the vendor that refused. Absent when the
+    /// registry does not record it.
+    #[serde(default)]
+    pub quota_bucket: Option<String>,
+}
+
+/// Which arms exist and what they share, as [`arms_in_blast`] sees it.
+///
+/// The mirror-status caveat of [`Source`] applies here too: this stands in for
+/// `fb`'s registry, which carries the same `source` table (hence the serde
+/// rename) and the same two fields per arm, so the real `sources.toml` shape
+/// deserializes into this unchanged. Arm names are compared exactly, as
+/// everywhere else in this crate.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Registry {
+    /// Arm name to record.
+    #[serde(rename = "source")]
+    pub sources: BTreeMap<String, Source>,
+}
+
+impl Registry {
+    /// Creates an empty registry. An empty registry cannot widen: every
+    /// [`Blast`] over it returns just the named arm.
+    pub fn new() -> Self {
+        Self {
+            sources: BTreeMap::new(),
+        }
+    }
+
+    /// Records one arm's two axes, replacing any record under the same name.
+    pub fn insert(&mut self, arm: &str, provider: Option<&str>, quota_bucket: Option<&str>) {
+        self.sources.insert(
+            arm.to_string(),
+            Source {
+                provider: provider.map(str::to_string),
+                quota_bucket: quota_bucket.map(str::to_string),
+            },
+        );
+    }
+
+    /// The arm's record, when the registry has one.
+    pub fn get(&self, arm: &str) -> Option<&Source> {
+        self.sources.get(arm)
+    }
+}
+
+/// The bucket an arm counts against: its `quota_bucket`, else its `provider`.
+///
+/// This is the rule the registry itself applies when it counts an arm against
+/// a vendor pool, and it is applied uniformly -- to the refused arm and to
+/// every arm compared against it. A fallback that held only for the refused
+/// arm would compare its derived bucket against a field the other arms are
+/// not read for.
+fn bucket_identity(source: &Source) -> Option<&str> {
+    source
+        .quota_bucket
+        .as_deref()
+        .or(source.provider.as_deref())
+}
+
+/// Which arms a refusal of `arm` reaches, given the registry.
+///
+/// Returns the refused arm itself plus every arm in scope, sorted, without
+/// duplicates. The result is never empty: the refused arm is always a member
+/// by construction, so a caller need not handle an empty case, and an empty
+/// result is impossible -- not merely unexpected.
+///
+/// An arm absent from the registry returns just that arm, for every
+/// [`Blast`]: we cannot widen from what we do not know.
+///
+/// The radii, exactly:
+///
+/// * [`Blast::Arm`] -- exactly the refused arm, registry or no registry.
+/// * [`Blast::Credential`] -- every arm whose `provider` equals the refused
+///   arm's, compared exactly. An arm whose provider is absent stands alone:
+///   an axis the registry does not record cannot be widened along.
+/// * [`Blast::Bucket`] -- every arm counting against the refused arm's
+///   bucket. That bucket is the arm's `quota_bucket`; an arm whose
+///   `quota_bucket` is absent falls back to its `provider`; an arm with
+///   neither degenerates the radius to [`Blast::Arm`]. The same fallback
+///   applies to every arm compared, so an arm recorded under its provider
+///   alone still counts against that provider's pool.
+///
+/// Comparison is exact throughout: `deepseek` and `Deepseek` are different
+/// buckets, as everywhere else in this crate.
+///
+/// # Example
+///
+/// ```
+/// use farmerbob_core::quota::{Blast, Registry, arms_in_blast};
+///
+/// let mut registry = Registry::new();
+/// registry.insert("or-hy3", Some("openrouter"), Some("tencent"));
+/// registry.insert("or-qwen38-flash", Some("openrouter"), Some("qwen"));
+/// registry.insert("ifm-k2", Some("ifm"), Some("deepseek"));
+///
+/// // One spent key refuses every arm that pays through it.
+/// assert_eq!(
+///     arms_in_blast("or-hy3", Blast::Credential, &registry),
+///     ["or-hy3", "or-qwen38-flash"]
+/// );
+///
+/// // One vendor's refusal reaches only the arms that vendor rate-limits.
+/// assert_eq!(arms_in_blast("or-hy3", Blast::Bucket, &registry), ["or-hy3"]);
+/// ```
+pub fn arms_in_blast(arm: &str, blast: Blast, registry: &Registry) -> Vec<String> {
+    match blast {
+        Blast::Arm => vec![arm.to_string()],
+        Blast::Bucket | Blast::Credential => {
+            let Some(refused) = registry.get(arm) else {
+                return vec![arm.to_string()];
+            };
+            let key = match blast {
+                Blast::Bucket => bucket_identity(refused),
+                _ => refused.provider.as_deref(),
+            };
+            let Some(key) = key else {
+                return vec![arm.to_string()];
+            };
+            let mut reached: Vec<String> = registry
+                .sources
+                .iter()
+                .filter(|(name, candidate)| {
+                    // The refused arm is always in its own blast; the guard
+                    // makes that true by construction rather than by hoping
+                    // the key comparison happens to include it.
+                    name.as_str() == arm
+                        || match blast {
+                            Blast::Bucket => bucket_identity(candidate) == Some(key),
+                            _ => candidate.provider.as_deref() == Some(key),
+                        }
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            reached.sort();
+            reached.dedup();
+            reached
+        }
+    }
+}
+
+/// Infer the blast radius from the refusal text.
+///
+/// The phrasings recognised here are a KNOWN SUBSET -- an open one, grown only
+/// when a real refusal teaches a new string; four distinct refusal strings
+/// have been learned this week alone. The set of radii, by contrast, is
+/// closed: see [`Blast`]. Anything unrecognised is [`Blast::Arm`], and that is
+/// a decision, not a convenience fallback: a guess that widens benches arms
+/// that would have worked, and this project has already spent a day proving
+/// that a wrong confident answer costs more than an admitted narrow one.
+/// [`Blast::Arm`] is the safe failure -- it costs a repeated dispatch, while
+/// the alternative costs a benched fleet.
+///
+/// Matching is case-insensitive over the whole log head, the way this crate
+/// matches every other marker. When a log carries phrasings for two radii the
+/// credential reading wins: a spent key refuses every arm paying through it,
+/// whatever the vendor behind it said about tokens.
+///
+/// # Example
+///
+/// ```
+/// use farmerbob_core::quota::{Blast, blast_of};
+///
+/// // The key reached its cap: every arm on the credential is refused.
+/// assert_eq!(
+///     blast_of("error: key limit exceeded (total limit)"),
+///     Blast::Credential
+/// );
+///
+/// // The vendor capped the account's daily tokens: the bucket, not the key.
+/// assert_eq!(
+///     blast_of("error: token limit exceeded: tokens per day limit reached"),
+///     Blast::Bucket
+/// );
+///
+/// // Anything unrecognised: the narrowest answer, never a widening guess.
+/// assert_eq!(blast_of("error: connection reset by peer"), Blast::Arm);
+/// ```
+pub fn blast_of(log_head: &str) -> Blast {
+    let lowered = log_head.to_lowercase();
+    if lowered.contains("key limit") {
+        Blast::Credential
+    } else if lowered.contains("token limit") {
+        Blast::Bucket
+    } else {
+        Blast::Arm
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,5 +869,181 @@ mod park_after_tests {
             Park::Until { at_ms, .. } => assert_eq!(at_ms, 500_000),
             other => panic!("expected Until, got {other:?}"),
         }
+    }
+}
+
+// Where the spec leaves a boundary to the implementation -- how a third arm
+// with no `quota_bucket` compares against a derived bucket key, what a log
+// naming two radii means, whether matching is case-sensitive -- the choice is
+// pinned in the doc and deliberately NOT asserted here: another correct
+// implementation of the same spec may reasonably choose the other side, and a
+// suite that fails a correct rival measures the author's guess, not the code.
+#[cfg(test)]
+mod blast_tests {
+    use super::*;
+
+    /// The registry's real shape: one credential serving many vendors, and a
+    /// vendor bucket reaching across credentials.
+    fn registry() -> Registry {
+        let mut r = Registry::new();
+        r.insert("or-hy3", Some("openrouter"), Some("tencent"));
+        r.insert("or-qwen38-flash", Some("openrouter"), Some("qwen"));
+        r.insert("or-nemotron-ultra", Some("openrouter"), Some("nvidia"));
+        r.insert("or-deepseek", Some("openrouter"), Some("deepseek"));
+        r.insert("ifm-k2", Some("ifm"), Some("deepseek"));
+        r.insert("ifm-k2-think", Some("ifm"), Some("deepseek"));
+        r.insert("solo", Some("zai"), None);
+        r
+    }
+
+    // Clause 1: every arm on the credential, including the refused one,
+    // sorted, no duplicates.
+    #[test]
+    fn a_credential_blast_reaches_every_arm_on_the_key() {
+        assert_eq!(
+            arms_in_blast("or-hy3", Blast::Credential, &registry()),
+            [
+                "or-deepseek",
+                "or-hy3",
+                "or-nemotron-ultra",
+                "or-qwen38-flash"
+            ]
+        );
+    }
+
+    // Clause 2: for this arm the bucket is strictly smaller than the
+    // credential, and every arm it reaches is one the credential also covers.
+    #[test]
+    fn a_bucket_blast_is_narrower_than_the_credential_for_the_same_refusal() {
+        let r = registry();
+        let bucket = arms_in_blast("or-hy3", Blast::Bucket, &r);
+        let credential = arms_in_blast("or-hy3", Blast::Credential, &r);
+        assert!(bucket.len() < credential.len());
+        assert!(bucket.iter().all(|arm| credential.contains(arm)));
+    }
+
+    // The motivating outage: a vendor refusing its account reaches the arms
+    // behind other credentials that route to the same vendor.
+    #[test]
+    fn a_bucket_blast_crosses_providers_that_share_the_vendor() {
+        assert_eq!(
+            arms_in_blast("ifm-k2", Blast::Bucket, &registry()),
+            ["ifm-k2", "ifm-k2-think", "or-deepseek"]
+        );
+    }
+
+    // Clause 3.
+    #[test]
+    fn an_arm_blast_is_exactly_the_refused_arm() {
+        assert_eq!(arms_in_blast("or-hy3", Blast::Arm, &registry()), ["or-hy3"]);
+    }
+
+    // Clause 4: never the empty vector, whatever the radius.
+    #[test]
+    fn an_unregistered_arm_is_its_own_blast_at_every_radius() {
+        let r = registry();
+        for blast in [Blast::Arm, Blast::Bucket, Blast::Credential] {
+            assert_eq!(arms_in_blast("no-such-arm", blast, &r), ["no-such-arm"]);
+        }
+    }
+
+    // Clause 8, first half: with no `quota_bucket` recorded, the bucket
+    // radius is derived from the provider, so an arm bucketed there by name
+    // is reached.
+    #[test]
+    fn a_bucket_blast_falls_back_to_the_provider_when_no_bucket_is_recorded() {
+        let mut r = Registry::new();
+        r.insert("plain", Some("venom"), None);
+        r.insert("direct", Some("other"), Some("venom"));
+        assert_eq!(
+            arms_in_blast("plain", Blast::Bucket, &r),
+            ["direct", "plain"]
+        );
+    }
+
+    // Clause 8, second half: with neither field, the radius degenerates to
+    // the arm itself.
+    #[test]
+    fn a_bucket_blast_without_bucket_or_provider_degenerates_to_the_arm() {
+        let mut r = Registry::new();
+        r.insert("bare", None, None);
+        r.insert("other", Some("x"), Some("y"));
+        assert_eq!(arms_in_blast("bare", Blast::Bucket, &r), ["bare"]);
+    }
+
+    // Boundaries at zero: an empty registry cannot widen.
+    #[test]
+    fn an_empty_registry_cannot_widen() {
+        let r = Registry::new();
+        for blast in [Blast::Arm, Blast::Bucket, Blast::Credential] {
+            assert_eq!(arms_in_blast("or-hy3", blast, &r), ["or-hy3"]);
+        }
+    }
+
+    // An arm that is the only member of its provider: Credential collapses
+    // onto Arm in RESULT, which the spec pins as correct and forbids
+    // special-casing.
+    #[test]
+    fn a_sole_provider_member_is_its_own_credential_blast() {
+        let r = registry();
+        let credential = arms_in_blast("solo", Blast::Credential, &r);
+        assert_eq!(credential, ["solo"]);
+        assert_eq!(credential, arms_in_blast("solo", Blast::Arm, &r));
+    }
+
+    // Two arms on one credential, different vendors: the credential reaches
+    // both, the vendor bucket reaches one.
+    #[test]
+    fn two_arms_on_one_credential_split_when_only_the_credential_is_hit() {
+        let mut r = Registry::new();
+        r.insert("x1", Some("cred"), Some("vendor-a"));
+        r.insert("x2", Some("cred"), Some("vendor-b"));
+        assert_eq!(arms_in_blast("x1", Blast::Credential, &r), ["x1", "x2"]);
+        assert_eq!(arms_in_blast("x1", Blast::Bucket, &r), ["x1"]);
+    }
+
+    // Spelling is identity: a bucket that only looks like another arm's
+    // bucket under a different spelling is a different bucket.
+    #[test]
+    fn bucket_spelling_is_compared_exactly() {
+        let mut r = Registry::new();
+        r.insert("a", Some("p"), Some("deepseek"));
+        r.insert("b", Some("p"), Some("Deepseek"));
+        assert_eq!(arms_in_blast("a", Blast::Bucket, &r), ["a"]);
+    }
+
+    // Clauses 5 and 6: the two refusals this week's outages taught.
+    #[test]
+    fn a_spent_key_is_a_credential_refusal() {
+        assert_eq!(
+            blast_of("error: key limit exceeded (total limit)"),
+            Blast::Credential
+        );
+    }
+
+    #[test]
+    fn a_daily_token_cap_is_a_bucket_refusal() {
+        assert_eq!(
+            blast_of("error: token limit exceeded: tokens per day limit reached"),
+            Blast::Bucket
+        );
+    }
+
+    // Clause 7: the narrowest answer on anything unrecognised.
+    #[test]
+    fn an_unrecognised_refusal_stays_narrow() {
+        for head in [
+            "error: connection reset by peer",
+            "exit code 1 with no output",
+            "the run produced no verdict",
+        ] {
+            assert_eq!(blast_of(head), Blast::Arm, "{head} should stay narrow");
+        }
+    }
+
+    // Boundary at zero: an empty log head recognises nothing.
+    #[test]
+    fn an_empty_log_head_is_narrow() {
+        assert_eq!(blast_of(""), Blast::Arm);
     }
 }

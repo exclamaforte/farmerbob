@@ -142,10 +142,16 @@ run_one() {
   local impl="$1" suite="$2"
   local C="$TMP/run.$impl.$suite"; rm -rf "$C"; mkdir -p "$C"
   (cd "$WT_ROOT/$BEAD--$impl" && tar cf - Cargo.toml Cargo.lock crates rustfmt.toml 2>/dev/null) | (cd "$C" && tar xf -) 2>/dev/null
-  for f in "$C/$SRCDIR_REL"/*.rs; do
-    [ -f "$f" ] || continue
-    awk '/#\[cfg\(test\)\]/{exit} {print}' "$f" > "$f.stripped" && mv "$f.stripped" "$f"
-  done
+  # Strip test modules with the Rust implementation, NOT with awk. The awk this replaced --
+  #     awk '/#\[cfg\(test\)\]/{exit} {print}'
+  # -- fires on a QUOTED "#[cfg(test)]", and crates/farmerbob-core/src/mutate.rs contains
+  # exactly that literal at line 230 because it strips test modules itself. awk truncated
+  # mutate.rs from 656 lines to 229, deleting `pub fn apply`, so the crate failed to compile
+  # in EVERY cell including the diagonal and the diagonal invariant VOIDed the matrix. Five
+  # cross-examinations were lost to it. crates/fb/src/crossx.rs had been fixed for this exact
+  # case and the investigation kept reading THAT copy, concluding the strip was not the cause:
+  # two implementations of one step, one fixed and one live. There is now one.
+  "$REPO/target/debug/fb" strip-tests "$C/$SRCDIR_REL" || { echo nocompile > "$RES/$impl|$suite"; rm -rf "$C"; return; }
   # A test module is a CHILD of the module it tests and can see its private items.
   # Grafting it into lib.rs stripped that privilege, so a suite touching a private field
   # failed to compile against its OWN implementation (or-hy3 on speed: E0616 on

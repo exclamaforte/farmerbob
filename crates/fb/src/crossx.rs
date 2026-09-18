@@ -1107,6 +1107,21 @@ fn skip_char_literal(chars: &[char], i: usize) -> Option<usize> {
     None
 }
 
+/// Remove every `#[cfg(test)]` item from every `.rs` file under `dir`, in place.
+///
+/// Public so `fb-crossx.sh` can call it instead of carrying a second implementation. The
+/// shell's was `awk '/#\[cfg\(test\)\]/{exit} {print}'`, which fires on a QUOTED
+/// `"#[cfg(test)]"` -- and `farmerbob-core/src/mutate.rs` contains exactly that literal,
+/// because it strips test modules itself. awk truncated mutate.rs from 656 lines to 229,
+/// deleting `pub fn apply`, so the crate failed to compile in EVERY cell of the matrix
+/// including the diagonal, and the diagonal invariant VOIDed the whole cross-examination.
+/// Five matrices were lost to it, and the fault was read as a graft failure because this
+/// function -- the correct one -- was what the investigation kept reading. Two
+/// implementations of one step, one fixed and one live.
+pub fn strip_test_modules_in(dir: &Path) -> std::io::Result<()> {
+    strip_test_modules(dir)
+}
+
 fn strip_test_modules(dir: &Path) -> std::io::Result<()> {
     if !dir.is_dir() {
         return Ok(());
@@ -1482,12 +1497,126 @@ fn skip_balanced(b: &[u8], open: usize, open_ch: u8, close_ch: u8) -> Option<usi
 /// Drop a carried `use` when the body already declares it (a duplicate explicit
 /// import would be E0252, a hard error that voids the matrix).
 fn prune_uses(uses: Vec<String>, body: &str) -> Vec<String> {
+    let declared = explicitly_imported_names(body);
     uses.into_iter()
-        .filter(|u| {
+        .filter_map(|u| {
             let t = u.trim();
-            !t.is_empty() && !body.contains(t)
+            if t.is_empty() || body.contains(t) {
+                return None;
+            }
+            prune_one_use(&u, &declared)
         })
         .collect()
+}
+
+/// The names an explicit `use` binds: `PathBuf` from `use std::path::PathBuf;`,
+/// `Baz` from `use foo::Bar as Baz;`, and each member of a braced group.
+///
+/// Returns `None` for anything this cannot parse -- a glob, a nested group -- because a
+/// glob import is shadowed rather than rejected, so it cannot cause E0252, and an
+/// unparsed line is kept whole rather than guessed at.
+fn use_members(line: &str) -> Option<Vec<(String, String)>> {
+    let t = line.trim();
+    let rest = t
+        .strip_prefix("pub use ")
+        .or_else(|| t.strip_prefix("use "))?;
+    let rest = rest.trim().strip_suffix(';')?.trim();
+    let members: Vec<&str> = match rest.find('{') {
+        None => vec![rest],
+        Some(open) => {
+            let close = rest.rfind('}')?;
+            if close < open || !rest[close + 1..].trim().is_empty() {
+                return None;
+            }
+            let inner = &rest[open + 1..close];
+            // A nested group is not parsed. Keeping the line whole is the safe answer.
+            if inner.contains('{') {
+                return None;
+            }
+            inner
+                .split(',')
+                .map(str::trim)
+                .filter(|m| !m.is_empty())
+                .collect()
+        }
+    };
+    let mut out = Vec::new();
+    for m in members {
+        // `a::B as C` binds C; `a::B` binds B; `self` binds the parent segment.
+        let bound = match m.rsplit_once(" as ") {
+            Some((_, alias)) => alias.trim(),
+            None => m.rsplit("::").next()?.trim(),
+        };
+        if bound == "*" {
+            return None;
+        }
+        out.push((bound.to_string(), m.to_string()));
+    }
+    Some(out)
+}
+
+/// Every name bound by an explicit `use` written inside the test body itself.
+fn explicitly_imported_names(body: &str) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for line in body.lines() {
+        if let Some(members) = use_members(line) {
+            for (bound, _) in members {
+                out.insert(bound);
+            }
+        }
+    }
+    out
+}
+
+/// Drop from a carried `use` exactly the members the suite already imports explicitly.
+///
+/// Line-exact comparison was not enough and cost a whole cross-examination. `park-scope`'s
+/// quota.rs carries `use std::collections::{BTreeMap, BTreeSet, HashMap};` at file level and
+/// its test module writes `use std::collections::BTreeMap;`. The two lines are not equal, so
+/// both survived, and `BTreeMap` was then imported twice: E0252, a hard error, on the
+/// DIAGONAL -- a suite failing against the code it shipped with. The matrix VOIDed and both
+/// arms' cross-examination was lost. This is the third occurrence of farmerbob-74l and the
+/// second where the guard that existed could not see the collision it was written to stop.
+///
+/// Dropping only the colliding member, rather than the whole line, keeps `BTreeSet` and
+/// `HashMap` available: the suite may use them and the parent file was its only source.
+/// Returns `None` when nothing is left to carry.
+fn prune_one_use(line: &str, declared: &std::collections::BTreeSet<String>) -> Option<String> {
+    let members = match use_members(line) {
+        // Unparsed (a glob, a nested group): carry it as written. A glob is shadowed, not
+        // rejected, so it cannot produce E0252.
+        None => return Some(line.to_string()),
+        Some(m) => m,
+    };
+    let kept: Vec<&(String, String)> = members
+        .iter()
+        .filter(|(bound, _)| !declared.contains(bound))
+        .collect();
+    if kept.len() == members.len() {
+        return Some(line.to_string());
+    }
+    if kept.is_empty() {
+        return None;
+    }
+    let t = line.trim();
+    let indent = &line[..line.len() - line.trim_start().len()];
+    let vis = if t.starts_with("pub use ") {
+        "pub use "
+    } else {
+        "use "
+    };
+    let rest = t
+        .trim_start_matches("pub ")
+        .trim_start_matches("use ")
+        .trim();
+    let open = rest.find('{')?;
+    let prefix = &rest[..open];
+    let inner = kept
+        .iter()
+        .map(|(_, raw)| raw.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("{indent}{vis}{prefix}{{{inner}}};"))
 }
 
 /// Assemble a graft file: the test body, with the carried `use` lines injected
@@ -1571,6 +1700,14 @@ impl TempDir {
 
 impl Drop for TempDir {
     fn drop(&mut self) {
+        // FB_CX_KEEP leaves the grafted trees on disk. A VOID says only that the diagonal
+        // did not compile; it never says WHY, and reconstructing a cell by hand mis-stated
+        // the graft three times before this existed. The instrument that reports a failure
+        // should be able to show the failure.
+        if std::env::var("FB_CX_KEEP").is_ok() {
+            eprintln!("FB_CX_KEEP: {}", self.path.display());
+            return;
+        }
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
@@ -1872,6 +2009,56 @@ mod tests {
         let assembled = assemble_suite(&pruned, &body);
         assert!(assembled.contains("mod xtests_3"));
         assert!(assembled.contains("use std::path::PathBuf"));
+    }
+
+    #[test]
+    /// The park-scope VOID: a braced group at file level sharing ONE name with an explicit
+    /// import inside the test module. The lines are not equal, so a line-exact prune kept
+    /// both and `BTreeMap` was imported twice (E0252) -- on the diagonal, which VOIDed the
+    /// whole matrix. The other two members must survive: the suite may use them and the
+    /// parent file was their only source.
+    #[test]
+    fn prune_uses_drops_only_the_colliding_member_of_a_braced_group() {
+        let src = "use std::collections::{BTreeMap, BTreeSet, HashMap};\n\
+                   #[cfg(test)]\n\
+                   mod tests {\n\
+                       use super::*;\n\
+                       use std::collections::BTreeMap;\n\
+                   }\n";
+        let uses = top_level_uses(src);
+        let body = test_body(src, 0);
+        let pruned = prune_uses(uses, &body);
+        assert_eq!(pruned.len(), 1, "{pruned:?}");
+        assert!(!pruned[0].contains("BTreeMap"), "the collision: {pruned:?}");
+        assert!(pruned[0].contains("BTreeSet"), "{pruned:?}");
+        assert!(pruned[0].contains("HashMap"), "{pruned:?}");
+    }
+
+    /// A glob is shadowed, never rejected, so it can never cause E0252 and must be carried
+    /// through untouched however the suite imports the same names.
+    #[test]
+    fn prune_uses_keeps_a_glob_and_an_unparsed_nested_group() {
+        let declared = explicitly_imported_names("use std::collections::BTreeMap;");
+        assert_eq!(
+            prune_one_use("use std::collections::*;", &declared).as_deref(),
+            Some("use std::collections::*;")
+        );
+        assert_eq!(
+            prune_one_use("use a::{b::{BTreeMap, C}, D};", &declared).as_deref(),
+            Some("use a::{b::{BTreeMap, C}, D};")
+        );
+    }
+
+    /// An alias binds the alias, not the original: `use x::Y as BTreeMap` collides with an
+    /// imported `BTreeMap` and `use x::BTreeMap as Z` does not.
+    #[test]
+    fn prune_uses_compares_the_bound_name_not_the_path() {
+        let declared = explicitly_imported_names("use std::collections::BTreeMap;");
+        assert_eq!(prune_one_use("use x::Y as BTreeMap;", &declared), None);
+        assert_eq!(
+            prune_one_use("use x::BTreeMap as Z;", &declared).as_deref(),
+            Some("use x::BTreeMap as Z;")
+        );
     }
 
     #[test]

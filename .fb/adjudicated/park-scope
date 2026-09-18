@@ -1,0 +1,58 @@
+MERGED glm-53-flash (grafted section only)
+Adjudicated 2026-09-17. Four arms:
+
+  glm-53-flash   PASS       407L  21 tests (6 inherited + 15 new)
+  codex-luna     PASS       212L  10 tests (6 inherited +  4 new)
+  ifm-k2-horizon NO-OP        0L  refused -- daily token cap, the thirteenth slot today
+  ifm-k2-think   NO-COMPILE 439L
+
+CROSS-EXAMINATION. The first non-VOID matrix in six tasks, and it took fixing the instrument
+to get it (below). The result:
+
+  impl \ suite            codex-lun glm-53-fl
+  codex-luna               .         nocomp
+  glm-53-flash             .         .
+
+codex-luna's suite is PORTABLE -- it passes against glm's implementation. glm's does not
+compile against codex-luna's, because glm's tests build their registry through
+`Registry::new()` / `insert()`, convenience constructors this spec never pinned. That is a real
+mark against glm's suite: it tests through its own API surface rather than the one the
+specification fixed, which is exactly what the rubric warns against.
+
+It does not carry the decision, because of what the two suites actually cover. The spec pins
+eight clauses and five boundaries. glm wrote fifteen new tests, one per pinned behaviour, named
+after the behaviour. codex-luna wrote FOUR, each bundling several clauses into one function --
+`absent_metadata_and_empty_registries_never_widen` is three of my boundaries in one body, and
+the first failing assert hides the rest. Four coarse tests are portable partly BECAUSE they are
+coarse. Fifteen fine ones that name a wrong constructor are the better suite with a fixable
+flaw; four that cannot tell me which clause broke are not.
+
+glm also carries serde on `Source`/`Registry`, so a caller can parse `sources.toml` straight
+into it. codex-luna's has no serde and must be hand-projected.
+
+WHAT THE CRITIC FOUND, AND WHY IT IS MINE. codex-luna on glm:
+
+  "The new `quota::Source`/`quota::Registry` are a second, serde-shaped copy of
+   `fb::sources::{Source,Registry}`. Serialization compatibility does not make the Rust values
+   interchangeable, so a real caller must manually project the parsed source registry into
+   this mirror."
+
+True, and codex-luna's own patch does the identical thing -- it defines `quota::Source` and
+`quota::Registry` too. A defect in every implementation is evidence about the SPECIFICATION.
+My spec wrote `registry: &Registry` in the pinned API and never said where `Registry` comes
+from, so both arms invented one in the only crate they were allowed to touch. farmerbob-core
+cannot depend on `fb`, so neither could have reused it. The fix belongs in the spec and in a
+follow-up that moves the registry type down into core; filed.
+
+glm on ifm-k2-horizon found a real defect riding along in the inherited tracker code: `due()`
+deletes the bucket entry, so `succeeded`'s documented consecutive-park backoff reset is
+unobservable, and `succeeded_resets_attempts` passes verbatim with `succeeded` deleted -- a
+test whose failure state is indistinguishable from its success state, again. Routed, not
+merged here.
+
+MERGE SHAPE. Both worktrees branched from dad8aaf, BEFORE park_after landed at c02b3ed. The
+autopilot launched wave57 from the queue before that merge, so the ordering note I wrote when
+queuing it did not hold. Taking either quota.rs wholesale would have deleted `park_after`, so
+only glm's new section and its `mod blast_tests` were grafted onto the current file.
+
+1454 tests, clippy 9, farmerbob-core clippy 0.

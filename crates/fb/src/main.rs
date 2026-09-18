@@ -133,6 +133,11 @@ enum Command {
     /// nothing -- and one such was submitted, passing build, scope, lint and its own tests --
     /// satisfies every other check we own. This one it cannot satisfy.
     Differential { task: String },
+    /// Strip every `#[cfg(test)]` item from every `.rs` file under a directory, in place.
+    ///
+    /// Exists so `fb-crossx.sh` stops carrying its own awk version of this, which truncated
+    /// a file on a quoted `"#[cfg(test)]"` and VOIDed every farmerbob-core matrix.
+    StripTests { dir: std::path::PathBuf },
     /// Generate a defect set mechanically, so suite sensitivity can be measured.
     ///
     /// DefectSensitivity is the adjudicator's only direct measure of suite quality and has
@@ -546,6 +551,13 @@ fn main() {
         Some(Command::Status) => status::run_cmd(),
         Some(Command::Eligible { arm }) => eligible::run_cmd(&arm),
         Some(Command::Differential { task }) => differential::run_cmd(&task),
+        Some(Command::StripTests { dir }) => match crossx::strip_test_modules_in(&dir) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("fb strip-tests: {}: {e}", dir.display());
+                1
+            }
+        },
         Some(Command::Mutants { file, task, max }) => mutants::run_cmd(&file, &task, max),
         Some(Command::Prove {
             task,
