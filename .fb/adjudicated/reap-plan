@@ -1,0 +1,70 @@
+MERGED gemini-38-flash
+Adjudicated 2026-09-18. Three arms, three PASS.
+
+  gemini-38-flash  PASS  803L  24 tests  970s
+  claude-sonnet    PASS  562L  16 tests  341s
+  glm-53-flash     PASS  562L  13 tests  969s
+
+  impl \ suite            claude-so gemini-38 glm-53-fl
+  claude-sonnet            .         FAIL      FAIL
+  gemini-38-flash          .         .         FAIL
+  glm-53-flash             FAIL      FAIL      .
+
+THE LABELS ARE WRONG AGAIN, AND `witness` SAYS SO. gemini's suite is marked OVER-FITTED for
+failing two of three. Running the cells with the real grafts:
+
+  gemini's suite vs claude-sonnet   clause6_directory_held_by_live_run_skipped_as_in_use
+  gemini's suite vs glm-53-flash    clause6_..., boundary_registered_name_without_double_hyphen,
+                                    registered_unsettled_directory_behavior
+
+Partial overlap -- one shared name, two unique to glm -- which `witness::read` classifies as
+SeparateFaults, not OneDisagreement. The N-1-of-N heuristic cannot see that and called it
+over-fitting for the third time this week.
+
+(My first reproduction of these cells said gemini's suite PASSED both. It was wrong: I
+hand-grafted without the import injection `fb crossx` performs, so the suite failed to compile
+and my grep for failures found none. The pipeline was right and my shortcut was not. Redone
+with FB_CX_KEEP against the real grafted suites.)
+
+WHAT IS SPEC NOISE AND WHAT IS NOT.
+
+Clauses 3 and 6 are both stated unconditionally and collide in exactly one cell: registered,
+live, `may_unregister: false`. claude-sonnet found it in review, unprompted:
+
+  "Spec clauses 3 and 6 are both stated unconditionally and collide in this one cell ... clause
+   3 says 'a registered directory produces NO steps ... appears in skipped as
+   `RegisteredAndUnregisterNotPermitted`,' clause 6 says 'a directory a live run holds is
+   skipped as `InUse`.'"
+
+Mine. Now pinned -- `InUse` outranks every other skip reason, because the reason a caller most
+needs is the one saying an agent is writing to it right now. Failures traceable to that cell
+are vetoed.
+
+glm's suite against sonnet fails on ordering, dedup and pair-grouping -- the three points the
+SPEC CRITIQUE of this same task raised and I pinned AFTER these arms were dispatched. Vetoed
+too: no arm was shown the pinned rule.
+
+WHAT IS REAL. gemini on glm, the most serious finding of the round:
+
+  "The root architectural flaw is calling `wtreap::disposal` directly on `wt`. In
+   `wtreap::disposal`, `wt.registered` short-circuits before nameability, liveness, or
+   settlement are ever inspected. By mapping `Disposal::Registered` directly to `Unregister` +
+   `Delete` whenever `may_unregister` is true, the plan becomes blind to the actual state of
+   the run: active runs are scheduled for deletion mid-flight."
+
+  "There is not a single test in the suite evaluating a registered directory that is live or
+   unsettled when `may_unregister` is true, completely masking the destruction of live runs."
+
+That is the exact hazard this module exists to prevent, and glm's own fixtures hide it -- every
+registered directory in them is settled and quiet. It is why glm fails gemini's clause-6 test
+on more than the contested precedence.
+
+glm on claude-sonnet, also real: sonnet files a registered directory under `Skip::Indeterminate`,
+whose spec-fixed contract begins "Unregistered, not live, and no settled result" -- false of a
+registered directory, so the reason reported does not describe the state.
+
+DECISION. gemini on 24 tests to 16 and 13, on being the only arm without a defect its rivals'
+suites or critiques exposed, and on writing the finding that matters most. Both rivals carry
+real defects; one of them would delete a running agent's worktree.
+
+1276 core tests, clippy 9, farmerbob-core clippy 0.

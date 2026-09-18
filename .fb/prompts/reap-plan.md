@@ -95,7 +95,12 @@ pub fn plan(
 5. A conflicted directory -- observed both registered and unregistered -- is skipped as
    `Conflicted` and never appears in `steps`, whatever `may_unregister` says. This defers to
    `wtreap::conflicts` and must not re-derive the rule.
-6. A directory a live run holds is skipped as `InUse`.
+6. A directory a live run holds is skipped as `InUse`. **`InUse` outranks every other skip
+   reason**, including `RegisteredAndUnregisterNotPermitted` from clause 3 and `Conflicted` from
+   clause 5. A registered, live directory with `may_unregister: false` is `InUse`, not
+   `RegisteredAndUnregisterNotPermitted`: the reason a caller most needs is the one that says an
+   agent is writing to it right now. Pinned here because clauses 3 and 6 were both stated
+   unconditionally and all three arms collided on the one cell where they overlap.
 7. **The plan never contains a `Delete` for a directory `wtreap::safe_to_reap` would not
    return.** Pin this as a property: build a plan and a `safe_to_reap` over the same input and
    assert every deleted name is in the latter. This module adds ordering and refusals; it must
