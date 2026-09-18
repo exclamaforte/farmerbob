@@ -152,6 +152,90 @@ pub fn promote(assertions: &[Assertion]) -> (Vec<PromotedTest>, Vec<(usize, Reje
     (promoted, rejections)
 }
 
+/// Backticks in a run of this many or more open or close a fenced block.
+///
+/// Three is the Markdown fence; longer runs fence a block that itself
+/// contains fences, and are given the same treatment.
+const FENCE_BACKTICKS: usize = 3;
+
+/// Length of the run of backticks beginning at `start` of `bytes`.
+fn backtick_run(bytes: &[u8], start: usize) -> usize {
+    let mut run = 0;
+    while start + run < bytes.len() && bytes[start + run] == b'`' {
+        run += 1;
+    }
+    run
+}
+
+/// Every quoted fragment in `text`, in source order.
+///
+/// A fragment is a run of text between two `"` characters, or between two
+/// single backticks. A run of [`FENCE_BACKTICKS`] or more backticks opens or
+/// closes a fenced block instead: fences are not fragment delimiters, and
+/// nothing between two fences is extracted, because fenced blocks hold whole
+/// functions that legitimately appear in both files. Inside a fragment, the
+/// other delimiter kind is ordinary text, so no fragment spans two kinds of
+/// delimiter. Empty and whitespace-only fragments are omitted, and an
+/// unterminated final fragment is omitted.
+///
+/// The returned vector is empty exactly when no fragment was extracted, which
+/// is a statement about delimiters only — it is not a verdict on the claim;
+/// ask [`verify_quotes`] for that. Order is source order, and duplicates are
+/// kept.
+fn quoted_fragments(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut fragments: Vec<&str> = Vec::new();
+    // Delimiter that must close the open fragment, and where its text starts.
+    let mut open: Option<(u8, usize)> = None;
+    // True between a fence-opening backtick run and its closing run.
+    let mut fenced = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        if fenced {
+            if bytes[i] == b'`' {
+                let run = backtick_run(bytes, i);
+                if run >= FENCE_BACKTICKS {
+                    fenced = false;
+                }
+                i += run;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        match open {
+            Some((delimiter, start)) => {
+                if bytes[i] == delimiter {
+                    let fragment = &text[start..i];
+                    if !fragment.trim().is_empty() {
+                        fragments.push(fragment);
+                    }
+                    open = None;
+                }
+                i += 1;
+            }
+            None => match bytes[i] {
+                b'"' => {
+                    open = Some((b'"', i + 1));
+                    i += 1;
+                }
+                b'`' => {
+                    let run = backtick_run(bytes, i);
+                    if run >= FENCE_BACKTICKS {
+                        fenced = true;
+                        i += run;
+                    } else {
+                        open = Some((b'`', i + 1));
+                        i += 1;
+                    }
+                }
+                _ => i += 1,
+            },
+        }
+    }
+    fragments
+}
+
 /// Check a claim's quoted evidence against the subject and critic sources.
 ///
 /// Returns `None` when the assertion is a judgement, when it has no usable quoted
@@ -163,12 +247,17 @@ pub fn promote(assertions: &[Assertion]) -> (Vec<PromotedTest>, Vec<(usize, Reje
 /// false absence (alleging that something is missing when the file contains it) is
 /// another known shape this function does not detect.
 ///
-/// Fragments are runs between paired `"` characters. Empty and whitespace-only
-/// fragments are ignored, and an unterminated final quote is ignored. Nested
-/// quoting is not supported: a fragment cannot contain `"` by construction, which
-/// is sufficient for the claim format. Matching is exact and byte-for-byte by
-/// design; guessing at equivalent whitespace or spelling would silently permit
-/// fabrication.
+/// Fragments are runs between paired `"` characters or between paired single
+/// backticks — the two ways this harness's critics have actually quoted code.
+/// That pair of delimiters is a known subset of how a critic may quote: text
+/// marked some other way is simply not extracted, and the claim passes
+/// unrefused. That is the safe direction of failure, because a missed
+/// extraction costs one undetected projection, while extracting something that
+/// is not evidence would refuse a true claim. Triple-backtick fenced blocks are
+/// never evidence: see [`quoted_fragments`]. Empty and whitespace-only
+/// fragments are ignored, and an unterminated final fragment is ignored.
+/// Matching is exact and byte-for-byte by design; guessing at equivalent
+/// whitespace or spelling would silently permit fabrication.
 pub fn verify_quotes(a: &Assertion, subject: &str, critic: &str) -> Option<Rejection> {
     let Assertion::Claim { actual, .. } = a else {
         return None;
@@ -179,28 +268,16 @@ pub fn verify_quotes(a: &Assertion, subject: &str, critic: &str) -> Option<Rejec
 
     let mut first_fabricated: Option<String> = None;
     let mut first_projected: Option<String> = None;
-    let mut quote_start: Option<usize> = None;
-    for (index, byte) in actual.bytes().enumerate() {
-        if byte != b'"' {
+    for quote in quoted_fragments(actual) {
+        if subject.contains(quote) {
             continue;
         }
-        if let Some(start) = quote_start.take() {
-            let quote = &actual[start..index];
-            if quote.trim().is_empty() {
-                continue;
+        if critic.contains(quote) {
+            if first_projected.is_none() {
+                first_projected = Some(String::from(quote));
             }
-            if subject.contains(quote) {
-                continue;
-            }
-            if critic.contains(quote) {
-                if first_projected.is_none() {
-                    first_projected = Some(String::from(quote));
-                }
-            } else if first_fabricated.is_none() {
-                first_fabricated = Some(String::from(quote));
-            }
-        } else {
-            quote_start = Some(index + 1);
+        } else if first_fabricated.is_none() {
+            first_fabricated = Some(String::from(quote));
         }
     }
 
@@ -886,6 +963,179 @@ mod tests {
             Some(Rejection::Fabricated {
                 quote: String::from("missing")
             })
+        );
+    }
+
+    #[test]
+    fn backtick_quoted_projection_from_the_pareto_tokens_incident() {
+        // pareto-tokens, 2026-09-17: the critic described its own
+        // implementation in inline backticks, and a double-quote-only scan
+        // extracted nothing at all.
+        let actual = "ACTUAL: `Launcher::Unknown` (the code only examines \
+                      `Source::launcher`, with a special-case fallback).";
+        let assertion = claim(
+            "glm-53-flash",
+            "arm=codex-luna",
+            "routes via the registry",
+            actual,
+        );
+        let subject = "let chosen = registry.cmd.get(arm).copied();";
+        let critic = "fn fallback(arm: &str) -> Launcher {\n    \
+                      // the code only examines Source::launcher\n    Launcher::Unknown\n}";
+        assert_eq!(
+            verify_quotes(&assertion, subject, critic),
+            Some(Rejection::Projected {
+                quote: String::from("Launcher::Unknown")
+            })
+        );
+    }
+
+    #[test]
+    fn backtick_fragments_present_in_subject_are_accepted() {
+        let assertion = claim(
+            "t",
+            "i",
+            "e",
+            "the subject reads `registry.cmd.get(arm)` and keeps an `Option<Arm>`",
+        );
+        let subject = "let held: Option<Arm> = registry.cmd.get(arm).copied();";
+        assert_eq!(verify_quotes(&assertion, subject, "unrelated critic"), None);
+    }
+
+    #[test]
+    fn backtick_fragment_absent_from_both_sources_is_fabricated() {
+        let assertion = claim("t", "i", "e", "it builds `Launcher::Never` instead");
+        assert_eq!(
+            verify_quotes(&assertion, "fn f() {}", "fn g() {}"),
+            Some(Rejection::Fabricated {
+                quote: String::from("Launcher::Never")
+            })
+        );
+    }
+
+    #[test]
+    fn triple_backtick_fence_is_not_evidence() {
+        // A fenced block holds a whole function that legitimately appears in
+        // both files; its text must not refuse a claim even when absent from
+        // the subject and present in the critic.
+        let actual = "```rust\nfn absent_from_subject() -> u8 { 9 }\n```";
+        let assertion = claim("t", "i", "e", actual);
+        let critic = "fn absent_from_subject() -> u8 { 9 }";
+        assert_eq!(verify_quotes(&assertion, "fn f() {}", critic), None);
+    }
+
+    #[test]
+    fn mixed_fragments_refuse_on_the_absent_one_verbatim() {
+        let double_present = claim("t", "i", "e", "\"present\" then `absent`");
+        assert_eq!(
+            verify_quotes(&double_present, "present", "absent"),
+            Some(Rejection::Projected {
+                quote: String::from("absent")
+            })
+        );
+
+        let backtick_present = claim("t", "i", "e", "`present` then \"absent\"");
+        assert_eq!(
+            verify_quotes(&backtick_present, "present", "unrelated"),
+            Some(Rejection::Fabricated {
+                quote: String::from("absent")
+            })
+        );
+    }
+
+    #[test]
+    fn one_delimiter_inside_the_other_does_not_span_a_fragment() {
+        // A double quote inside a backtick fragment stays inside it...
+        let quoted = claim("t", "i", "e", "he wrote `say \"hi\" now` loudly");
+        assert_eq!(
+            verify_quotes(&quoted, "nothing here", "say \"hi\" now"),
+            Some(Rejection::Projected {
+                quote: String::from("say \"hi\" now")
+            })
+        );
+        // ...and a backtick inside a double-quoted fragment stays inside that.
+        let backticked = claim("t", "i", "e", "wrote \"use `fmt` here\" ok");
+        assert_eq!(
+            verify_quotes(&backticked, "nothing here", "use `fmt` here"),
+            Some(Rejection::Projected {
+                quote: String::from("use `fmt` here")
+            })
+        );
+    }
+
+    #[test]
+    fn unterminated_backtick_yields_no_fragment_and_does_not_panic() {
+        // Odd count: the trailing backtick opens a fragment that never
+        // closes, so `dangling` is never checked even though the critic has it.
+        let mixed = claim("t", "i", "e", "`present` and `dangling");
+        assert_eq!(verify_quotes(&mixed, "present", "dangling"), None);
+
+        let lone = claim("t", "i", "e", "ends with a lone ` tick");
+        assert_eq!(verify_quotes(&lone, "tick", "tick"), None);
+    }
+
+    #[test]
+    fn empty_and_whitespace_backtick_fragments_are_ignored() {
+        let assertion = claim("t", "i", "e", "`` plus `present` and `  ` end");
+        assert_eq!(verify_quotes(&assertion, "present", ""), None);
+    }
+
+    #[test]
+    fn adjacent_fragments_with_nothing_between_are_all_extracted() {
+        let backticks = claim("t", "i", "e", "`a``b`");
+        assert_eq!(
+            verify_quotes(&backticks, "a", "b"),
+            Some(Rejection::Projected {
+                quote: String::from("b")
+            })
+        );
+
+        let doubles = claim("t", "i", "e", "\"a\"\"b\"");
+        assert_eq!(
+            verify_quotes(&doubles, "a", "b"),
+            Some(Rejection::Projected {
+                quote: String::from("b")
+            })
+        );
+    }
+
+    #[test]
+    fn backtick_matching_is_exact_interior_whitespace_is_never_trimmed() {
+        let assertion = claim("t", "i", "e", "returns `a  b` on collapse");
+        // One space in the subject: not a match, quote carried verbatim.
+        assert_eq!(
+            verify_quotes(&assertion, "x a b y", ""),
+            Some(Rejection::Fabricated {
+                quote: String::from("a  b")
+            })
+        );
+        // Two spaces: exact match.
+        assert_eq!(verify_quotes(&assertion, "x a  b y", ""), None);
+    }
+
+    #[test]
+    fn the_first_fragment_in_source_order_is_the_one_reported() {
+        // Both fragments are projections; the earlier one is carried.
+        let assertion = claim("t", "i", "e", "`zebra` then `yak`");
+        assert_eq!(
+            verify_quotes(&assertion, "neither here", "zebra yak"),
+            Some(Rejection::Projected {
+                quote: String::from("zebra")
+            })
+        );
+    }
+
+    #[test]
+    fn quoted_fragments_order_and_empty_result_are_pinned() {
+        // No fragments in, empty vector out: a statement about delimiters,
+        // not a verdict on the claim.
+        assert!(quoted_fragments("").is_empty());
+        assert!(quoted_fragments("plain prose, no delimiters").is_empty());
+        assert!(quoted_fragments("```fenced\nblock\n```").is_empty());
+        // Source order, mixed delimiters, duplicates kept.
+        assert_eq!(
+            quoted_fragments("\"b\" then `a` then `a`"),
+            vec!["b", "a", "a"]
         );
     }
 

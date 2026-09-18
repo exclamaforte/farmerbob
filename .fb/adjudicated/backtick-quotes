@@ -1,0 +1,32 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. Four arms, two PASS; both ifm routes refused on their daily token cap.
+
+  codex-luna    +179 lines  50 tests
+  glm-53-flash  +270 lines  56 tests
+
+VERIFIED ON THE INCIDENT IT WAS WRITTEN FOR. `fb promote pareto-tokens`, before and after:
+
+    before   PROMOTED 2, REFUSED-BY-VERIFICATION 0
+    after    PROMOTED 3, REFUSED-BY-VERIFICATION 1
+
+and `Source::launcher` now appears zero times in the promoted claims. That is codex-luna's
+projection against glm-53-flash -- it described its own `source.launcher` lookup and attributed
+it to a rival that reads `registry.cmd.get(arm)` -- caught automatically, where yesterday it
+sailed through because the evidence was backticked and the detector only read double quotes.
+
+Both arms are equally correct. On a corrected probe both return
+`Projected { quote: "Source::launcher" }` when the critic's file holds the fragment and
+`Fabricated` when nobody does, and both honour every guard: a triple-backtick FENCE is not a
+fragment, a backtick inside a quoted fragment does not span the delimiters, an unterminated
+backtick yields nothing, and matching stays exact so `a  b` does not match `a b`.
+
+MY PROBE WAS WRONG FIRST, and both arms failed the same clause because of it. I wrote a critic
+fixture containing `source.launcher` while the fragment was `Source::launcher`, then read the
+identical failure as a defect in the field rather than in my own test. N-of-N pointed at me, as
+it is supposed to. That is the third time today a probe of mine produced a confident wrong
+answer, and the second time the fix was to construct the fixture from the real strings rather
+than from memory.
+
+glm-53-flash on the usual margin: 56 tests to 50, and the free route.
+
+1417 tests, clippy 9.
