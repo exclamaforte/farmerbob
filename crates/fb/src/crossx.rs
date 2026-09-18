@@ -964,9 +964,11 @@ fn run_matrix(
         .flat_map(|imp| arms.iter().map(move |suite| (imp.clone(), suite.clone())))
         .collect();
 
-    let results: std::sync::Arc<
-        std::sync::Mutex<BTreeMap<(String, String), (Cell, cell_record::Cell)>>,
-    > = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+    /// Intermediate map of cell results during concurrent execution.
+    type CellResults = BTreeMap<(String, String), (Cell, cell_record::Cell)>;
+
+    let results: std::sync::Arc<std::sync::Mutex<CellResults>> =
+        std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::new()));
     let queue: std::sync::Arc<std::sync::Mutex<std::vec::IntoIter<(String, String)>>> =
         std::sync::Arc::new(std::sync::Mutex::new(tasks.into_iter()));
 
@@ -1017,8 +1019,157 @@ fn run_matrix(
     Ok((cx_map, rec_map))
 }
 
-/// Run one `impl`'s copy with `suite`'s tests grafted in, returning the cell pair.
-fn run_one(
+/// Convert a cargo test execution error into a cell_record::Cell.
+fn cargo_test_error_to_cell(err: &CargoTestError) -> cell_record::Cell {
+    match err {
+        CargoTestError::Spawn(e) => cell_record::Cell::NoCompile {
+            why: Breakage::Environment,
+            first_error: format!("spawning cargo test failed: {e}"),
+        },
+        CargoTestError::Timeout(d) => cell_record::Cell::NoCompile {
+            why: Breakage::Environment,
+            first_error: format!("cargo test exceeded timeout of {} seconds", d.as_secs()),
+        },
+        CargoTestError::Other(e) => cell_record::Cell::NoCompile {
+            why: Breakage::Environment,
+            first_error: format!("cargo test failed: {e}"),
+        },
+    }
+}
+
+/// Step 1: Copy worktree into scratch directory, recording breakage if copying fails.
+fn copy_worktree_step(wt: &Path, dest: &Path) -> Result<(), cell_record::Cell> {
+    if !wt.exists() {
+        return Err(cell_record::Cell::NoCompile {
+            why: Breakage::Environment,
+            first_error: format!(
+                "copying worktree from {}: source path does not exist",
+                wt.display()
+            ),
+        });
+    }
+    if let Err(e) = std::fs::create_dir_all(dest) {
+        return Err(cell_record::Cell::NoCompile {
+            why: Breakage::Environment,
+            first_error: format!(
+                "copying worktree from {}: failed to create destination: {e}",
+                wt.display()
+            ),
+        });
+    }
+    if let Err(e) = copy_worktree(wt, dest) {
+        return Err(cell_record::Cell::NoCompile {
+            why: Breakage::Environment,
+            first_error: format!("copying worktree from {}: {e}", wt.display()),
+        });
+    }
+    Ok(())
+}
+
+/// Step 2: Strip test modules from the copied sources, recording breakage if it fails.
+fn strip_modules_step(dest: &Path, srcdir: &str) -> Result<(), cell_record::Cell> {
+    let src_path = dest.join(srcdir);
+    if let Err((failed_path, err)) = strip_test_modules(&src_path) {
+        return Err(cell_record::Cell::NoCompile {
+            why: Breakage::Other,
+            first_error: format!(
+                "stripping test modules failed on {}: {err}",
+                failed_path.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Steps 3 & 4: Graft the suite's collected tests into the modules they belong to.
+fn graft_suite_step(dest: &Path, tmp: &Path, suite: &str) -> Result<usize, cell_record::Cell> {
+    let manifest = tmp.join(format!("manifest.{suite}"));
+    if !manifest.is_file() {
+        return Err(cell_record::Cell::NoCompile {
+            why: Breakage::Other,
+            first_error: format!(
+                "suite file for arm {suite} is missing at expected path {}",
+                manifest.display()
+            ),
+        });
+    }
+    let rels = match read_manifest_lines(&manifest) {
+        Ok(r) => r,
+        Err(e) => {
+            return Err(cell_record::Cell::NoCompile {
+                why: Breakage::Other,
+                first_error: format!("reading manifest {} failed: {e}", manifest.display()),
+            });
+        }
+    };
+    let mut grafted = 0usize;
+    let mut missing_targets = Vec::new();
+    for rel in &rels {
+        let sfile = tmp.join(format!("suite.{suite}.{}.rs", slugify(rel)));
+        if !sfile.is_file() {
+            return Err(cell_record::Cell::NoCompile {
+                why: Breakage::Other,
+                first_error: format!("suite file for arm {suite} is missing: {}", sfile.display()),
+            });
+        }
+        let target = dest.join(rel);
+        if target.is_file() {
+            let suite_src = match std::fs::read_to_string(&sfile) {
+                Ok(s) => s,
+                Err(e) => {
+                    return Err(cell_record::Cell::NoCompile {
+                        why: Breakage::Other,
+                        first_error: format!("reading suite file {}: {e}", sfile.display()),
+                    });
+                }
+            };
+            let existing = match std::fs::read_to_string(&target) {
+                Ok(s) => s,
+                Err(e) => {
+                    return Err(cell_record::Cell::NoCompile {
+                        why: Breakage::Other,
+                        first_error: format!("reading target file {}: {e}", target.display()),
+                    });
+                }
+            };
+            let mut new_contents = existing;
+            new_contents.push('\n');
+            new_contents.push_str(&suite_src);
+            if let Err(e) = std::fs::write(&target, new_contents) {
+                return Err(cell_record::Cell::NoCompile {
+                    why: Breakage::Other,
+                    first_error: format!("writing grafted target {}: {e}", target.display()),
+                });
+            }
+            grafted += 1;
+        } else {
+            missing_targets.push(target);
+        }
+    }
+
+    // The implementation has no file this suite tests: a genuine API divergence.
+    if grafted == 0 {
+        let missing_str = if let Some(first) = missing_targets.first() {
+            first.display().to_string()
+        } else if let Some(first_rel) = rels.first() {
+            dest.join(first_rel).display().to_string()
+        } else {
+            dest.display().to_string()
+        };
+        return Err(cell_record::Cell::NoCompile {
+            why: Breakage::MissingItem,
+            first_error: format!(
+                "manifest lists no file this impl has: missing target {missing_str}"
+            ),
+        });
+    }
+
+    Ok(grafted)
+}
+
+/// Run one `impl`'s copy with `suite`'s tests grafted in using a provided runner.
+#[allow(clippy::too_many_arguments)]
+fn run_one_with_runner<F>(
     root: &Path,
     bead: &str,
     krate: &str,
@@ -1026,70 +1177,35 @@ fn run_one(
     tmp: &Path,
     imp: &str,
     suite: &str,
-) -> (Cell, cell_record::Cell) {
-    let empty_cell = cell_record::read_cell("");
+    runner: F,
+) -> (Cell, cell_record::Cell)
+where
+    F: FnOnce(&Path, &str, Duration) -> Result<(bool, String), CargoTestError>,
+{
     let dest = tmp.join(format!("run.{imp}.{suite}"));
     let _ = std::fs::remove_dir_all(&dest);
-    if std::fs::create_dir_all(&dest).is_err() {
-        return (Cell::Error, empty_cell);
-    }
 
     let wt = root.join(format!("{bead}--{imp}"));
-    if copy_worktree(&wt, &dest).is_err() {
+    if let Err(rec_cell) = copy_worktree_step(&wt, &dest) {
         let _ = std::fs::remove_dir_all(&dest);
-        return (Cell::Error, empty_cell);
+        return (Cell::Error, rec_cell);
     }
 
-    // Strip every test module from the copied sources: keep lines before the
-    // first `#[cfg(test)]`.
-    let src_path = dest.join(srcdir);
-    if strip_test_modules(&src_path).is_err() {
+    if let Err(rec_cell) = strip_modules_step(&dest, srcdir) {
         let _ = std::fs::remove_dir_all(&dest);
-        return (Cell::Error, empty_cell);
+        return (Cell::Error, rec_cell);
     }
 
-    // Graft `suite`'s collected tests into the modules they belong to.
-    let manifest = tmp.join(format!("manifest.{suite}"));
-    let rels = match read_manifest_lines(&manifest) {
-        Ok(r) => r,
-        Err(_) => {
-            let _ = std::fs::remove_dir_all(&dest);
-            return (Cell::Error, empty_cell);
-        }
-    };
-    let mut grafted = 0usize;
-    for rel in &rels {
-        let sfile = tmp.join(format!("suite.{suite}.{}.rs", slugify(rel)));
-        if !sfile.is_file() {
-            continue;
-        }
-        let target = dest.join(rel);
-        if target.is_file() {
-            #[allow(clippy::collapsible_if)]
-            if let (Ok(suite_src), Ok(existing)) = (
-                std::fs::read_to_string(&sfile),
-                std::fs::read_to_string(&target),
-            ) {
-                let mut new_contents = existing;
-                new_contents.push('\n');
-                new_contents.push_str(&suite_src);
-                let _ = std::fs::write(&target, new_contents);
-                grafted += 1;
-            }
-        }
-    }
-
-    // The implementation has no file this suite tests: a genuine API divergence.
-    if grafted == 0 {
+    if let Err(rec_cell) = graft_suite_step(&dest, tmp, suite) {
         let _ = std::fs::remove_dir_all(&dest);
-        return (Cell::Error, empty_cell);
+        return (Cell::Error, rec_cell);
     }
 
-    let (ok, output) = match run_cargo_test(&dest, krate, Duration::from_secs(CARGO_TIMEOUT_SECS)) {
+    let (ok, output) = match runner(&dest, krate, Duration::from_secs(CARGO_TIMEOUT_SECS)) {
         Ok(pair) => pair,
-        Err(_) => {
+        Err(err) => {
             let _ = std::fs::remove_dir_all(&dest);
-            return (Cell::Error, empty_cell);
+            return (Cell::Error, cargo_test_error_to_cell(&err));
         }
     };
     let _ = std::fs::remove_dir_all(&dest);
@@ -1108,8 +1224,38 @@ fn run_one(
     (cx_cell, rec_cell)
 }
 
+/// Run one `impl`'s copy with `suite`'s tests grafted in, returning the cell pair.
+///
+/// Early returns distinguish failure causes:
+/// - Copying the worktree fails: `Breakage::Environment`, naming the source path.
+/// - Stripping test modules fails: `Breakage::Other`, naming the file it failed on.
+/// - The suite file is missing: `Breakage::Other`, naming the expected path.
+/// - The manifest lists no file this impl has: `Breakage::MissingItem`, naming the missing target.
+/// - Spawning cargo test fails: `Breakage::Environment`, naming the spawn error.
+/// - Cargo test times out: `Breakage::Environment`, naming the timeout in seconds.
+///
+/// Two different paths failing in one run is impossible as each returns immediately, so
+/// `first_error` names exactly one cause.
+fn run_one(
+    root: &Path,
+    bead: &str,
+    krate: &str,
+    srcdir: &str,
+    tmp: &Path,
+    imp: &str,
+    suite: &str,
+) -> (Cell, cell_record::Cell) {
+    run_one_with_runner(root, bead, krate, srcdir, tmp, imp, suite, run_cargo_test)
+}
+
 /// Copy `Cargo.toml`, `Cargo.lock`, `rustfmt.toml` and `crates/` into `dest`.
 fn copy_worktree(wt: &Path, dest: &Path) -> std::io::Result<()> {
+    if !wt.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("worktree path does not exist: {}", wt.display()),
+        ));
+    }
     for name in ["Cargo.toml", "Cargo.lock", "rustfmt.toml"] {
         let s = wt.join(name);
         if s.exists() {
@@ -1347,28 +1493,64 @@ fn skip_char_literal(chars: &[char], i: usize) -> Option<usize> {
 /// function -- the correct one -- was what the investigation kept reading. Two
 /// implementations of one step, one fixed and one live.
 pub fn strip_test_modules_in(dir: &Path) -> std::io::Result<()> {
-    strip_test_modules(dir)
+    strip_test_modules(dir).map_err(|(_, err)| err)
 }
 
-fn strip_test_modules(dir: &Path) -> std::io::Result<()> {
+fn strip_test_modules(dir: &Path) -> Result<(), (PathBuf, std::io::Error)> {
     if !dir.is_dir() {
         return Ok(());
     }
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(err) => return Err((dir.to_path_buf(), err)),
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => return Err((dir.to_path_buf(), err)),
+        };
         let path = entry.path();
         if path.is_dir() {
             strip_test_modules(&path)?;
         } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            let src = std::fs::read_to_string(&path)?;
-            std::fs::write(&path, strip_test_modules_text(&src))?;
+            let src = match std::fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(err) => return Err((path.clone(), err)),
+            };
+            if let Err(err) = std::fs::write(&path, strip_test_modules_text(&src)) {
+                return Err((path.clone(), err));
+            }
         }
     }
     Ok(())
 }
 
+/// Error arising from running cargo test.
+#[derive(Debug)]
+enum CargoTestError {
+    Spawn(std::io::Error),
+    Timeout(Duration),
+    Other(std::io::Error),
+}
+
+impl std::fmt::Display for CargoTestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Spawn(e) => write!(f, "spawning cargo test failed: {e}"),
+            Self::Timeout(d) => write!(f, "cargo test exceeded timeout of {} seconds", d.as_secs()),
+            Self::Other(e) => write!(f, "cargo test failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for CargoTestError {}
+
 /// Run `cargo test -p <krate>` in `dir`, killing the process group on timeout.
-fn run_cargo_test(dir: &Path, krate: &str, timeout: Duration) -> std::io::Result<(bool, String)> {
+fn run_cargo_test(
+    dir: &Path,
+    krate: &str,
+    timeout: Duration,
+) -> Result<(bool, String), CargoTestError> {
     let mut cmd = Command::new("cargo");
     cmd.args(["test", "-p", krate])
         .current_dir(dir)
@@ -1379,7 +1561,10 @@ fn run_cargo_test(dir: &Path, krate: &str, timeout: Duration) -> std::io::Result
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let child = cmd.spawn()?;
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return Err(CargoTestError::Spawn(e)),
+    };
     let pid = child.id();
 
     // The killer must be CANCELLABLE. It used to `sleep(timeout)` unconditionally and then
@@ -1394,14 +1579,20 @@ fn run_cargo_test(dir: &Path, krate: &str, timeout: Duration) -> std::io::Result
     // it. Running it on real input did, in the first minute.
     let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = std::sync::Arc::clone(&finished);
+    let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let to_flag = std::sync::Arc::clone(&timed_out);
     let killer = std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + timeout;
-        while std::time::Instant::now() < deadline {
+        let start = std::time::Instant::now();
+        while std::time::Instant::now().duration_since(start) < timeout {
             if flag.load(std::sync::atomic::Ordering::Relaxed) {
                 return; // the child is already reaped; do not signal anything
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
+        if flag.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        to_flag.store(true, std::sync::atomic::Ordering::Relaxed);
         #[cfg(unix)]
         {
             let _ = Command::new("kill")
@@ -1414,9 +1605,24 @@ fn run_cargo_test(dir: &Path, krate: &str, timeout: Duration) -> std::io::Result
         }
     });
 
-    let output = child.wait_with_output()?;
+    let output = match child.wait_with_output() {
+        Ok(out) => out,
+        Err(e) => {
+            finished.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = killer.join();
+            if timed_out.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(CargoTestError::Timeout(timeout));
+            }
+            return Err(CargoTestError::Other(e));
+        }
+    };
     finished.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = killer.join();
+
+    if timed_out.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(CargoTestError::Timeout(timeout));
+    }
+
     let combined = {
         let mut s = String::from_utf8_lossy(&output.stdout).into_owned();
         s.push_str(&String::from_utf8_lossy(&output.stderr));
@@ -3066,5 +3272,528 @@ mod crossx_cells_tests {
         assert!(rep.contains("arm2: MissingItem"));
         assert!(rep.contains("instrument fault: false"));
         assert!(!rep.contains("the matrix was lost to the harness"));
+    }
+
+    fn setup_test_worktree(root: &Path, bead: &str, imp: &str, files: &[(&str, &str)]) {
+        let wt = root.join(format!("{bead}--{imp}"));
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join("Cargo.toml"), "[package]\nname = \"dummy\"\n").unwrap();
+        for (rel, content) in files {
+            let p = wt.join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&p, content).unwrap();
+        }
+    }
+
+    #[test]
+    fn run_one_row1_copy_worktree_failure_produces_environment_with_source_path() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("nonexistent_root");
+        let (cx, rec) = run_one(
+            &root,
+            "bead",
+            "dummy_krate",
+            "src",
+            tmp.path(),
+            "arm_a",
+            "arm_b",
+        );
+        assert_eq!(cx, Cell::Error);
+        match rec {
+            cell_record::Cell::NoCompile { why, first_error } => {
+                assert_eq!(why, Breakage::Environment);
+                let expected_source = root.join("bead--arm_a").display().to_string();
+                assert!(
+                    first_error.contains(&expected_source),
+                    "first_error must name source path {expected_source}, got: {first_error}"
+                );
+                assert_ne!(first_error, "(no output)");
+                assert!(!first_error.is_empty());
+            }
+            other => panic!("expected NoCompile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_one_row2_strip_test_modules_failure_produces_other_with_failing_file() {
+        let scratch = TempDir::new().unwrap();
+        let src_dir = scratch.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let failing_file = src_dir.join("failing_module.rs");
+        // Non-UTF-8 bytes cause std::fs::read_to_string to fail reliably on any platform
+        std::fs::write(&failing_file, [0xff, 0xfe, 0xfd]).unwrap();
+
+        let step_res = strip_modules_step(scratch.path(), "src");
+        match step_res {
+            Err(cell_record::Cell::NoCompile { why, first_error }) => {
+                assert_eq!(why, Breakage::Other);
+                assert!(
+                    first_error.contains("failing_module.rs"),
+                    "first_error must name failing file, got: {first_error}"
+                );
+                assert_ne!(first_error, "(no output)");
+                assert!(!first_error.is_empty());
+            }
+            other => panic!("expected Err(NoCompile), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_one_row3_missing_suite_file_produces_other_with_expected_path() {
+        let tmp = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let bead = "bead";
+        let imp = "imp";
+        setup_test_worktree(
+            root.path(),
+            bead,
+            imp,
+            &[("crates/dummy/src/lib.rs", "pub fn f() {}\n")],
+        );
+
+        let suite = "suite_x";
+        let manifest = tmp.path().join(format!("manifest.{suite}"));
+        std::fs::write(&manifest, "crates/dummy/src/lib.rs\n").unwrap();
+
+        let (cx, rec) = run_one(
+            root.path(),
+            bead,
+            "dummy",
+            "crates/dummy/src",
+            tmp.path(),
+            imp,
+            suite,
+        );
+        assert_eq!(cx, Cell::Error);
+        match rec {
+            cell_record::Cell::NoCompile { why, first_error } => {
+                assert_eq!(why, Breakage::Other);
+                let expected_suite_file = format!("suite.{suite}.crates_dummy_src_lib_rs.rs");
+                assert!(
+                    first_error.contains(&expected_suite_file),
+                    "first_error must name expected suite file {expected_suite_file}, got: {first_error}"
+                );
+                assert_ne!(first_error, "(no output)");
+                assert!(!first_error.is_empty());
+            }
+            other => panic!("expected NoCompile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_one_row4_manifest_lists_no_file_impl_has_produces_missing_item_and_fault_false() {
+        let tmp = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let bead = "bead";
+        let imp = "imp";
+        setup_test_worktree(
+            root.path(),
+            bead,
+            imp,
+            &[("crates/dummy/src/lib.rs", "pub fn f() {}\n")],
+        );
+
+        let suite = "suite_y";
+        let missing_rel = "crates/dummy/src/missing_target.rs";
+        let manifest = tmp.path().join(format!("manifest.{suite}"));
+        std::fs::write(&manifest, format!("{missing_rel}\n")).unwrap();
+
+        let slug = slugify(missing_rel);
+        let sfile = tmp.path().join(format!("suite.{suite}.{slug}.rs"));
+        std::fs::write(&sfile, "#[test] fn suite_test() {}\n").unwrap();
+
+        let (cx, rec) = run_one(
+            root.path(),
+            bead,
+            "dummy",
+            "crates/dummy/src",
+            tmp.path(),
+            imp,
+            suite,
+        );
+        assert_eq!(cx, Cell::Error);
+        match rec {
+            cell_record::Cell::NoCompile { why, first_error } => {
+                assert_eq!(why, Breakage::MissingItem);
+                assert!(
+                    !is_instrument_fault(why),
+                    "is_instrument_fault must be false for Breakage::MissingItem"
+                );
+                assert!(
+                    first_error.contains(missing_rel) || first_error.contains("missing_target.rs"),
+                    "first_error must name missing target, got: {first_error}"
+                );
+                assert_ne!(first_error, "(no output)");
+                assert!(!first_error.is_empty());
+            }
+            other => panic!("expected NoCompile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_one_row5_spawning_cargo_test_failure_produces_environment_with_spawn_error() {
+        let tmp = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let bead = "bead";
+        let imp = "imp";
+        let rel = "crates/dummy/src/lib.rs";
+        setup_test_worktree(root.path(), bead, imp, &[(rel, "pub fn f() {}\n")]);
+
+        let suite = "suite_spawn";
+        let manifest = tmp.path().join(format!("manifest.{suite}"));
+        std::fs::write(&manifest, format!("{rel}\n")).unwrap();
+        let sfile = tmp
+            .path()
+            .join(format!("suite.{suite}.{}.rs", slugify(rel)));
+        std::fs::write(&sfile, "#[test] fn test_dummy() {}\n").unwrap();
+
+        let mock_spawn_err = "failed to execute process `cargo`: executable not found";
+        let (cx, rec) = run_one_with_runner(
+            root.path(),
+            bead,
+            "dummy",
+            "crates/dummy/src",
+            tmp.path(),
+            imp,
+            suite,
+            |_dir, _krate, _timeout| {
+                Err(CargoTestError::Spawn(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    mock_spawn_err,
+                )))
+            },
+        );
+        assert_eq!(cx, Cell::Error);
+        match rec {
+            cell_record::Cell::NoCompile { why, first_error } => {
+                assert_eq!(why, Breakage::Environment);
+                assert!(
+                    first_error.contains(mock_spawn_err),
+                    "first_error must name spawn error, got: {first_error}"
+                );
+                assert_ne!(first_error, "(no output)");
+                assert!(!first_error.is_empty());
+            }
+            other => panic!("expected NoCompile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_one_row6_cargo_test_timeout_produces_environment_with_timeout_in_seconds() {
+        let tmp = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let bead = "bead";
+        let imp = "imp";
+        let rel = "crates/dummy/src/lib.rs";
+        setup_test_worktree(root.path(), bead, imp, &[(rel, "pub fn f() {}\n")]);
+
+        let suite = "suite_timeout";
+        let manifest = tmp.path().join(format!("manifest.{suite}"));
+        std::fs::write(&manifest, format!("{rel}\n")).unwrap();
+        let sfile = tmp
+            .path()
+            .join(format!("suite.{suite}.{}.rs", slugify(rel)));
+        std::fs::write(&sfile, "#[test] fn test_dummy() {}\n").unwrap();
+
+        let timeout_secs = 300;
+        let (cx, rec) = run_one_with_runner(
+            root.path(),
+            bead,
+            "dummy",
+            "crates/dummy/src",
+            tmp.path(),
+            imp,
+            suite,
+            |_dir, _krate, timeout| Err(CargoTestError::Timeout(timeout)),
+        );
+        assert_eq!(cx, Cell::Error);
+        match rec {
+            cell_record::Cell::NoCompile { why, first_error } => {
+                assert_eq!(why, Breakage::Environment);
+                assert!(
+                    first_error.contains(&timeout_secs.to_string()),
+                    "first_error must contain timeout in seconds ({timeout_secs}), got: {first_error}"
+                );
+                assert_ne!(first_error, "(no output)");
+                assert!(!first_error.is_empty());
+            }
+            other => panic!("expected NoCompile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_one_boundary_timeout_zero_seconds_produces_environment_with_zero() {
+        let cell = cargo_test_error_to_cell(&CargoTestError::Timeout(Duration::from_secs(0)));
+        match cell {
+            cell_record::Cell::NoCompile { why, first_error } => {
+                assert_eq!(why, Breakage::Environment);
+                assert!(
+                    first_error.contains('0'),
+                    "first_error must name the timeout '0', got: {first_error}"
+                );
+                assert_ne!(first_error, "(no output)");
+                assert!(!first_error.is_empty());
+            }
+            other => panic!("expected NoCompile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_one_boundary_cargo_test_genuine_empty_output_produces_no_output_sentinel() {
+        let tmp = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let bead = "bead";
+        let imp = "imp";
+        let rel = "crates/dummy/src/lib.rs";
+        setup_test_worktree(root.path(), bead, imp, &[(rel, "pub fn f() {}\n")]);
+
+        let suite = "suite_empty";
+        let manifest = tmp.path().join(format!("manifest.{suite}"));
+        std::fs::write(&manifest, format!("{rel}\n")).unwrap();
+        let sfile = tmp
+            .path()
+            .join(format!("suite.{suite}.{}.rs", slugify(rel)));
+        std::fs::write(&sfile, "#[test] fn test_dummy() {}\n").unwrap();
+
+        let (cx, rec) = run_one_with_runner(
+            root.path(),
+            bead,
+            "dummy",
+            "crates/dummy/src",
+            tmp.path(),
+            imp,
+            suite,
+            |_dir, _krate, _timeout| Ok((false, String::new())),
+        );
+        assert_eq!(cx, Cell::Fail);
+        assert_eq!(
+            rec,
+            cell_record::Cell::NoCompile {
+                why: Breakage::Environment,
+                first_error: "(no output)".to_string(),
+            },
+            "empty cargo test output is the genuine case reserved for (no output)"
+        );
+    }
+
+    #[test]
+    fn run_one_normal_cargo_output_produces_pass_and_fail_cells_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let bead = "bead";
+        let imp = "imp";
+        let rel = "crates/dummy/src/lib.rs";
+        setup_test_worktree(root.path(), bead, imp, &[(rel, "pub fn f() {}\n")]);
+
+        let suite = "suite_ok";
+        let manifest = tmp.path().join(format!("manifest.{suite}"));
+        std::fs::write(&manifest, format!("{rel}\n")).unwrap();
+        let sfile = tmp
+            .path()
+            .join(format!("suite.{suite}.{}.rs", slugify(rel)));
+        std::fs::write(&sfile, "#[test] fn test_dummy() {}\n").unwrap();
+
+        let (cx_pass, rec_pass) = run_one_with_runner(
+            root.path(),
+            bead,
+            "dummy",
+            "crates/dummy/src",
+            tmp.path(),
+            imp,
+            suite,
+            |_dir, _krate, _timeout| {
+                Ok((
+                    true,
+                    "running 1 test\ntest test_dummy ... ok\n\ntest result: ok. 1 passed; 0 failed; finished in 0.01s\n"
+                        .to_string(),
+                ))
+            },
+        );
+        assert_eq!(cx_pass, Cell::Pass);
+        assert_eq!(rec_pass, cell_record::Cell::Pass);
+
+        let (cx_fail, rec_fail) = run_one_with_runner(
+            root.path(),
+            bead,
+            "dummy",
+            "crates/dummy/src",
+            tmp.path(),
+            imp,
+            suite,
+            |_dir, _krate, _timeout| {
+                Ok((
+                    false,
+                    "running 1 test\ntest test_dummy ... FAILED\n\nfailures:\n    test_dummy\n\ntest result: FAILED. 0 passed; 1 failed\n"
+                        .to_string(),
+                ))
+            },
+        );
+        assert_eq!(cx_fail, Cell::Fail);
+        assert_eq!(
+            rec_fail,
+            cell_record::Cell::Fail {
+                failed: vec!["test_dummy".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn run_one_row3_missing_manifest_file_produces_other_with_expected_manifest_path() {
+        let tmp = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let bead = "bead";
+        let imp = "imp";
+        setup_test_worktree(
+            root.path(),
+            bead,
+            imp,
+            &[("crates/dummy/src/lib.rs", "pub fn f() {}\n")],
+        );
+
+        let suite = "suite_unmanifested";
+        // manifest.<suite> does not exist at all
+        let expected_manifest = tmp.path().join(format!("manifest.{suite}"));
+
+        let (cx, rec) = run_one(
+            root.path(),
+            bead,
+            "dummy",
+            "crates/dummy/src",
+            tmp.path(),
+            imp,
+            suite,
+        );
+        assert_eq!(cx, Cell::Error);
+        match rec {
+            cell_record::Cell::NoCompile { why, first_error } => {
+                assert_eq!(why, Breakage::Other);
+                assert!(
+                    first_error.contains(&expected_manifest.display().to_string()),
+                    "first_error must name missing expected manifest path, got: {first_error}"
+                );
+                assert_ne!(first_error, "(no output)");
+                assert!(!first_error.is_empty());
+            }
+            other => panic!("expected NoCompile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_one_row4_empty_manifest_produces_missing_item_and_fault_false() {
+        let tmp = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let bead = "bead";
+        let imp = "imp";
+        setup_test_worktree(
+            root.path(),
+            bead,
+            imp,
+            &[("crates/dummy/src/lib.rs", "pub fn f() {}\n")],
+        );
+
+        let suite = "suite_empty_manifest";
+        let manifest = tmp.path().join(format!("manifest.{suite}"));
+        // Empty manifest file: no targets
+        std::fs::write(&manifest, "").unwrap();
+
+        let (cx, rec) = run_one(
+            root.path(),
+            bead,
+            "dummy",
+            "crates/dummy/src",
+            tmp.path(),
+            imp,
+            suite,
+        );
+        assert_eq!(cx, Cell::Error);
+        match rec {
+            cell_record::Cell::NoCompile { why, first_error } => {
+                assert_eq!(why, Breakage::MissingItem);
+                assert!(
+                    !is_instrument_fault(why),
+                    "is_instrument_fault must be false for Breakage::MissingItem"
+                );
+                assert_ne!(first_error, "(no output)");
+                assert!(!first_error.is_empty());
+            }
+            other => panic!("expected NoCompile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_one_boundary_timeout_one_second_produces_environment_with_one() {
+        let cell = cargo_test_error_to_cell(&CargoTestError::Timeout(Duration::from_secs(1)));
+        match cell {
+            cell_record::Cell::NoCompile { why, first_error } => {
+                assert_eq!(why, Breakage::Environment);
+                assert!(
+                    first_error.contains('1'),
+                    "first_error must name timeout '1', got: {first_error}"
+                );
+                assert_ne!(first_error, "(no output)");
+                assert!(!first_error.is_empty());
+            }
+            other => panic!("expected NoCompile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_one_first_error_never_empty_across_all_six_early_return_paths() {
+        // Path 1
+        let cell1 = copy_worktree_step(
+            Path::new("/nonexistent/worktree"),
+            Path::new("/nonexistent/dest"),
+        )
+        .unwrap_err();
+        // Path 2
+        let scratch = TempDir::new().unwrap();
+        let src_dir = scratch.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let bad = src_dir.join("bad.rs");
+        std::fs::write(&bad, [0xff, 0xff]).unwrap();
+        let cell2 = strip_modules_step(scratch.path(), "src").unwrap_err();
+        // Path 3
+        let tmp = TempDir::new().unwrap();
+        let cell3 = graft_suite_step(scratch.path(), tmp.path(), "missing_suite").unwrap_err();
+        // Path 4
+        let manifest = tmp.path().join("manifest.suite4");
+        std::fs::write(&manifest, "missing_target.rs\n").unwrap();
+        let sfile = tmp
+            .path()
+            .join(format!("suite.suite4.{}.rs", slugify("missing_target.rs")));
+        std::fs::write(&sfile, "#[test] fn t() {}\n").unwrap();
+        let cell4 = graft_suite_step(scratch.path(), tmp.path(), "suite4").unwrap_err();
+        // Path 5
+        let cell5 = cargo_test_error_to_cell(&CargoTestError::Spawn(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "spawn failure",
+        )));
+        // Path 6
+        let cell6 = cargo_test_error_to_cell(&CargoTestError::Timeout(Duration::from_secs(42)));
+
+        let cells = [cell1, cell2, cell3, cell4, cell5, cell6];
+        for (idx, cell) in cells.iter().enumerate() {
+            match cell {
+                cell_record::Cell::NoCompile {
+                    why: _,
+                    first_error,
+                } => {
+                    assert!(
+                        !first_error.is_empty(),
+                        "path {} produced empty first_error",
+                        idx + 1
+                    );
+                    assert_ne!(
+                        first_error,
+                        "(no output)",
+                        "path {} produced (no output) sentinel reserved for genuine empty cargo test",
+                        idx + 1
+                    );
+                }
+                other => panic!("path {} expected NoCompile, got {:?}", idx + 1, other),
+            }
+        }
     }
 }

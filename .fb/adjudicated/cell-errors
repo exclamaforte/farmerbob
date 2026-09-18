@@ -1,0 +1,68 @@
+MERGED gemini-38-flash (grafted)
+Adjudicated 2026-09-18. Three arms, three PASS.
+
+  gemini-38-flash    PASS  +709  87 tests  631s
+  glm-53-flash       PASS  +599  81 tests  1391s
+  or-nemotron-ultra  PASS   +69  68 tests  1154s
+
+THE TIMEOUT RACE IS IN ALL THREE, SO IT DECIDES NOTHING. Two critics found it independently,
+each in the arm they were reviewing:
+
+  glm on or-nemotron: "The killer sets `timed_out` with no final `finished` re-check after the
+    deadline loop, so a child completing inside the last poll window is misreported as a timeout
+    and its passing output discarded -- that can flip a real Pass to Error and false-VOID a
+    diagonal."
+
+  or-nemotron on gemini: "the killer thread stores timed_out flag before sending kill signal;
+    wait_with_output() returns natural exit but flag check overrides with Timeout."
+
+I checked all three rather than taking either at face value: none re-checks `finished` before
+declaring a timeout. The base had no timeout reporting at all -- row 6 of my table asked for it
+and never mentioned the race between a process finishing and the deadline firing. N-of-N, mine,
+filed. Vetoed as a differentiator.
+
+Worth recording that glm reported this against or-nemotron while sharing it, and did not say so.
+On cell-record it disclosed the same kind of overlap unprompted; here it did not.
+
+OR-NEMOTRON IS OUT. Its +69 lines are the smallest change and glm dismantled the reasoning:
+
+  "No per-row tests. The handoff's excuse -- conditions 'cannot easily simulate' -- is wrong for
+   at least four rows: a directory named `Cargo.toml` forces the copy failure, a mode-0444 file
+   forces the strip failure, an empty tmp dir forces the missing manifest, manifest+sfile without
+   target forces `MissingItem`. All sit in plain temp dirs, no cargo, no git. The six
+   classifications therefore have zero regression protection."
+
+The six classifications ARE the task. It also deleted the cancellable-killer war-story comment,
+which glm correctly called out: that comment is the guard against someone simplifying the killer
+back to `sleep`+`join`, and removing it re-arms a documented regression.
+
+GEMINI OVER GLM ON CLAUSE 2 AND CLAUSE 4.
+
+Clause 2 reserves `"(no output)"` for a process that genuinely produced none. Counted:
+
+  arm                sentinel in impl   sentinel asserted in tests
+  gemini-38-flash                   0                           15
+  glm-53-flash                      3                            3
+
+gemini never emits it and pins fifteen times that it is not emitted. That is the clause the task
+exists for, tested as a property rather than an example.
+
+And gemini found glm inverting clause 4:
+
+  "In the graft loop, if `target.is_file()` exists but reading or rewriting fails,
+   `missing_target` remains `None`. The fallback uses `missing_target.unwrap_or(manifest)`,
+   reporting `Breakage::MissingItem` and blaming the harness manifest file as missing from the
+   candidate. Instrument I/O errors should never be attributed as candidate API divergence."
+
+`MissingItem` is the one breakage `is_instrument_fault` calls false -- the only one that indicts
+a candidate. Reporting a harness I/O error as `MissingItem` is the mirror of the bug this whole
+chain is fixing.
+
+gemini also made `copy_worktree` fail loudly on a missing worktree root, which or-nemotron
+flagged as an undocumented contract change. It is a change, and it is the one this task wants:
+glm's silently-succeeding copy cannot diagnose a missing candidate directory at all, which
+gemini named as "the primary operational failure mode".
+
+87 tests to 81 and 68, 45 `Breakage::` references to 31 and 20.
+
+409 fb tests, clippy 9 -> 8.
