@@ -886,7 +886,3 @@ mod scope_departures_ranking {
         assert!(evidence_gaps(&none_measured).contains(&Gap::Absent(Criterion::ScopeDiscipline)));
     }
 }
-
-
-
-

@@ -32,6 +32,7 @@ pub mod gate;
 pub mod grade;
 pub mod grading;
 pub mod ids;
+pub mod known_defect;
 pub mod lease;
 pub mod lease_manager;
 pub mod ledger;

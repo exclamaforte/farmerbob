@@ -1,0 +1,38 @@
+MERGED glm-53-flash
+matrix: every off-diagonal cell FAIL, diagonal all-pass. Three self-consistent
+implementations, each rejecting both others. Six cells reproduced by hand with
+the real grafted suites; the failures split cleanly:
+
+  SPEC-UNPINNED (4 of glm's tests, 3 of nemotron's): the shape of the claim line
+  and of the evidence lines. Clause 1 pins the HEADING and tells each arm to pin
+  the rest itself, then clauses 4/5/7 and the `--` boundary require parse to be
+  tested on hand-written text, which can only be written in one arm's format.
+  glm asserts the claim carries a `<critic> on <subject>: ` prefix; nemotron
+  asserts it does not. Both are defensible; the spec fixes neither.
+
+  SPEC-GROUNDED: gemini's suite broke nemotron twice for real -- an unrecognised
+  label TRUNCATES the entry instead of being ignored (the superset section says
+  ignored), and a blank line between entries is absorbed into the claim. glm's
+  suite broke gemini and nemotron on evidence not being returned in the fixed
+  WHERE/TRIGGER/EXPECT/ACTUAL order. nemotron's suite broke glm on a stamp
+  containing ` -- `.
+
+winner: glm-53-flash. The module exists to read `.fb/known-defects/<task>.md`,
+and the four entries already in those files carry the prefix and a trailing
+prose paragraph. glm is the only arm that parses them -- its suite tests that
+exact legacy text. gemini and nemotron fold the prefix and the prose into the
+claim, so `already_recorded` misses every record that already exists, which is
+the function's whole job. gemini's suite is the most rival-portable of the three
+and its docs are the best (doctests on every public item); it loses on the one
+input that is real today.
+
+or-nemotron-ultra: clippy=2, three spec-grounded defects, and an EMPTY critique.
+
+confirmed findings about the winner, recorded not discarded:
+  .fb/known-defects/known-defect-body.md -- parse silently returns an empty
+  claim for an unprefixed claim line; the heading splits on the FIRST ` -- `.
+
+N-of-N: `evidence: Vec<String>` cannot express WHICH of the four closed labels
+are present, so all three arms zip positionally and mis-attribute a sparse set.
+That is evidence about the specification. Ledger: gemini-38-flash, spec,
+accepted.
