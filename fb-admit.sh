@@ -82,6 +82,45 @@ done < "$M"
 [ "${#QUEUE[@]}" -eq 0 ] && { echo "no eligible runs"; exit 1; }
 echo "queued ${#QUEUE[@]} runs"
 
+# SPEC CRITIQUE, before anyone implements.
+#
+# fb-speccheck.sh was written, tested and wired to nothing. It ran four times, by hand, and
+# the automated path never called it: not fb-wave, not fb-autopilot, not here. Two features
+# died with it. The first is the stage itself -- wave85's spec fixed `evidence` as a
+# label-free `Vec<String>` and then required the four labels to be identifiable, which is not
+# satisfiable, and all three arms mis-attributed evidence in the same way because no one was
+# asked to read the spec before implementing it. The second is quieter: fb-dispatch sets
+# CONT=yes only when `speccheck/<bead>/<arm>.findings.md` exists, so the session-reuse that
+# lets an implementation continue the critic's own conversation was dead too. Wiring the
+# stage here turns both on at once.
+#
+# It runs SYNCHRONOUSLY and before the dispatch loop, which is the whole point: the arms read
+# {spec + code} first, and dispatch then continues those sessions.
+#
+# It never aborts the wave. A missing critique degrades the run; it does not justify throwing
+# away the implementation wave behind it. But it says so on its own line, because a stage that
+# is skipped silently is indistinguishable from a stage that ran and found nothing -- which is
+# exactly the bug that let this one sit unwired for four tasks.
+LOGS="$HOME/.local/share/farmerbob/logs"
+SPECCHECK_TIMEOUT=${FB_SPECCHECK_TIMEOUT:-1800}
+if [ "${FB_SKIP_SPECCHECK:-}" = 1 ]; then
+  echo "speccheck: SKIPPED by FB_SKIP_SPECCHECK=1 -- no spec critique for this wave"
+else
+  while IFS=$'\t' read -r task crate arms; do
+    [ -z "${task:-}" ] && continue
+    if ls "$LOGS/speccheck/$task"/*.findings.md >/dev/null 2>&1; then
+      echo "speccheck $task: already critiqued, reusing $(ls "$LOGS/speccheck/$task"/*.findings.md | wc -l) report(s)"
+      continue
+    fi
+    echo "speccheck $task: running before dispatch"
+    if timeout "$SPECCHECK_TIMEOUT" ./fb-speccheck.sh "$task" "$crate" "$arms"; then
+      :
+    else
+      echo "speccheck $task: DID NOT COMPLETE (rc=$?) -- dispatching WITHOUT a spec critique, and without session reuse" >&2
+    fi
+  done < "$M"
+fi
+
 running=0
 for item in "${QUEUE[@]}"; do
   IFS='|' read -r arm task crate <<< "$item"
