@@ -1,0 +1,53 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-18. Three arms, three PASS, nine crossx cells, nine passes. A one-borrow
+task; nobody was going to be discriminated by a matrix.
+
+  gemini-38-flash    PASS  153L  53 tests  clippy 0  583s
+  glm-53-flash       PASS  170L  51 tests  clippy 0  381s
+  or-nemotron-ultra  PASS    1L  45 tests  clippy 2  188s
+
+MY SPEC HAD TWO DEFECTS AND THE ARMS FOUND BOTH.
+
+glm on or-nemotron, correcting the clause I wrote to justify the task:
+
+  "Clause 3 says holding one result while making another call is 'impossible under `&mut
+   self`', and the handoff repeats it -- but `due` returns owned data (cloned bucket, cloned
+   handles), so `let first = tracker.due(5); let second = tracker.due(5);` compiles under
+   either receiver; `due_is_idempotent` already does it. What `&self` actually buys is a second
+   call through a shared `&QuotaTracker` -- clause 1's pin, which is missing."
+
+Correct. My clause 3 asserted a benefit that does not exist, and named it "the concrete reason
+this change is worth making". The real benefit is clause 1's, and I under-pinned it while
+over-claiming clause 3.
+
+Second defect, found by both: my Exact API block writes
+`due(&self, now_ms: u64) -> Vec<(Bucket, ResumeHandle)>`. The real return type is
+`Vec<(Bucket, Vec<ResumeHandle>)>` -- one bucket parks MANY handles, which
+`shared_bucket_parks_both_arms` has pinned since the module was written. gemini on glm:
+
+  "The author correctly prioritized the explicit rule ('`due`'s return type and its VALUE are
+   unchanged') over the conflicting signature snippet in the task description."
+
+Both arms navigated a contradiction I put in front of them, between a prose rule and a code
+block in the same document. Filed.
+
+DECISION. Measured across the three suites:
+
+  arm                tests   compile_fail doctests   &QuotaTracker pins
+  gemini-38-flash       53                       0                    7
+  glm-53-flash          51                       1                    4
+  or-nemotron-ultra     45                       0                    0
+
+or-nemotron's one-line diff is the minimal correct change and glm says so plainly -- "Nothing
+to fault in what it does; the fault is what it leaves unpinned". It has ZERO references to
+`&QuotaTracker`: it never pins clause 1, which is the entire point of the task, and it carries
+clippy 2 against a baseline of 0. Out.
+
+glm over gemini, on two things a count does not show. It is the only arm that pinned clause 4
+-- that `succeeded` still REQUIRES `&mut self` -- and it did so with a `compile_fail` doctest,
+which gemini itself singled out as expressing a contract "standard `#[test]` functions cannot
+assert without failing compilation". And it is the only arm that noticed clause 3's premise was
+false rather than implementing against it. gemini has two more tests and three more shared-ref
+assertions; that does not outweigh pinning the half of the contract nobody else pinned.
+
+1252 core tests, clippy 9, farmerbob-core clippy 0.

@@ -146,32 +146,55 @@ impl QuotaTracker {
         }
     }
 
-    /// Returns every bucket whose park has elapsed by `now`, without
+    /// Returns every bucket whose park has elapsed by `now_ms`, without
     /// mutating the tracker.
     ///
-    /// This is a READ, not a drain: calling it twice with the same `now`
-    /// returns the same set both times, and a bucket it yields keeps its
-    /// full park history intact -- [`QuotaTracker::attempts`] for that
-    /// bucket is unchanged by this call, and a later `due` call still
-    /// yields it if nothing cleared it in between. The only thing that
-    /// clears a bucket's history is [`QuotaTracker::succeeded`]; draining
-    /// this iterator is not that, because a caller that happens not to
-    /// poll must not see different behaviour than one that polls
+    /// Takes `&self` because it is a pure read: a caller should not need a
+    /// mutable borrow to ask a question, and `&mut self` on a function that
+    /// mutates nothing tells a reader the opposite of the truth. Two `due`
+    /// calls can be alive over one tracker at once, which a `&mut self`
+    /// receiver forbids.
+    ///
+    /// This is a READ, not a drain: calling it twice with the same
+    /// `now_ms` returns the same set both times, and a bucket it yields
+    /// keeps its full park history intact -- [`QuotaTracker::attempts`]
+    /// for that bucket is unchanged by this call, and a later `due` call
+    /// still yields it if nothing cleared it in between. The only thing
+    /// that clears a bucket's history is [`QuotaTracker::succeeded`];
+    /// draining this iterator is not that, because a caller that happens
+    /// not to poll must not see different behaviour than one that polls
     /// obsessively -- see `park_outcome_is_independent_of_polling_due` in
     /// the tests.
     ///
-    /// A bucket whose park instant equals `now` exactly has elapsed, and is
-    /// included; this agrees with [`QuotaTracker::is_parked`], which is
-    /// false at the same instant.
+    /// A bucket whose park instant equals `now_ms` exactly has elapsed,
+    /// and is included; this agrees with [`QuotaTracker::is_parked`],
+    /// which is false at the same instant.
     ///
     /// Ordered by bucket name, ascending byte order on the wrapped string
     /// (not map order, which is unspecified and would otherwise vary run to
     /// run), so a caller that logs the result gets the same line every run.
-    pub fn due(&mut self, now: u64) -> Vec<(Bucket, Vec<ResumeHandle>)> {
+    ///
+    /// ```
+    /// use farmerbob_core::quota::{Bucket, LimitHit, QuotaTracker, ResumeHandle};
+    /// let mut tracker = QuotaTracker::new(10);
+    /// tracker.park(
+    ///     &LimitHit {
+    ///         bucket: Bucket("b".into()),
+    ///         detected_at: 0,
+    ///         reset_at: Some(5),
+    ///         evidence: "x".into(),
+    ///     },
+    ///     ResumeHandle { session_id: "s".into(), worktree: "w".into() },
+    ///     0,
+    /// );
+    /// let t: &QuotaTracker = &tracker;
+    /// assert_eq!(t.due(5).len(), 1); // a question, not a mutation
+    /// ```
+    pub fn due(&self, now_ms: u64) -> Vec<(Bucket, Vec<ResumeHandle>)> {
         let mut due_buckets: Vec<(Bucket, Vec<ResumeHandle>)> = self
             .buckets
             .iter()
-            .filter(|(_, parked)| now >= parked.until)
+            .filter(|(_, parked)| now_ms >= parked.until)
             .map(|(bucket, parked)| (bucket.clone(), parked.handles.clone()))
             .collect();
         due_buckets.sort_by(|(a, _), (b, _)| a.0.cmp(&b.0));
@@ -216,6 +239,16 @@ impl QuotaTracker {
     /// bucket the tracker has never parked. Calling this on a bucket the
     /// tracker has never parked, or has already cleared, is not an error;
     /// `attempts` simply stays at `None`, which is where it already was.
+    ///
+    /// It genuinely mutates, so it keeps `&mut self` even now that `due`
+    /// does not; the negative is pinned, not merely the positive.
+    ///
+    /// ```compile_fail
+    /// use farmerbob_core::quota::{Bucket, QuotaTracker};
+    /// let tracker = QuotaTracker::new(10);
+    /// // An immutable binding cannot reach the one mutator:
+    /// tracker.succeeded(&Bucket("b".into()));
+    /// ```
     pub fn succeeded(&mut self, bucket: &Bucket) {
         if let Some(parked) = self.buckets.remove(bucket) {
             let elapsed = parked
@@ -838,9 +871,131 @@ mod tests {
 
     #[test]
     fn due_on_an_empty_tracker_is_empty() {
-        let mut tracker = QuotaTracker::new(10);
+        let tracker = QuotaTracker::new(10);
         assert!(tracker.due(0).is_empty());
         assert!(tracker.due(u64::MAX).is_empty());
+    }
+
+    // Clause 1, pinned in its strong form: the query is reachable through a
+    // plain `&QuotaTracker`, alongside the other reads it agrees with.
+    #[test]
+    fn due_is_callable_on_an_immutable_binding() {
+        let mut tracker = QuotaTracker::new(10);
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: Some(5),
+            evidence: "x".into(),
+        };
+        tracker.park(&hit, handle("a"), 0);
+        let t: &QuotaTracker = &tracker;
+        let due = t.due(5);
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].0, bucket());
+        // The reads `due` agrees with at the boundary stay reachable too.
+        assert!(!t.is_parked(&bucket(), 5));
+        assert_eq!(t.attempts(&bucket()), Some(1));
+        assert_eq!(t.state(&bucket(), 5), BucketState::Available);
+    }
+
+    // Clause 3: two `due` calls alive at once over the same tracker. Under a
+    // `&mut self` receiver this cannot even be expressed through the shared
+    // reference a reader holds; that is the concrete reason for `&self`.
+    #[test]
+    fn two_due_calls_can_be_alive_at_once_over_one_tracker() {
+        let mut tracker = QuotaTracker::new(10);
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: Some(5),
+            evidence: "x".into(),
+        };
+        tracker.park(&hit, handle("a"), 0);
+        let t: &QuotaTracker = &tracker;
+        let first = t.due(5);
+        let second = t.due(5);
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 1);
+        // Both results are still alive and were not consumed by either call.
+        assert_eq!(first[0].1, vec![handle("a")]);
+        assert_eq!(second[0].1, vec![handle("a")]);
+    }
+
+    // The repetition boundary, pinned at a hundred rather than assumed from
+    // two: every call returns the same set and leaves the park history alone.
+    #[test]
+    fn due_called_a_hundred_times_returns_identical_results() {
+        let mut tracker = QuotaTracker::new(10);
+        for name in ["b", "a"] {
+            let hit = LimitHit {
+                bucket: Bucket(name.into()),
+                detected_at: 0,
+                reset_at: Some(5),
+                evidence: "x".into(),
+            };
+            tracker.park(&hit, handle("a"), 0);
+        }
+        let expected = tracker.due(5);
+        assert_eq!(expected.len(), 2);
+        for _ in 0..100 {
+            assert_eq!(tracker.due(5), expected);
+        }
+        assert_eq!(tracker.attempts(&Bucket("a".into())), Some(1));
+        assert_eq!(tracker.attempts(&Bucket("b".into())), Some(1));
+    }
+
+    // A tracker parked entirely into the future: the answer is empty and the
+    // call changed nothing that a later read can see.
+    #[test]
+    fn a_tracker_parked_into_the_future_yields_nothing() {
+        let mut tracker = QuotaTracker::new(10);
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: Some(5),
+            evidence: "x".into(),
+        };
+        tracker.park(&hit, handle("a"), 0);
+        assert!(tracker.due(4).is_empty());
+        assert!(tracker.is_parked(&bucket(), 4));
+        assert_eq!(tracker.attempts(&bucket()), Some(1));
+    }
+
+    // Boundary at zero: a park whose instant is exactly now_ms == 0 is
+    // yielded, `is_parked` agrees, and nothing underflows.
+    #[test]
+    fn due_at_now_ms_zero_yields_a_bucket_parked_until_zero() {
+        let mut tracker = QuotaTracker::new(10);
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: Some(0),
+            evidence: "x".into(),
+        };
+        tracker.park(&hit, handle("a"), 0);
+        let due = tracker.due(0);
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].0, bucket());
+        assert!(!tracker.is_parked(&bucket(), 0));
+        assert_eq!(tracker.attempts(&bucket()), Some(1));
+    }
+
+    // Clause 4, positive half: the mutator still works, and still only
+    // through a mutable binding.
+    #[test]
+    fn succeeded_still_clears_through_a_mutable_binding() {
+        let mut tracker = QuotaTracker::new(10);
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: Some(5),
+            evidence: "x".into(),
+        };
+        tracker.park(&hit, handle("a"), 0);
+        let mutable: &mut QuotaTracker = &mut tracker;
+        mutable.succeeded(&bucket());
+        assert_eq!(tracker.attempts(&bucket()), None);
+        assert!(tracker.due(5).is_empty());
     }
 
     // Boundary, pinned on both halves together: a park instant exactly
