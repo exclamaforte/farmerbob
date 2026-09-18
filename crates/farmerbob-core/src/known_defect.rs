@@ -507,7 +507,3 @@ it survives the retraction.
         assert!(!already_recorded(&[], &defect("claim", &[])));
     }
 }
-
-
-
-

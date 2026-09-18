@@ -1,0 +1,36 @@
+MERGED glm-53-flash
+matrix: 2x2 full pass, Inconclusive (NoEvidence). At N=2 the crossx verdict cannot
+discriminate and does not pretend to. Both critics wrote NO MATERIAL DEFECTS FOUND, so the
+decision rests on the spec critiques, the two handoffs, and reading both classify functions.
+
+the spec was defective, and the arms said so BEFORE implementing. This is the first task
+where fb-speccheck ran in the automated path. All four arms critiqued it; codex-luna named
+both defects exactly:
+
+  1. uncomputable -- clause 3 required Unknown.why to be derived from the Absent's stated
+     reason, but Absent::NotAttempted is a unit variant with no reason.
+  2. contradiction -- Unknown is documented as "the artefact could not be inspected at all"
+     while the superset section maps NothingToMeasure and Untrusted onto it.
+
+Both were ruled correct and recorded before dispatch. Neither was FIXED, because two arms
+were still critiquing the live text and their implementation runs continue those sessions;
+revising mid-stage would have left the field reading two documents. So this wave also
+measures how a field handles a spec defect it has already named -- which is the more
+interesting question anyway.
+
+winner: glm-53-flash. Its `unknown_why` is one match that returns a specific honest string
+for NotAttempted and FRAMES every other reason as "the artefact could not be inspected:
+{stated}". That framing is the closest honest thing to defect 2: it makes the string
+self-describing in a log line where the variant name is not visible, which is exactly what
+the contradiction cost. gemini-38-flash triplicates three structurally identical
+trim().is_empty() branches -- unreachable through measurement's own constructors, which
+normalise via stated() -- and returns the bare reason with no framing. glm's critique found
+that ("two sources for one rule that can drift apart"); gemini's critique of glm found
+nothing and praised specifics.
+
+glm also produced the only FOLLOWUP the new section has ever yielded, and it is correct:
+fb-pipeline.sh:101 collapses a never-created file and a zero-byte file into one branch --
+the exact coercion this module exists to end. Accepted to the ledger.
+
+or-deepseek-v4-pro: OpenRouter key limit, NO-OP in 8s. Infrastructure, not availability.
+codex-luna: lost to farmerbob-81tg -- resumed its critique session and re-answered it.

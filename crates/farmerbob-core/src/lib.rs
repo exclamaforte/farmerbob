@@ -63,6 +63,7 @@ pub mod scope;
 pub mod selection;
 pub mod sensitivity;
 pub mod slots;
+pub mod stage_outcome;
 pub mod suite_match;
 pub mod suite_verdict;
 pub mod task;
