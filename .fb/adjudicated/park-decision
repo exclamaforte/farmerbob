@@ -1,0 +1,36 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-17. Four arms, two PASS; both ifm routes refused on their daily token cap --
+the eleventh and twelfth such slot today, which is what this task exists to stop.
+
+  codex-luna    +160 lines  13 tests
+  glm-53-flash  +310 lines  19 tests
+
+Both scored 11 of 11 and agreed on every clause that carries the design:
+
+  ArmResult      -> No       the arm ran; nothing about the provider was learned
+  Infrastructure -> No       a broken harness is not a provider refusing, and parking here
+                             would file our own fault under the arm's unavailability
+  Cancelled      -> No       we killed it
+  Unknown        -> No       nothing determined, nothing concluded
+  QuotaLimited   -> Until when the provider stated a reset, Backoff when it did not
+
+Both resolved `retry-after: 3600` at now=1000000 to exactly at_ms 4600000, and both refuse to
+invent an instant: a refusal with no stated reset becomes Backoff and says so in its grounds,
+never Until with a guessed time. That was clause 3 and it is the whole point -- an invented reset
+is indistinguishable from a real one to the next reader.
+
+They also agreed on both boundaries I left open and did not name an answer for:
+
+  default_backoff 0, no reset  -> No    a zero backoff parks nothing, so say No rather than
+                                        return a degenerate Backoff that parks until now
+  reset exactly == now         -> No    the window has already closed
+
+glm-53-flash on 19 tests to 13, and on a grounds string that carries the RESOLVED instant --
+"provider stated a reset (resolves to 4600000 ms); log: ..." -- where codex-luna quotes only the
+log. When a parked arm is questioned later, the resolved number is the thing a reader needs.
+
+Nothing calls this yet. Parking an arm from a classified run is the caller's job, and wave57
+(park-scope) supplies the other half it deliberately does not know: that one OpenRouter key
+serves thirteen arms, so a refusal's blast radius is sometimes the credential rather than the arm.
+
+1433 tests, clippy 9.

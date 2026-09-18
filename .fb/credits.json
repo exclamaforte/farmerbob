@@ -239,6 +239,12 @@
    "critic": "glm-53-flash",
    "found_on": "ifm-k2-think",
    "tests": 1
+  },
+  {
+   "task": "backtick-quotes",
+   "critic": "glm-53-flash",
+   "found_on": "ifm-k2-horizon",
+   "tests": 2
   }
  ]
 }

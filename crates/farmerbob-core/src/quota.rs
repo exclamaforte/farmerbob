@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 
+use crate::limit_signal::parse_reset;
+use crate::outcome::OutcomeClass;
+
 /// Identifies a provider usage bucket shared by one or more adapters.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Bucket(pub String);
@@ -213,6 +216,144 @@ fn parse_reset_seconds(output: &str) -> Option<u64> {
     })
 }
 
+// --- The park decision ------------------------------------------------------
+//
+// `park_after` composes recognition this crate already owns: the class comes
+// from `outcome`, the stated instant from `limit_signal::parse_reset`. It adds
+// one decision and no new parsing.
+
+/// Milliseconds in one second. `limit_signal::parse_reset` speaks unix seconds
+/// while a [`Park`] speaks unix milliseconds, so stated instants are scaled
+/// here and nowhere else.
+const MILLIS_PER_SECOND: u64 = 1_000;
+
+/// Whether an arm should be parked after a finished run, and until when.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Park {
+    /// Do not park. The run tells us nothing about future availability.
+    No,
+    /// Park until this instant, in unix milliseconds, because the provider said so.
+    Until {
+        /// The instant the provider stated, in unix milliseconds.
+        at_ms: u64,
+        /// What was found, quoted for the next reader of the parked-until record.
+        grounds: String,
+    },
+    /// Park for a backoff because the provider refused without saying when it would relent.
+    Backoff {
+        /// The instant the backoff expires, in unix milliseconds.
+        until_ms: u64,
+        /// Why an admitted backoff stands where a stated reset would, for the next reader.
+        grounds: String,
+    },
+}
+
+/// Decide whether a finished run should park its arm.
+///
+/// `now_ms` is the current instant, in unix milliseconds; `log_head` is the
+/// run's own log, already ANSI-stripped (stripping is idempotent, so a caller
+/// that forgot costs nothing).
+///
+/// This decides about ONE ARM from ONE RUN. It does not know that one key may
+/// serve thirteen arms; a caller that parks a whole provider on the strength
+/// of this return is doing something this function did not authorise.
+///
+/// Which classes park is a decision, not a discovery: today only
+/// [`OutcomeClass::QuotaLimited`] parks, because it is the one class that
+/// records the provider speaking about its own future availability. A future
+/// class might justify parking; adding it is a decision to make here, in the
+/// open. Every other class is [`Park::No`]: `ArmResult` (the arm ran, and
+/// nothing about the provider was learned), `Infrastructure` (a broken
+/// harness is not a provider refusing, and parking the arm would hide our own
+/// fault as the arm's unavailability), `Cancelled` (we killed it), `Unknown`
+/// (nothing was determined, so nothing is concluded), and `TaskInvalid`
+/// (nothing was learned about the provider either; this class is not
+/// enumerated in the park clauses and is resolved here as [`Park::No`]).
+///
+/// The stated instant: [`Park::Until`] carries the instant
+/// `limit_signal::parse_reset` finds, scaled into the milliseconds `Park`
+/// speaks. `parse_reset` returns unix seconds for its absolute formats and
+/// resolves its relative formats against the instant it is given, so it is
+/// given `now_ms / 1000`; no second reset parser is written here. Nor is a
+/// reset ever invented: a refusal with NO stated reset is [`Park::Backoff`] of
+/// `now_ms + default_backoff_ms`, with grounds saying the provider did not
+/// state a time — an invented reset is worse than an admitted backoff, because
+/// the next reader cannot tell it from a real one. An empty `log_head` with
+/// `QuotaLimited` is [`Park::Backoff`] too: the class is authoritative and the
+/// absent log merely fails to refine it.
+///
+/// Windows: a park is returned only for a window that has not already closed.
+/// A reset in the past relative to `now_ms` is [`Park::No`] — a window that
+/// has already closed does not park anything; so is a reset exactly equal to
+/// `now_ms` (pinned here: the window closes at this instant), and so is
+/// `default_backoff_ms: 0` with no stated reset (pinned here: a backoff that
+/// ends now parks nothing). `now_ms + default_backoff_ms` saturates rather
+/// than wrapping, and the saturated backoff still parks — the provider
+/// refused and a positive backoff was requested, so the only [`Park::No`] on
+/// the backoff path is a zero-length one.
+///
+/// ```
+/// use farmerbob_core::outcome::OutcomeClass;
+/// use farmerbob_core::quota::{Park, park_after};
+///
+/// // The provider said when it would relent: park until then, in milliseconds.
+/// let park = park_after(
+///     OutcomeClass::QuotaLimited,
+///     "Error: rate limit exceeded; retry-after: 3600",
+///     1_789_000_000_000,
+///     60_000,
+/// );
+/// assert!(matches!(park, Park::Until { at_ms: 1_789_003_600_000, .. }));
+///
+/// // No stated time: an admitted backoff, never a guessed reset.
+/// let park = park_after(OutcomeClass::QuotaLimited, "quota exceeded", 1_000, 60_000);
+/// assert!(matches!(park, Park::Backoff { until_ms: 61_000, .. }));
+/// ```
+pub fn park_after(
+    class: OutcomeClass,
+    log_head: &str,
+    now_ms: u64,
+    default_backoff_ms: u64,
+) -> Park {
+    match class {
+        OutcomeClass::QuotaLimited => {}
+        OutcomeClass::ArmResult
+        | OutcomeClass::Infrastructure
+        | OutcomeClass::TaskInvalid
+        | OutcomeClass::Cancelled
+        | OutcomeClass::Unknown => return Park::No,
+    }
+    match parse_reset(log_head, now_ms / MILLIS_PER_SECOND) {
+        Some(reset_secs) => {
+            let at_ms = reset_secs.saturating_mul(MILLIS_PER_SECOND);
+            if at_ms > now_ms {
+                Park::Until {
+                    at_ms,
+                    grounds: format!(
+                        "provider stated a reset (resolves to {at_ms} ms); log: {}",
+                        log_head.trim()
+                    ),
+                }
+            } else {
+                Park::No
+            }
+        }
+        None => {
+            if default_backoff_ms == 0 {
+                // Pinned: a zero backoff parks until now, which parks nothing.
+                // A positive backoff always parks, saturated or not.
+                return Park::No;
+            }
+            Park::Backoff {
+                until_ms: now_ms.saturating_add(default_backoff_ms),
+                grounds: format!(
+                    "provider did not state a reset time; default backoff of {default_backoff_ms} ms applies"
+                ),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +472,179 @@ mod tests {
             tracker.due(5).into_iter().next().map(|(_, h)| h.len()),
             Some(2)
         );
+    }
+}
+
+// Clause tests for `park_after`, one per distinct behaviour the task pins.
+// The boundaries the task explicitly leaves to the implementation — a reset
+// exactly equal to now_ms, default_backoff_ms of 0 with no stated reset, the
+// unenumerated TaskInvalid class — are pinned in `park_after`'s doc and
+// deliberately NOT asserted here: another correct implementation of the same
+// spec may reasonably choose the other side, and a suite that fails a correct
+// rival measures the author's guess, not the code.
+#[cfg(test)]
+mod park_after_tests {
+    use super::*;
+
+    const NOW_MS: u64 = 1_789_000_000_000;
+    const BACKOFF_MS: u64 = 60_000;
+
+    // Clause 1, in its strong form: the class decides, not the log. An
+    // ArmResult whose log quotes a reset must not park.
+    #[test]
+    fn an_arm_result_never_parks_even_when_the_log_states_a_reset() {
+        let park = park_after(
+            OutcomeClass::ArmResult,
+            "rate limit hit; retry-after: 3600",
+            NOW_MS,
+            BACKOFF_MS,
+        );
+        assert_eq!(park, Park::No);
+    }
+
+    // Clause 4: a broken harness is not a provider refusing.
+    #[test]
+    fn infrastructure_never_parks_even_when_the_log_states_a_reset() {
+        let park = park_after(
+            OutcomeClass::Infrastructure,
+            "Error: rate limit exceeded; retry-after: 3600",
+            NOW_MS,
+            BACKOFF_MS,
+        );
+        assert_eq!(park, Park::No);
+    }
+
+    // Clause 5: we killed it.
+    #[test]
+    fn cancelled_never_parks() {
+        let park = park_after(
+            OutcomeClass::Cancelled,
+            "retry-after: 3600",
+            NOW_MS,
+            BACKOFF_MS,
+        );
+        assert_eq!(park, Park::No);
+    }
+
+    // Clause 6: nothing was determined, so nothing is concluded.
+    #[test]
+    fn unknown_never_parks() {
+        let park = park_after(
+            OutcomeClass::Unknown,
+            "retry-after: 3600",
+            NOW_MS,
+            BACKOFF_MS,
+        );
+        assert_eq!(park, Park::No);
+    }
+
+    // Clause 2: a stated relative reset parks Until the instant parse_reset
+    // gives, expressed in the milliseconds Park speaks.
+    #[test]
+    fn a_stated_relative_reset_parks_until_it_expires() {
+        let log = "Error: rate limit exceeded; retry-after: 3600";
+        match park_after(OutcomeClass::QuotaLimited, log, NOW_MS, BACKOFF_MS) {
+            Park::Until { at_ms, grounds } => {
+                // parse_reset resolves the statement against NOW_MS / 1000;
+                // the result is scaled into milliseconds, nowhere else.
+                assert_eq!(at_ms, 1_789_003_600_000);
+                assert!(
+                    grounds.contains("3600"),
+                    "grounds must quote what was found: {grounds}"
+                );
+            }
+            other => panic!("a stated reset must park Until, got {other:?}"),
+        }
+    }
+
+    // Clause 2, absolute form: a unix-seconds reset_at is honoured, not misread
+    // against a millisecond now (unscaled, it would always look already past).
+    #[test]
+    fn a_stated_absolute_reset_parks_until_it_expires() {
+        let log = r#"{"error": "quota", "reset_at": 1789603200}"#;
+        match park_after(OutcomeClass::QuotaLimited, log, NOW_MS, BACKOFF_MS) {
+            Park::Until { at_ms, grounds } => {
+                assert_eq!(at_ms, 1_789_603_200_000);
+                assert!(
+                    grounds.contains("reset_at"),
+                    "grounds must quote what was found: {grounds}"
+                );
+            }
+            other => panic!("a stated reset must park Until, got {other:?}"),
+        }
+    }
+
+    // Clause 2, RFC 3339 form: same instant, third format, same discipline.
+    #[test]
+    fn a_stated_rfc3339_reset_parks_until_it_expires() {
+        let log = "usage limit hit, resets at 2026-09-17T00:00:00Z please wait";
+        match park_after(OutcomeClass::QuotaLimited, log, NOW_MS, BACKOFF_MS) {
+            Park::Until { at_ms, .. } => assert_eq!(at_ms, 1_789_603_200_000),
+            other => panic!("a stated reset must park Until, got {other:?}"),
+        }
+    }
+
+    // Clause 7: a window that has already closed parks nothing.
+    #[test]
+    fn a_reset_in_the_past_parks_nothing() {
+        let log = r#"quota refused; "reset_at": 1788999000"#;
+        let park = park_after(OutcomeClass::QuotaLimited, log, NOW_MS, BACKOFF_MS);
+        assert_eq!(park, Park::No);
+    }
+
+    // Clause 3: no stated reset is an admitted backoff of exactly
+    // now_ms + default_backoff_ms, never a guessed Until.
+    #[test]
+    fn no_stated_reset_is_a_backoff_of_the_default_window() {
+        match park_after(
+            OutcomeClass::QuotaLimited,
+            "quota exceeded for project",
+            NOW_MS,
+            BACKOFF_MS,
+        ) {
+            Park::Backoff { until_ms, grounds } => {
+                assert_eq!(until_ms, NOW_MS + BACKOFF_MS);
+                assert!(!grounds.is_empty());
+            }
+            other => panic!("no stated reset must back off, got {other:?}"),
+        }
+    }
+
+    // Clause 3 boundary: an empty log defers to the authoritative class.
+    #[test]
+    fn an_empty_log_with_a_refusal_still_backs_off() {
+        match park_after(OutcomeClass::QuotaLimited, "", 1_000, 1) {
+            Park::Backoff { until_ms, .. } => assert_eq!(until_ms, 1_001),
+            other => panic!("an empty log must not suppress the backoff, got {other:?}"),
+        }
+    }
+
+    // Pure whitespace finds no reset whether or not a reader trims first, so
+    // both readings of the boundary converge on the backoff.
+    #[test]
+    fn a_whitespace_log_converges_on_the_backoff() {
+        match park_after(OutcomeClass::QuotaLimited, "   ", 1_000, 1) {
+            Park::Backoff { until_ms, .. } => assert_eq!(until_ms, 1_001),
+            other => panic!("expected Backoff, got {other:?}"),
+        }
+    }
+
+    // Boundary: the backoff addition saturates rather than wrapping.
+    #[test]
+    fn backoff_overflow_saturates_rather_than_wrapping() {
+        match park_after(OutcomeClass::QuotaLimited, "quota exceeded", u64::MAX, 1) {
+            Park::Backoff { until_ms, .. } => assert_eq!(until_ms, u64::MAX),
+            other => panic!("expected Backoff, got {other:?}"),
+        }
+    }
+
+    // Boundary: now_ms of 0 with a stated future reset neither underflows nor
+    // misreads the instant.
+    #[test]
+    fn zero_now_with_a_stated_reset_neither_underflows_nor_guesses() {
+        match park_after(OutcomeClass::QuotaLimited, r#""reset_at": 500"#, 0, 0) {
+            Park::Until { at_ms, .. } => assert_eq!(at_ms, 500_000),
+            other => panic!("expected Until, got {other:?}"),
+        }
     }
 }
