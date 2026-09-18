@@ -263,6 +263,18 @@
    "critic": "glm-53-flash",
    "found_on": "or-inkling",
    "tests": 3
+  },
+  {
+   "task": "testout",
+   "critic": "claude-sonnet",
+   "found_on": "codex-luna",
+   "tests": 1
+  },
+  {
+   "task": "reap-plan",
+   "critic": "gemini-38-flash",
+   "found_on": "glm-53-flash",
+   "tests": 1
   }
  ]
 }

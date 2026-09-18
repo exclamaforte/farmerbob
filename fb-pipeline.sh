@@ -158,6 +158,25 @@ run_stage prove    "$LOGS/$T.proved.json"   field   bash ./fb-prove.sh   "$T" "$
 # against the merged reference; escalation keeps that artefact instead of discarding it, and
 # credits the critic that found it. Idempotent, so it is safe on every pipeline run.
 #   (bead farmerbob-mqr)
-./fb-escalate.sh auto "$T" 2>&1 | sed 's/^/  escalate: /'
+#
+# IT NEEDS THE MERGED REFERENCE, AND THIS PIPELINE RUNS BEFORE THE MERGE.
+#
+# The comment above says "against the merged reference" and this line runs while the task is
+# still waiting to be adjudicated. For a `fb:creates` task the declared file does not exist yet,
+# so escalation died with a FileNotFoundError -- ten tracebacks across the logs, on
+# testout.rs, scope_cmd.rs, reap_plan.rs and cell_record.rs -- and the pipeline printed them and
+# carried on. Measured consequence: 303 CLAIM blocks across 265 critiques, and nine
+# escalated_* modules in the repository.
+#
+# Skipping is the honest thing rather than crashing, and saying so is the point: an operator
+# reading "ready for adjudication" should know that escalation has NOT run and why. Run it
+# after merging, which is when the reference it needs exists.
+if [ -n "$TARGET" ] && [ ! -e "$TARGET" ]; then
+  echo "  escalate: SKIPPED -- $TARGET does not exist on the base yet."
+  echo "  escalate:   This task creates it, so there is no merged reference to escalate"
+  echo "  escalate:   against. Run ./fb-escalate.sh auto $T after merging the winner."
+else
+  ./fb-escalate.sh auto "$T" 2>&1 | sed 's/^/  escalate: /'
+fi
 
 echo "== $T ready for adjudication"
