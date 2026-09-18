@@ -42,6 +42,62 @@ struct Judgement {
     critic: String,
     subject: String,
     text: String,
+    followups: String,
+}
+
+/// Is this line the header of the section called `name`?
+///
+/// The critique prompt writes its own contract as `### CLAIMS` / `### JUDGEMENTS`, and arms
+/// echo that structure back in every form it suggests: `## JUDGEMENTS`, `### JUDGEMENTS`, a
+/// bare `JUDGEMENTS`, sometimes bold. All of them are the arm doing what it was asked.
+fn is_section_header(line: &str, name: &str) -> bool {
+    let t = line
+        .trim()
+        .trim_start_matches('#')
+        .trim()
+        .trim_matches('*')
+        .trim()
+        .trim_end_matches(':')
+        .trim();
+    t.eq_ignore_ascii_case(name) || t.eq_ignore_ascii_case(&format!("{name}S"))
+}
+
+/// Any line that opens a new section, so one section's body stops at the next.
+fn opens_a_section(line: &str) -> bool {
+    line.trim_start().starts_with('#')
+        || ["CLAIM", "JUDGEMENT", "FOLLOWUP", "FINDING"]
+            .iter()
+            .any(|n| is_section_header(line, n))
+}
+
+/// The body of one named section, or empty when the critique has no such section.
+///
+/// Was `body.split("## JUDGEMENT")`, which is a Markdown heading. Fifty-four of the two
+/// hundred and eighty-two critiques on this machine write the section as a BARE uppercase
+/// line, exactly as `_critique.md` itself is laid out, and every one of them rendered in
+/// `fb brief` as a critic's name followed by nothing at all. The adjudicator could not tell
+/// them from a critic who wrote nothing.
+///
+/// It cost a real decision: glm-53-flash's review of gemini on stage-outcome carried both the
+/// observation that settled the merge and the first FOLLOWUP the new section has ever
+/// produced, and `fb brief` showed a blank line.  (bead farmerbob-b7c5)
+fn section(body: &str, name: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut inside = false;
+    for line in body.lines() {
+        if inside {
+            if opens_a_section(line) {
+                break;
+            }
+            out.push(line);
+        } else if is_section_header(line, name) {
+            inside = true;
+        }
+    }
+    while out.last().is_some_and(|l| l.trim().is_empty()) {
+        out.pop();
+    }
+    out.join("\n").trim().to_string()
 }
 
 fn judgements(task: &str) -> Vec<Judgement> {
@@ -68,24 +124,16 @@ fn judgements(task: &str) -> Vec<Judgement> {
             continue;
         };
         // keep only the JUDGEMENTS section; CLAIMS are executed elsewhere and must not be
-        // re-read as opinion here
-        let text = body
-            .split("## JUDGEMENT")
-            .nth(1)
-            // `strip_prefix`, not `trim_start_matches`. The heading may be JUDGEMENT or
-            // JUDGEMENTS, so exactly one trailing S is optional -- but trim_start_matches
-            // removes EVERY leading S, so a judgement opening "SPEC ambiguity ..." was
-            // silently rendered as "PEC ambiguity ...". Found by or-inkling while reviewing
-            // a different arm's port, in the tool this project adjudicates with.
-            .map(|s| {
-                let s = s.strip_prefix('S').unwrap_or(s);
-                s.split("\n## ").next().unwrap_or(s).trim().to_string()
-            })
-            .unwrap_or_default();
+        // re-read as opinion here. FOLLOWUPS is carried too: nothing else in the pipeline
+        // reads it, so until now the only transport from that section to `fb ledger` was the
+        // adjudicator happening to open the file by hand.
+        let text = section(&body, "JUDGEMENT");
+        let followups = section(&body, "FOLLOWUP");
         out.push(Judgement {
             critic: critic.into(),
             subject: subject.into(),
             text,
+            followups,
         });
     }
     out
@@ -272,8 +320,28 @@ pub fn run(task: &str, epsilon: f64, allow_missing_critique: bool) -> i32 {
     }
     for j in &js {
         println!("\n  {} on {}:", j.critic, j.subject);
+        if j.text.trim().is_empty() {
+            // Never print a critic's name over silence. A critique that exists and renders
+            // as nothing is indistinguishable from a critic who found nothing, which is the
+            // whole defect this file keeps rediscovering.
+            println!("    (no JUDGEMENTS section parsed -- read the file itself:)");
+            println!(
+                "    {}",
+                logs()
+                    .join("critiques")
+                    .join(task)
+                    .join(format!("{}.on.{}.md", j.critic, j.subject))
+                    .display()
+            );
+        }
         for line in j.text.lines().filter(|l| !l.trim().is_empty()).take(6) {
             println!("    {}", line.trim());
+        }
+        if !j.followups.trim().is_empty() {
+            println!("    -- FOLLOWUPS proposed (rule on these, then `fb ledger --record`):");
+            for line in j.followups.lines().filter(|l| !l.trim().is_empty()).take(6) {
+                println!("       {}", line.trim());
+            }
         }
     }
 
