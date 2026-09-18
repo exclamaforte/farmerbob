@@ -637,3 +637,5 @@ mod binary_crate_roots {
         assert!(module_declarations_for("").is_empty());
     }
 }
+
+

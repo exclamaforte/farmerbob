@@ -145,6 +145,33 @@ if blk:
         open(target, 'a').write('\n' + blk.group(0))
 PYG
       if ! cargo test -p "$crate" "$marker" 2>&1 | grep -qE "^test .*$marker.*ok$"; then
+        # THE TEST FAILS, SO IT CANNOT JOIN A GREEN SUITE -- BUT THE FINDING IS REAL.
+        #
+        # This used to retract and stop, and the finding then existed nowhere. The better the
+        # critic, the more likely its finding is about the arm that WON, and the more certainly
+        # it was discarded: escalation wrote the test, watched it fail BECAUSE the defect is
+        # real and unfixed, and threw it away.
+        #
+        # `fb fate` asks farmerbob_core::finding_fate what should happen instead of this shell
+        # deciding a second time -- four copies of the verdict logic is how this harness got
+        # here. It answers FILE-AS-KNOWN-DEFECT for exactly this case.
+        if [ -x "$REPO_ESC/target/debug/fb" ]; then
+          kd="$REPO_ESC/.fb/known-defects"; mkdir -p "$kd"
+          fate=$("$REPO_ESC/target/debug/fb" fate "$T" --veto failed 2>/dev/null \
+                 | grep -F "$subj" | head -1)
+          case "$fate" in
+            *FILE-AS-KNOWN-DEFECT*)
+              {
+                printf '\n## %s -- %s on %s\n' "$(date -Is)" "$critic" "$subj"
+                printf '%s\n\n' "$fate"
+                printf 'The escalated test failed against the merged reference, so it was not\n'
+                printf 'added to the suite. The finding was confirmed and is recorded here so\n'
+                printf 'it survives the retraction.\n'
+              } >> "$kd/$T.md"
+              echo "  $subj: recorded as a known defect -> .fb/known-defects/$T.md"
+              ;;
+          esac
+        fi
         echo "  $subj: VETOED against the merged reference -- retracting"
         python3 -c "
 import re,sys
