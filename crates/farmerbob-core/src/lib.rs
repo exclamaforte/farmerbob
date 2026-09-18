@@ -75,6 +75,7 @@ pub mod timing;
 pub mod verifier;
 pub mod vrouter;
 pub mod wave_plan;
+pub mod window;
 pub mod witness;
 pub mod wtalloc;
 pub mod wtreap;

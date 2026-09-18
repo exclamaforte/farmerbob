@@ -1,0 +1,51 @@
+MERGED or-ling-30-flash
+4/4 PASS.
+
+  arm                 tests  lines  clippy  survival  suite
+  gemini-38-flash        18    480       0      1.00  no signal
+  ifm-k2-horizon         26    354       8      0.00  no signal
+  or-ling-30-flash       25    292       0      1.00  no signal
+  or-nemotron-ultra      21    277       0       n/a  discriminating (1 cell)
+
+THE SPEC CRITIQUE CONVERGED THE FIELD INSTEAD OF SPLITTING IT. All four arms, before writing
+any code, named the same contradiction: clause 1 says `seconds_left` is truncated toward zero
+while clause 3 and the type doc require `Open` to be strictly positive, and my boundary
+paragraph claimed to resolve it "the way clause 3 requires" while saying the opposite of what
+clause 3 says. All four then resolved it identically -- report 1 rather than truncate. Compare
+field-shape, where a boundary I delegated and nobody flagged split the field three ways. This
+is the first direct evidence that the pre-implementation critique changes outcomes and not
+just the record.
+
+THE ONE FAILING CELL IS MY SPEC, NOT AN ARM. or-nemotron-ultra's suite fails ifm-k2-horizon on
+`read_naive_with_fractional_seconds` ("2024-01-01T12:00:01.500"), because ifm parses only
+"%Y-%m-%dT%H:%M:%S" for a naive timestamp. Three arms had already reported that "RFC 3339 with
+no offset" names a format that does not exist -- RFC 3339 mandates an offset -- so what counts
+as the required naive form was never pinned. gemini's critique reaches the same conclusion
+unprompted: ifm is "fully conforming" under the superset rule. The cell is vetoed by the
+adjudicator. The crossx SPEC-AMBIGUOUS line is separately void (farmerbob-gzxg: all nine such
+verdicts ever printed are false partitions).
+
+winner: or-ling-30-flash, on its debut. 25 distinct behaviours pinned in 99 lines of
+implementation -- a third the size of gemini's -- clippy clean, survival 1.00, `///` on every
+public item, and a `read` that spells out all three cases rather than leaning on a comparison
+to fall through. Criterion 4 asks for tests that pin distinct behaviours rather than volume,
+and this is the densest suite in the field.
+
+ifm-k2-horizon: OUT on clippy=8, seven of them "useless conversion to the same type: String".
+Criterion 3 is clippy clean. Its 26 tests were the most in the field and its critique of
+or-ling was the sharpest single observation of the wave.
+
+or-nemotron-ultra: its suite is the only discriminating one and it discriminates on formats the
+spec never pinned, twice -- the fractional-naive case above and `read_unparseable_invalid_format`.
+or-ling named the mechanism exactly: "will fail cross-examination against any rival that accepts
+broader formats -- exactly the case the spec warns against."
+
+known defect recorded against the winner: ifm-k2-horizon found that two of or-ling's three
+sub-second tests assert `seconds_left >= 1` where the spec pins exactly 1, so they would not
+catch a decrement-after-clamp bug. Only the 1500ms case pins `== 1`.
+
+THE MODULE HAS NO CALLER AND THE GAP IS STILL OPEN. gemini-38-flash's followup, verified:
+crates/fb/src/sources.rs never parses `expires_at`, so `Registry::eligible` returns Ok for an
+arm whose window has closed, and crates/fb/src/status.rs has no time-boxed section at all. The
+incident this module was written to prevent -- an arm running 1h47m past its expiry -- is still
+reachable through the Rust path, and the shell heredoc that reports it does not enforce it.
