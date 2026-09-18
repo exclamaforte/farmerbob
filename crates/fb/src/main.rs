@@ -7,6 +7,7 @@ mod differential;
 mod doctor;
 mod eligible;
 mod escalate;
+mod fate_cmd;
 mod import;
 mod ledger_cmd;
 mod mutants;
@@ -137,6 +138,16 @@ enum Command {
     /// nothing -- and one such was submitted, passing build, scope, lint and its own tests --
     /// satisfies every other check we own. This one it cannot satisfy.
     Differential { task: String },
+    /// Decide what should happen to each of a task's confirmed findings.
+    ///
+    /// The bridge fb-escalate.sh needs: shell asks, farmerbob_core::finding_fate decides.
+    Fate {
+        /// The adjudicated task.
+        task: String,
+        /// What the escalated test did against the merged reference.
+        #[arg(long)]
+        veto: String,
+    },
     /// Decide whether a finished run should park its arm, and how wide.
     ///
     /// The first caller of the quota chain. Every rule lives in farmerbob-core; this
@@ -620,6 +631,7 @@ fn main() {
         Some(Command::Status) => status::run_cmd(),
         Some(Command::Eligible { arm }) => eligible::run_cmd(&arm),
         Some(Command::Differential { task }) => differential::run_cmd(&task),
+        Some(Command::Fate { task, veto }) => fate_cmd::run_cmd(&task, &veto),
         Some(Command::Park {
             task,
             arm,

@@ -1,0 +1,61 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-18. Three arms, three PASS.
+
+  glm-53-flash       PASS  710L  19 tests  clippy 0   966s
+  gemini-38-flash    PASS  679L  18 tests  clippy 1   513s
+  or-nemotron-ultra  PASS  321L  14 tests  clippy 1  1540s
+
+  impl \ suite            gemini-38 glm-53-fl or-nemotr
+  gemini-38-flash          .         nocomp    .
+  glm-53-flash             FAIL      .         .
+  or-nemotron-ultra        .         nocomp    .
+
+BOTH CROSSX SIGNALS TRACE TO MY SPEC.
+
+gemini's suite fails glm on `boundary_all_claims_skipped_returns_2`, and gemini's own critique
+names it as unpinned rather than claiming the win:
+
+  "This reveals an unpinned boundary between two clauses: 'Zero findings decided is not success
+   (exit 2)' versus 'do NOT let it change the exit code of the others' ... creates an asymmetry
+   where an empty array `{\"claims\": []}` exits 2 while `{\"claims\": [{}]}` exits 0."
+
+Correct on both counts. Vetoed.
+
+glm's suite does not compile against either rival: it added `decide_all(&Path, &Path)` and an
+`Outcome` type and tested through them. That is the fifth occurrence of the unpinned-API pattern
+-- and this time it is mine twice over. The rule that warns about it was added to `_rubric.md`
+and NOTHING READS THAT FILE; every spec carries a frozen copy of another spec's tail, so glm was
+never shown it. And the deeper cause is the pinned signature: `run_cmd(task, veto)` reads its
+paths from `crate::paths` with no injection point, so an arm can either mutate the process
+environment or add a parameterized helper. or-nemotron took the first road and glm found the
+cost of it:
+
+  "`with_env` mutates FB_REPO/FB_LOGS under a module-local mutex, never restored -- the failure
+   paths.rs documents and status.rs avoids via parameters."
+
+gemini praised glm for taking the second: "Parameterizing `decide_all` with `&Path` roots rather
+than querying global environment variables is well reasoned. It allows tests to construct
+isolated temporary trees and avoids process-wide environment mutation races."
+
+So the same choice that made glm's suite non-portable is the one both rivals' critics call
+correct, and the fixed signature left no third option. Vetoed, and filed against the spec.
+
+glm's other two findings on or-nemotron: `run_cmd` never returns 1 although its doc promises 1
+for I/O failure -- my clause 8 contradicts my own signature doc, filed -- and `MERGED ` with no
+arm parses to `Ok("")`, deciding claims against a record that names no winner.
+
+DECISION. glm on 19 tests to 18 and 14, on the only clippy 0 (gemini's warning is a pre-existing
+`home is never used` in another file, not in its deliverable), on the design both other critics
+endorse, and on finding the real defect in the field. Its lost crossx signal is real and is not
+its fault.
+
+Verified on real data after merging:
+
+  fb fate cell-record --veto failed
+  gemini-38-flash on glm-53-flash: FILE-AS-KNOWN-DEFECT -- test fails against merged code
+  fb fate cell-record --veto nonsense  -> rc=2
+
+That first line is exactly the finding this whole chain exists to save: gemini's confirmed defect
+in glm, the arm that won, which escalation would have retracted into nothing.
+
+428 fb tests, clippy 8.
