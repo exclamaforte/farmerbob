@@ -57,7 +57,18 @@ after an earlier crate's `ok.` -- is real, was found by gemini, and is filed rat
 on the way in, because editing a winner's diff during a merge puts the adjudicator's preferences
 into the record unmeasured.
 
-or-nemotron-ultra produced nothing at rc=1 after 963s. Third such failure in recent waves from
-the arm with the best spec-critique record in the project.
+or-nemotron-ultra produced nothing at rc=1 after 963s.
+
+CORRECTION, recorded because I nearly acted on the opposite. I wrote here that this was its
+"third such failure in recent waves", and on `roster` that it had "failed to implement twice in
+a row". I then pulled the record:
+
+  wave63 PASS  wave64 PASS  wave65 PASS  wave66 PASS  wave68 PASS  wave69 PASS
+  wave71 PASS  wave73 PASS  wave74 NO-OP wave77 PASS  wave78 PASS  wave79 NO-OP
+
+Ten of twelve. The NO-OPs are not consecutive and there is no decline. I had assembled a
+narrative from the two failures I happened to adjudicate closely and was one step from dropping
+the arm with twelve accepted spec findings at 86%, the best critic record in the project. The
+ledger and the wave logs disagreed with my recollection and they are right.
 
 1437 core tests, clippy 9, farmerbob-core clippy 0.
