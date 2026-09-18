@@ -80,10 +80,7 @@ fn field(line: &str, key: &str) -> Option<String> {
                 't' => out.push('\t'),
                 'u' => {
                     let hex: String = chars.by_ref().take(4).collect();
-                    match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
-                        Some(c) => out.push(c),
-                        None => return None,
-                    }
+                    out.push(u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)?);
                 }
                 other => out.push(other),
             },
