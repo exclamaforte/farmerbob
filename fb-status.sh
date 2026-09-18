@@ -48,7 +48,19 @@ if rows:
     print("\n".join(rows))
 PYEOF
 
-live=$(systemctl --user list-units --type=scope --no-legend 2>/dev/null \
+# --state=running: a FAILED scope is not a live agent.
+#
+# These counts read `systemctl list-units --type=scope`, which lists failed units alongside
+# running ones. glm-53-flash hit the 45-minute RuntimeMaxSec on crossx-cells, systemd killed it
+# (rc=143) and left the scope in `loaded failed` with no process behind it -- and fb-status
+# reported it as a live agent indefinitely, until someone reset it by hand.
+#
+# Not cosmetic. The autopilot subtracts `live` from the slot count, so every failed scope
+# permanently consumes a dispatch slot; and live_tasks feeds the target-collision guard, so a
+# dead task would hold a queued wave forever. A machine loses capacity one timeout at a time.
+#
+# Same shape as every other bug in this harness: a dead thing that looks alive.
+live=$(systemctl --user list-units --type=scope --state=running --no-legend 2>/dev/null \
        | grep -o 'fb-[a-z0-9-]*--[a-z0-9_-]*' | sed 's/^fb-//' | sort -u)
 nlive=$(printf '%s' "$live" | grep -c . || true)
 waves=$(pgrep -cf "fb-admit\.sh" 2>/dev/null | head -1); waves=${waves:-0}

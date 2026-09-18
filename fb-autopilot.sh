@@ -59,7 +59,7 @@ free_slots() {
 
 # Tasks with a live agent, from the scope unit names (fb-<task>--<arm>.scope).
 live_tasks() {
-  systemctl --user list-units --type=scope --no-legend 2>/dev/null \
+  systemctl --user list-units --type=scope --state=running --no-legend 2>/dev/null \
     | grep -oE 'fb-[a-z0-9-]+--[a-z0-9.-]+\.scope' \
     | sed -e 's/^fb-//' -e 's/--[a-z0-9.-]*\.scope$//' | sort -u
 }
@@ -88,7 +88,9 @@ beat() { printf '%s pid=%s %s\n' "$(date -Is)" "$$" "$*" > "$BEAT"; }
 say "autopilot up (pid $$)"; beat "starting"
 
 while :; do
-  live=$(systemctl --user list-units --type=scope --no-legend 2>/dev/null \
+  # --state=running: a failed scope is not a live agent, and subtracting one from the slot
+  # count forever is how a machine loses capacity one timeout at a time. See fb-status.sh.
+  live=$(systemctl --user list-units --type=scope --state=running --no-legend 2>/dev/null \
          | grep -c 'fb-[a-z0-9-]*--.*\.scope' || true)
   waves=$(pgrep -f 'fb-admit\.sh' 2>/dev/null | wc -l)
 
