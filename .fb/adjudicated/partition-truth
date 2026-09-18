@@ -1,0 +1,48 @@
+MERGED glm-53-flash
+3 PASS, 1 NO-OP (ifm-k2-horizon, over its provider's daily token cap). 3x3 all-pass matrix, no
+discrimination: all three implementations agree, and all three are right.
+
+  arm                added tests  asserts  lines
+  codex-luna                   4       12    112
+  gemini-38-flash             23       24    318
+  glm-53-flash                22       23    229
+
+All three delete the camp-building and validity code entirely, delegate to
+farmerbob_core::field_shape::shape, and drop the arms.len() < 4 guard. The P0 is closed:
+detect_partition no longer decides, it formats.
+
+GLM WAS NEARLY LOST TO THE HARNESS. Its run was recorded NO-OP rc=0 +0 lines after 1136s. The
+work was real -- 229 insertions, 100 deletions -- and it had COMMITTED it to its branch, so
+score.rs's `git diff HEAD` saw a clean tree. A committed implementation and a genuine no-op
+produce byte-identical scores. Filed farmerbob-qv6u (P0) and salvaged with `git reset --soft
+master`, which changes the arm's output not at all. Audited: exactly one run on this machine is
+affected.
+
+winner: glm-53-flash, and gemini-38-flash's critique makes the case in detail -- the suite
+"covers all nine historical false-verdict matrices individually, pairs genuine partition with
+the single-cell flip (Clauses 4 & 5), pins three-arm two-plus-one split resolution to
+`Isolated`, pins two-arm mutual rejection and unanimity, tests zero/one/four arm boundaries,
+verifies behavior with unmeasurable and error cells, tests non-partition shapes by name, and
+verifies that multi-camp partitions (>2 camps) render every camp." That three-arm pin is the
+contradiction glm itself found in the spec critique, carried through into a test.
+
+codex-luna is the interesting case and it is NOT the thin suite its count suggests. Its four
+tests are table-driven: one loops over all nine historical matrices, one asserts the genuine
+partition AND its one-cell mutation together with the comment "either assertion alone admits a
+constant implementation", one covers five boundaries in a single body. It covers the same
+ground in 111 lines that gemini takes 317 to cover. Test-function count is not coverage, and
+this project uses it as a proxy in three places. (farmerbob-aqg2)
+
+gemini-38-flash: correct and thorough, and codex's critique lands the one real observation --
+it duplicates the nine historical matrices across two test bodies. Redundant rather than
+defective, but it is the same rule in two places, on the task about the same rule in two places.
+
+THREE FOLLOWUPS, ALL VERIFIED, ALL ACCEPTED. glm found both of the substantial ones:
+  - crossx.rs:42 hardcodes /home/gabe/Documents/farmerbob as repo_root, while
+    crates/fb/src/paths.rs:60 already exports repo(). The correct function exists; this one
+    caller does not use it.
+  - format_suite_verdict classifies Inconclusive as "NoEvidence" by string-matching reason
+    prose -- reason.contains("empty witness slice") -- at crossx.rs:554, and the test at 3186
+    asserts the same substrings, so it locks the coupling in rather than testing behaviour.
+    That is the rubric's own "a field the spec calls prose is not a field your tests may quote",
+    found in the harness.

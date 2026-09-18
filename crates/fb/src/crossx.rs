@@ -23,6 +23,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use farmerbob_core::cell_record::{self, Breakage, is_instrument_fault};
 use farmerbob_core::crossx::{Cell, Matrix};
+use farmerbob_core::field_shape::{self, Shape};
 use farmerbob_core::measurement::Measurement;
 use farmerbob_core::witness::Witness;
 use serde::Serialize;
@@ -215,67 +216,29 @@ pub fn diagonal_bad(arms: &[String], cells: &Matrix) -> Vec<String> {
 
 /// Detect the partition shape: arms split into self-consistent camps that pass
 /// within themselves and fail across. Returns the joined camp description
-/// (`{a,b} | {c,d}`) when the field partitions, or `None` when it does not
-/// (too few arms, no clean split, or the split is not internally consistent).
+/// (`{a,b} | {c,d}`) when the field partitions, or `None` when it does not.
 ///
-/// Mirrors the script's `detect_partition`: `camp(a)` is the set of suites `a`'s
-/// implementation passes, arms are grouped by equal camp, and a valid partition
-/// requires at least two camps, every member inside its camp, and every
-/// cross-camp cell a failure.
+/// Delegates to [`farmerbob_core::field_shape::shape`], which enforces the
+/// property directly, in both directions, with `(Some(Fail), Some(Fail))`.
+/// This function formats; it does not decide: `Some` only when `shape`
+/// observes `Shape::Partition`, `None` for every other shape and for every
+/// `Measurement::Missing`.
+///
+/// `arms` is kept because the signature is pinned, and does nothing: the
+/// camps arrive from `field_shape` as names, so rendering needs no arm list.
+/// The old arm-count floor is gone with the rest of the answer it proxied for
+/// — `field_shape` already never reports `Partition` below four arms, and a
+/// second copy of that rule is how the false verdicts survived.
 pub fn detect_partition(arms: &[String], cells: &Matrix) -> Option<String> {
-    if arms.len() < 4 {
-        return None;
-    }
-    let mut camps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for a in arms {
-        let mut camp = BTreeSet::new();
-        for s in arms {
-            if cells.get(a, s) == Some(Cell::Pass) {
-                camp.insert(s.clone());
-            }
-        }
-        camps.insert(a.clone(), camp);
-    }
-
-    // Group arms by equal camp, preserving first-appearance order (the script's
-    // dict preserves insertion order).
-    let mut groups: Vec<(BTreeSet<String>, Vec<String>)> = Vec::new();
-    for (a, c) in &camps {
-        if let Some(pos) = groups.iter().position(|(k, _)| k == c) {
-            groups[pos].1.push(a.clone());
-        } else {
-            groups.push((c.clone(), vec![a.clone()]));
-        }
-    }
-    if groups.len() < 2 {
-        return None;
-    }
-
-    for (camp, members) in &groups {
-        // Every member must be inside its own camp.
-        if members.iter().any(|m| !camp.contains(m)) {
-            return None;
-        }
-        // Every member must fail every arm outside the camp.
-        for m in members {
-            for other in arms {
-                if camp.contains(other) {
-                    continue;
-                }
-                if cells.get(m, other) != Some(Cell::Fail) {
-                    return None;
-                }
-            }
-        }
-    }
-
-    let parts: Vec<String> = groups
+    let _ = arms;
+    let shape = field_shape::shape(cells);
+    let camps = match shape.value() {
+        Some(Shape::Partition { camps }) => camps,
+        _ => return None,
+    };
+    let parts: Vec<String> = camps
         .iter()
-        .map(|(_, members)| {
-            let mut sorted = members.clone();
-            sorted.sort();
-            format!("{{{}}}", sorted.join(","))
-        })
+        .map(|camp| format!("{{{}}}", camp.join(",")))
         .collect();
     Some(parts.join(" | "))
 }
@@ -2298,60 +2261,226 @@ mod tests {
         assert!(diagonal_bad(&arms, &m).is_empty());
     }
 
-    #[test]
-    fn detect_partition_finds_two_self_consistent_camps() {
-        let arms = vec![
-            "A".to_string(),
-            "B".to_string(),
-            "C".to_string(),
-            "D".to_string(),
-        ];
-        // Camp {A,B} passes within, fails across; {C,D} likewise.
-        let cells = vec![
-            Cell::Pass,
-            Cell::Pass,
-            Cell::Fail,
-            Cell::Fail,
-            Cell::Pass,
-            Cell::Pass,
-            Cell::Fail,
-            Cell::Fail,
-            Cell::Fail,
-            Cell::Fail,
-            Cell::Pass,
-            Cell::Pass,
-            Cell::Fail,
-            Cell::Fail,
-            Cell::Pass,
-            Cell::Pass,
-        ];
+    /// Build a square matrix from row strings: row i is implementation i,
+    /// column j is suite j, `P` = pass, `F` = fail, anything else = error.
+    /// Row-major, as `build_matrix` fills it; arms are named a, b, c, ...
+    fn partition_matrix(rows: &[&str]) -> (Vec<String>, Matrix) {
+        let arms: Vec<String> = (0..rows.len())
+            .map(|i| char::from(b'a' + i as u8).to_string())
+            .collect();
+        let mut cells = Vec::new();
+        for row in rows {
+            assert_eq!(row.chars().count(), rows.len(), "rows must be square");
+            for ch in row.chars() {
+                cells.push(match ch {
+                    'P' => Cell::Pass,
+                    'F' => Cell::Fail,
+                    _ => Cell::Error,
+                });
+            }
+        }
         let m = Matrix::new(arms.clone(), arms.clone(), cells).unwrap();
+        (arms, m)
+    }
+
+    /// Clause 4. A genuine partition still returns Some, rendered as camps
+    /// joined by `" | "`, each camp's members joined by `","` — the exact
+    /// string the caller prints.
+    #[test]
+    fn detect_partition_returns_some_for_a_genuine_partition() {
+        let (arms, m) = partition_matrix(&["PPFF", "PPFF", "FFPP", "FFPP"]);
         assert_eq!(
             detect_partition(&arms, &m),
-            Some("{A,B} | {C,D}".to_string())
+            Some("{a,b} | {c,d}".to_string())
         );
     }
 
+    /// Clauses 4 and 5 are one argument in two directions and must be tested
+    /// as a pair: clause 4 alone passes against an implementation that returns
+    /// Some for everything, clause 5 alone against one that returns None for
+    /// everything. One flipped cross-camp cell is the whole difference.
     #[test]
-    fn detect_partition_is_none_for_few_arms() {
-        let arms = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let cells = vec![Cell::Pass; 9];
-        let m = Matrix::new(arms.clone(), arms.clone(), cells).unwrap();
+    fn detect_partition_returns_none_when_one_cross_camp_cell_flips() {
+        // Impl a now passes suite c; the camps no longer separate.
+        let (arms, m) = partition_matrix(&["PPPF", "PPFF", "FFPP", "FFPP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+        // The mirrored direction: the flip read from the other side.
+        let (arms, m) = partition_matrix(&["PPFF", "PPFF", "PFPP", "FFPP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    /// Clause 3: the nine real tables this harness printed, every one a false
+    /// verdict under the old camp-set code — `window-state` has ONE failing
+    /// cell and still got the verdict. Each must return None now, and each
+    /// returned Some under the old implementation, so each pins the fix.
+    #[test]
+    fn detect_partition_historical_availability_returns_none() {
+        let (arms, m) = partition_matrix(&["PPFP", "PPFP", "FFPF", "PFFP"]);
         assert_eq!(detect_partition(&arms, &m), None);
     }
 
     #[test]
-    fn detect_partition_is_none_when_single_camp() {
-        // All four arms pass every suite: one camp, so no partition.
-        let arms = vec![
-            "A".to_string(),
-            "B".to_string(),
-            "C".to_string(),
-            "D".to_string(),
-        ];
-        let cells = vec![Cell::Pass; 16];
-        let m = Matrix::new(arms.clone(), arms.clone(), cells).unwrap();
+    fn detect_partition_historical_budget_returns_none() {
+        let (arms, m) = partition_matrix(&["PFPF", "PPPF", "PFPF", "FFFP"]);
         assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    #[test]
+    fn detect_partition_historical_field_shape_returns_none() {
+        let (arms, m) = partition_matrix(&["PFPP", "PPPF", "PFPF", "PFPP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    #[test]
+    fn detect_partition_historical_gate_returns_none() {
+        let (arms, m) = partition_matrix(&["PPPP", "PPPF", "PPPP", "PPPP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    #[test]
+    fn detect_partition_historical_matrix_returns_none() {
+        let (arms, m) = partition_matrix(&["PPPP", "PPPP", "PFPF", "PPPP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    #[test]
+    fn detect_partition_historical_precondition_returns_none() {
+        let (arms, m) = partition_matrix(&["PFPP", "PPPP", "PFPP", "PPPP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    #[test]
+    fn detect_partition_historical_resume_returns_none() {
+        let (arms, m) = partition_matrix(&["PFFP", "FPFF", "PFPP", "PFFP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    #[test]
+    fn detect_partition_historical_scope_returns_none() {
+        let (arms, m) = partition_matrix(&["PPFP", "FPFF", "PPPP", "PPFP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    #[test]
+    fn detect_partition_historical_window_state_returns_none() {
+        let (arms, m) = partition_matrix(&["PPPP", "PPPF", "PPPP", "PPPP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    /// Clause 6. The `arms.len() < 4` floor is removed, and removing it
+    /// changes nothing at three arms — but the reason is a specific fact, not
+    /// "not a partition": a three-arm two-plus-one split is `Isolated` (the
+    /// lone arm fails every foreign suite in both directions while every
+    /// other pair passes both ways), and `field_shape` checks `Isolated`
+    /// before `Partition`, so `Partition` is unreachable at three arms.
+    #[test]
+    fn detect_partition_three_arm_two_plus_one_split_returns_none_as_isolated() {
+        let (arms, m) = partition_matrix(&["PPF", "PPF", "FFF"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    /// Clause 6: a two-arm mutual rejection returns None.
+    #[test]
+    fn detect_partition_two_arm_mutual_rejection_returns_none() {
+        let (arms, m) = partition_matrix(&["PF", "FP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    /// Boundary at zero: no implementations, `field_shape` returns Missing.
+    #[test]
+    fn detect_partition_zero_arms_returns_none() {
+        let arms: Vec<String> = Vec::new();
+        let m = Matrix::new(Vec::new(), Vec::new(), Vec::new()).unwrap();
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    /// Boundary at one: no off-diagonal cells, Missing.
+    #[test]
+    fn detect_partition_one_arm_returns_none() {
+        let (arms, m) = partition_matrix(&["P"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    /// Two arms never partition, whatever the cells say: unanimity at two is
+    /// `Unanimous`, not a partition of {a} | {b}.
+    #[test]
+    fn detect_partition_two_arm_unanimous_returns_none() {
+        let (arms, m) = partition_matrix(&["PP", "PP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    /// Every off-diagonal cell errored: Missing, so None.
+    #[test]
+    fn detect_partition_all_off_diagonal_errors_return_none() {
+        let (arms, m) = partition_matrix(&["PEE", "EPE", "EEP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    /// Some cells errored: `field_shape` excludes them and its answer
+    /// governs. Assert the behaviour, not the mechanism — this matrix is
+    /// Mixed, so None.
+    #[test]
+    fn detect_partition_some_error_cells_mixed_returns_none() {
+        let (arms, m) = partition_matrix(&["PPE", "PPE", "EFP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    /// ...and exclusion can go the other way: an arm unmeasurable in every
+    /// direction simply does not appear, and the remaining measured field can
+    /// still partition. Again the behaviour, not the mechanism — d is absent
+    /// from the camps because nothing measured it, not because this function
+    /// dropped it.
+    #[test]
+    fn detect_partition_unmeasurable_arm_excluded_partition_still_some() {
+        let (arms, m) = partition_matrix(&["PPFE", "PPFE", "FFPE", "EEEP"]);
+        assert_eq!(detect_partition(&arms, &m), Some("{a,b} | {c}".to_string()));
+    }
+
+    /// A diagonal that is not all-pass is the caller's VOID check, upstream
+    /// and before this function is reached. No second diagonal check lives
+    /// here, so a genuine partition whose diagonal failed still returns Some.
+    #[test]
+    fn detect_partition_failed_diagonal_does_not_block_a_genuine_partition() {
+        let (arms, m) = partition_matrix(&["FPFF", "PFFF", "FFFP", "FFPF"]);
+        assert_eq!(
+            detect_partition(&arms, &m),
+            Some("{a,b} | {c,d}".to_string())
+        );
+    }
+
+    /// Clause 1 by name: `Unanimous` is None.
+    #[test]
+    fn detect_partition_unanimous_at_three_arms_returns_none() {
+        let (arms, m) = partition_matrix(&["PPP", "PPP", "PPP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    /// Clause 1 by name: `MutualRejection` is None.
+    #[test]
+    fn detect_partition_mutual_rejection_at_three_arms_returns_none() {
+        let (arms, m) = partition_matrix(&["FFF", "FFF", "FFF"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    /// Clause 1 by name: one arm against the field, with the rest agreeing,
+    /// is `Isolated` — not a partition — even at four arms, where Some is
+    /// otherwise reachable.
+    #[test]
+    fn detect_partition_isolated_at_four_arms_returns_none() {
+        let (arms, m) = partition_matrix(&["PFFF", "FPPP", "FPPP", "FPPP"]);
+        assert_eq!(detect_partition(&arms, &m), None);
+    }
+
+    /// The composition pin: every camp the variant carries is rendered, in
+    /// the order `field_shape` carries them, none dropped or merged — three
+    /// camps join exactly like two.
+    #[test]
+    fn detect_partition_three_camps_render_every_camp_carried() {
+        let (arms, m) = partition_matrix(&["PPFF", "PPFF", "FFPF", "FFFP"]);
+        assert_eq!(
+            detect_partition(&arms, &m),
+            Some("{a,b} | {c} | {d}".to_string())
+        );
     }
 
     #[test]
