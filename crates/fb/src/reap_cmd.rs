@@ -25,10 +25,8 @@ fn dirs_on_disk(root: &std::path::Path) -> std::io::Result<Vec<String>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            if let Some(n) = entry.file_name().to_str() {
-                out.push(n.to_string());
-            }
+        if let (true, Some(n)) = (entry.file_type()?.is_dir(), entry.file_name().to_str()) {
+            out.push(n.to_string());
         }
     }
     out.sort();
