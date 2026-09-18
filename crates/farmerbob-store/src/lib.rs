@@ -4,6 +4,7 @@
 //! and CRUD operations for all domain entities. Every multi-statement
 //! write runs inside a transaction.
 
+pub mod batch;
 pub mod migrate;
 
 mod error;

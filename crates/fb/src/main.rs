@@ -12,10 +12,10 @@ mod ledger_cmd;
 mod mutants;
 mod objective;
 mod pareto;
+mod park_cmd;
 mod paths;
 mod promote;
 mod prove;
-mod park_cmd;
 mod reap_cmd;
 mod score;
 mod select;
@@ -607,8 +607,12 @@ fn main() {
         Some(Command::Status) => status::run_cmd(),
         Some(Command::Eligible { arm }) => eligible::run_cmd(&arm),
         Some(Command::Differential { task }) => differential::run_cmd(&task),
-        Some(Command::Park { task, arm, apply, backoff_secs }) =>
-            park_cmd::run_cmd(&task, &arm, apply, backoff_secs),
+        Some(Command::Park {
+            task,
+            arm,
+            apply,
+            backoff_secs,
+        }) => park_cmd::run_cmd(&task, &arm, apply, backoff_secs),
         Some(Command::Reap {
             execute,
             unregister,

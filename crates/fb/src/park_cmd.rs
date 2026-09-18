@@ -15,8 +15,8 @@
 //! words -- which is the whole reason `park_grounds` added a field for it.
 
 use farmerbob_core::limit_signal::SignalRules;
-use farmerbob_core::outcome::{classify, RunFacts};
-use farmerbob_core::park_decision::{decide, grounds, Decision};
+use farmerbob_core::outcome::{RunFacts, classify};
+use farmerbob_core::park_decision::{Decision, decide, grounds};
 use farmerbob_core::quota::{Blast, Registry, Source};
 use std::collections::BTreeMap;
 
@@ -104,7 +104,6 @@ fn blast_word(b: Blast) -> &'static str {
     }
 }
 
-
 /// An epoch-millisecond instant as RFC3339 UTC, without pulling in a date crate
 /// this binary does not otherwise use. Days-from-civil, the standard algorithm.
 fn format_instant(ms: u64) -> String {
@@ -167,7 +166,9 @@ pub fn run_cmd(task: &str, arm: &str, apply: bool, default_backoff_secs: u64) ->
 
     match &d {
         Decision::Leave => {
-            println!("{task}--{arm}: {class:?} -> leave. This run says nothing about availability.");
+            println!(
+                "{task}--{arm}: {class:?} -> leave. This run says nothing about availability."
+            );
             0
         }
         Decision::ParkUntil { arms, blast, .. } | Decision::ParkFor { arms, blast, .. } => {
@@ -193,7 +194,9 @@ pub fn run_cmd(task: &str, arm: &str, apply: bool, default_backoff_secs: u64) ->
             }
             if !apply {
                 println!();
-                println!("DRY RUN. sources.toml was not changed. Re-run with --apply to park these arms.");
+                println!(
+                    "DRY RUN. sources.toml was not changed. Re-run with --apply to park these arms."
+                );
                 return 0;
             }
             match apply_parks(&when, arms) {
@@ -227,7 +230,9 @@ fn apply_parks(when: &str, arms: &[String]) -> Result<usize, String> {
         }
         // Drop any existing parked_until for an arm we are about to re-park, so the
         // file never carries two.
-        let in_target = current.as_deref().is_some_and(|c| arms.iter().any(|a| a == c));
+        let in_target = current
+            .as_deref()
+            .is_some_and(|c| arms.iter().any(|a| a == c));
         if in_target && line.trim_start().starts_with("parked_until") {
             continue;
         }

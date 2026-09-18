@@ -1,0 +1,62 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-18. Three arms, three PASS. The first task outside farmerbob-core in this
+run of work, and the first with real I/O: SQLite, transactions, partial failure.
+
+  gemini-38-flash  PASS  490L  15 tests  clippy 0  622s   <- best suite, RULED OUT OF SCOPE
+  glm-53-flash     PASS  364L  12 tests  clippy 5  796s
+  claude-sonnet    PASS  324L   9 tests  clippy 0  257s
+
+Nine crossx cells, nine passes. Every arm implemented a real transaction and rolled back.
+
+GEMINI WROTE THE BEST SUITE IN THE FIELD AND I AM NOT MERGING IT.
+
+Its fifteen tests map one-to-one onto the spec -- clause1 through clause8 plus four boundaries --
+with 27 read-backs against the database where clause 2 demands verification by reading, and it
+is the only arm whose clause 8 test is named for the clause. I nearly recorded a false zero
+against it: my grep for clause-8 coverage was name-based and missed
+`clause8_failed_batch_leaves_no_transaction_open_subsequent_insert_succeeds`. Third false zero
+this week from a shape-dependent shortcut of mine; caught by reading the test list.
+
+claude-sonnet found why it cannot win, reviewing the diff:
+
+  "The handoff states the author 'exposed `pub(crate)` visibility on `Store.conn` and existing
+   state mapping helpers'. Nothing in the shown diff requires this: `batch` is declared
+   `pub mod batch;` from the crate root, and default (unmarked) visibility on root-defined items
+   is already visible to every descendant module."
+
+Verified against the diff:
+
+    -    conn: Connection,
+    +    pub(crate) conn: Connection,
+    -fn run_state_data_json(...)   -> +pub(crate) fn run_state_data_json(...)
+    -fn run_state_name(...)        -> +pub(crate) fn run_state_name(...)
+
+The disclosed gate permits exactly two things: the declared target, and ADDING `pub mod y;` to
+the lib.rs beside it. gemini edited three existing declarations in lib.rs, and sonnet is right
+that it did not need to -- Rust already gave it that visibility. A departure yields `OutOfScope`,
+which is not a pass, and applying that rule to the arm with the best suite is the only version
+of the rule worth having. farmerbob-vg0 cuts both ways: disclose what is scored, then score it.
+
+THE HARNESS DID NOT CATCH IT. The scope check compares FILE paths and lib.rs is permitted, so
+three unnecessary edits inside it scored clean. Filed.
+
+gemini on glm found the round's real spec gap:
+
+  "In `tx.commit().map_err(...)`, attributing failure to `index: 0` highlights an underdetermined
+   edge case ... If all row inserts succeed but COMMIT fails, the failure belongs to the
+   transaction as a whole rather than a specific input element. The `Rejected` type requires an
+   element index where none exists."
+
+Mine. `Rejected { index, cause }` has no transaction-level variant, so every arm had to name an
+innocent row. Filed.
+
+It also names why glm's shape is the durable one: glm delegates each row to the existing
+`insert_run` inside the transaction, so "if the schema or run state mapping evolves, the batch
+writer cannot silently drift from single-row writes" -- a property no test asserts and no count
+shows.
+
+DECISION. glm on 12 tests to 9, on that delegation, and on gemini being out of scope. Its five
+clippy warnings were four `&[x.clone()]` slice lints in test code plus the summary; I fixed them
+on merge and said so rather than merging a regression against a zero baseline.
+
+1433 workspace tests, clippy 9, farmerbob-store clippy 0.
