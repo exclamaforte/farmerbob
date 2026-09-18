@@ -64,12 +64,19 @@ pub struct RunRecord {
     pub duration_s: Option<i64>,
     #[serde(default)]
     pub lines_added: Option<u64>,
+    // Part of the on-disk run record and therefore part of the format this struct
+    // must accept; nothing in `fb import` reads them yet. Dropping them would make
+    // deserialisation of an existing record lossy, which is worse than an unused field.
+    #[allow(dead_code)]
     #[serde(default)]
     pub tests_run: Option<u64>,
+    #[allow(dead_code)]
     #[serde(default)]
     pub mem_peak_mb: Option<u64>,
+    #[allow(dead_code)]
     #[serde(default)]
     pub worktree: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     pub branch: Option<String>,
 }

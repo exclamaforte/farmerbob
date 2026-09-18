@@ -118,6 +118,36 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// The revision a worktree's work should be measured against: the point its
+/// branch left the base, so that committed and uncommitted work both count.
+///
+/// `None` means GIT REFUSED to read this worktree at all -- the pruned
+/// `.git/worktrees/<name>` case -- which is not the same as "no commits" and
+/// not the same as "no common ancestor".
+///
+/// Two observations, because one cannot tell the cases apart: `git merge-base
+/// HEAD master` exits 1 when the histories share no common ancestor and 128
+/// when the repository is unreadable, and `git` maps every non-zero status to
+/// `None`. So readability is established first with `rev-parse --git-dir`, and
+/// only then does a `None` from merge-base mean "no common ancestor" -- which
+/// measures against `HEAD`, reproducing the pre-merge-base behaviour for that
+/// worktree rather than calling it a refusal.
+fn measure_base(wt: &Path) -> Option<String> {
+    // Observation 1: is git answering in this worktree at all? Failing here is
+    // the only route to `None`.
+    git(wt, &["rev-parse", "--git-dir"])?;
+    // Observation 2: the fork point. `None` now means no common ancestor (or
+    // the unborn-HEAD corner, which diffs against `HEAD` exactly as today).
+    let sha = git(wt, &["merge-base", "HEAD", "master"]).and_then(|out| {
+        out.lines()
+            .next()
+            .map(str::trim)
+            .filter(|sha| !sha.is_empty())
+            .map(str::to_string)
+    });
+    Some(sha.unwrap_or_else(|| "HEAD".into()))
+}
+
 /// Whether any launcher process has `wt` as its working directory.
 ///
 /// This is process IDENTITY, not a name match on a command line: `pgrep -f` matching the
@@ -234,12 +264,21 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
 
     // Every line count below depends on git being able to read this worktree. If it cannot,
     // the count is MISSING, and the gate must return Indeterminate rather than blame the arm.
-    let numstat = git(wt, &["diff", "--numstat", "HEAD", "--", "crates/"]);
+    // ONE base for every reading of the diff -- the merge-base with master, so committed
+    // work counts -- because a count from the merge-base beside a path list from HEAD would
+    // let a file be counted and not listed. `base` is `None` exactly when git refused, and
+    // `None` numstat/tracked land in the existing Missing arm unchanged.
+    let base = measure_base(wt);
+    let numstat = base
+        .as_deref()
+        .and_then(|b| git(wt, &["diff", "--numstat", b, "--", "crates/"]));
     let untracked_raw = git(
         wt,
         &["ls-files", "--others", "--exclude-standard", "crates/"],
     );
-    let tracked = git(wt, &["diff", "--name-only", "HEAD", "--", "crates/"]);
+    let tracked = base
+        .as_deref()
+        .and_then(|b| git(wt, &["diff", "--name-only", b, "--", "crates/"]));
     let mut changed_paths: Option<Vec<String>> = None;
 
     let (lines, untracked, crates): (Measurement<u32>, Vec<String>, BTreeSet<String>) =
@@ -315,20 +354,19 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
     //
     // Deletions: `git diff --name-only` lists a deleted path like any other, so the two are
     // told apart by asking git for the status letters separately. A path git cannot report
-    // on at all leaves the whole assessment Missing rather than empty.
-    let deleted: Vec<String> = git(
-        wt,
-        &[
-            "diff",
-            "--name-only",
-            "--diff-filter=D",
-            "HEAD",
-            "--",
-            "crates/",
-        ],
-    )
-    .map(|o| o.lines().map(str::to_string).collect())
-    .unwrap_or_default();
+    // on at all leaves the whole assessment Missing rather than empty. Same base as the
+    // count and the path list, or a deletion made in a commit would be listed as changed
+    // and never told apart from a modification.
+    let deleted: Vec<String> = base
+        .as_deref()
+        .and_then(|b| {
+            git(
+                wt,
+                &["diff", "--name-only", "--diff-filter=D", b, "--", "crates/"],
+            )
+        })
+        .map(|o| o.lines().map(str::to_string).collect())
+        .unwrap_or_default();
     let scope: Measurement<Scope> = match (changed_paths.as_ref(), target) {
         (Some(paths), Some(t)) => {
             let changes: Vec<Change> = paths
@@ -911,5 +949,342 @@ mod destroyed_worktree_recovery {
                 .or_else(|| rest.strip_prefix("modifies ").map(|_| false));
             assert_eq!(got, Some(want_creates), "verb in {line}");
         }
+    }
+}
+
+#[cfg(test)]
+mod committed_work {
+    //! Clause tests for `measure_base` and for scoring work that is COMMITTED on its
+    //! branch. Every fixture is a fresh repository in a scratch directory; none of this
+    //! suite reads this repository's own worktrees.
+    //!
+    //! Fixture construction runs git subcommands beyond the module's closed five
+    //! (init, symbolic-ref, config, add, commit, checkout, rev-parse) -- that is setup,
+    //! and no assertion is made on any invocation the module itself does not make.
+    use super::*;
+
+    const ONE_LINE: &str = "one\n";
+    const FIVE_LINES: &str = "one\ntwo\nthree\nfour\nfive\n";
+    const THREE_LINES: &str = "one\ntwo\nthree\n";
+    /// The further uncommitted edits of clause 3, applied alone: disjoint from the
+    /// committed lines, so the total can equal the sum exactly.
+    const FURTHER_LINES: &str = "one\nfour\nfive\n";
+    const TARGET: &str = "crates/demo/src/lib.rs";
+
+    fn scratch(tag: &str) -> PathBuf {
+        let p =
+            std::env::temp_dir().join(format!("fb-score-committed-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).expect("scratch dir");
+        p
+    }
+
+    fn git_ok(repo: &Path, args: &[&str]) {
+        let st = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .status()
+            .expect("git must be runnable");
+        assert!(st.success(), "git {args:?} failed in {}", repo.display());
+    }
+
+    fn git_out(repo: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .expect("git must be runnable");
+        assert!(out.status.success(), "git {args:?} failed");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A readable repository, one baseline commit on `master`, files under `crates/`
+    /// because every diff this module takes is limited to `crates/`.
+    fn new_repo(parent: &Path, name: &str) -> PathBuf {
+        let p = parent.join(name);
+        fs::create_dir_all(p.join("crates/demo/src")).expect("repo layout");
+        fs::create_dir_all(p.join("crates/other/src")).expect("repo layout");
+        git_ok(&p, &["init", "-q"]);
+        git_ok(&p, &["symbolic-ref", "HEAD", "refs/heads/master"]);
+        git_ok(&p, &["config", "user.email", "test@example.com"]);
+        git_ok(&p, &["config", "user.name", "test"]);
+        git_ok(&p, &["config", "commit.gpgsign", "false"]);
+        fs::write(p.join(TARGET), ONE_LINE).expect("baseline lib.rs");
+        // A second crate, present but untouched by most fixtures.
+        fs::write(
+            p.join("crates/other/src/old.rs"),
+            "o1\no2\no3\no4\no5\no6\n",
+        )
+        .expect("baseline other crate");
+        fs::write(p.join("README.md"), "baseline\n").expect("baseline readme");
+        git_ok(&p, &["add", "-A"]);
+        git_ok(&p, &["commit", "-q", "-m", "baseline"]);
+        p
+    }
+
+    fn run_measure(wt: &Path, log_root: &Path) -> Record {
+        let t = Task {
+            bead: "committed-work-spec",
+            krate: "demo",
+            target: Some(TARGET),
+            creates: false,
+            base_clippy: 0,
+            log_root,
+        };
+        measure(wt, "candidate", &t).expect("worktree under test must not look live")
+    }
+
+    /// Today's number, computed the way the pre-merge-base code did: numstat against
+    /// `HEAD`, insertions column only. Clause 1 is the equality with this.
+    fn head_numstat_added(repo: &Path) -> u32 {
+        git_out(repo, &["diff", "--numstat", "HEAD", "--", "crates/"])
+            .lines()
+            .filter_map(|l| l.split_whitespace().next())
+            .filter_map(|x| x.parse::<u32>().ok())
+            .sum()
+    }
+
+    // ---- measure_base: the boundaries, each half of the refusal/no-ancestor split ----
+
+    #[test]
+    fn a_fresh_branch_with_no_commits_measures_against_head_itself() {
+        let tmp = scratch("no-commits");
+        let repo = new_repo(&tmp, "r");
+        git_ok(&repo, &["checkout", "-q", "-b", "work"]);
+        assert_eq!(
+            measure_base(&repo),
+            Some(git_out(&repo, &["rev-parse", "HEAD"])),
+            "merge-base(HEAD, master) is HEAD when the branch has no commits"
+        );
+    }
+
+    #[test]
+    fn one_commit_measures_against_the_fork_point_not_head() {
+        let tmp = scratch("one-commit");
+        let repo = new_repo(&tmp, "r");
+        git_ok(&repo, &["checkout", "-q", "-b", "work"]);
+        fs::write(repo.join(TARGET), FIVE_LINES).expect("arm edit");
+        git_ok(&repo, &["add", "-A"]);
+        git_ok(&repo, &["commit", "-q", "-m", "arm work"]);
+        let base = measure_base(&repo).expect("repo is readable");
+        assert_eq!(base, git_out(&repo, &["rev-parse", "master"]));
+        assert_ne!(
+            base,
+            git_out(&repo, &["rev-parse", "HEAD"]),
+            "with a commit on the branch, the base is the fork point, not HEAD"
+        );
+    }
+
+    #[test]
+    fn no_common_ancestor_in_a_readable_repo_falls_back_to_head() {
+        // merge-base EXITS 1 here -- not a success, not a refusal of the repository --
+        // and rev-parse has already answered, so the base is the literal "HEAD".
+        let tmp = scratch("orphan");
+        let repo = new_repo(&tmp, "r");
+        git_ok(&repo, &["checkout", "-q", "--orphan", "lonely"]);
+        git_ok(
+            &repo,
+            &["commit", "-q", "--allow-empty", "-m", "orphan root"],
+        );
+        assert_eq!(measure_base(&repo), Some("HEAD".to_string()));
+    }
+
+    #[test]
+    fn an_unreadable_worktree_is_a_refusal_not_a_fallback() {
+        let tmp = scratch("unreadable");
+        // Never a repository at all.
+        let plain = tmp.join("plain");
+        fs::create_dir_all(plain.join("crates")).expect("plain dir");
+        assert_eq!(measure_base(&plain), None);
+        // The pruned-worktree shape: the files survive, the admin directory does not.
+        let pruned = new_repo(&tmp, "pruned");
+        fs::remove_dir_all(pruned.join(".git")).expect("remove .git");
+        assert_eq!(measure_base(&pruned), None);
+    }
+
+    // ---- the clauses, end to end through measure() ----
+
+    #[test]
+    fn a_clean_tree_with_zero_commits_is_a_genuine_no_op() {
+        // The boundary the fix could break: measured, observed, and zero.
+        let tmp = scratch("clean-no-op");
+        let repo = new_repo(&tmp, "r");
+        git_ok(&repo, &["checkout", "-q", "-b", "work"]);
+        let r = run_measure(&repo, &tmp.join("logs"));
+        assert_eq!(r.lines.value().copied(), Some(0));
+        assert!(r.lines.is_observed());
+    }
+
+    #[test]
+    fn uncommitted_work_scores_exactly_as_it_did_against_head() {
+        // Clause 1: for the uncommitted case the merge-base is HEAD itself, so the
+        // score equals the HEAD-numstat count -- the equality pins that the base
+        // changed nothing here.
+        let tmp = scratch("uncommitted");
+        let repo = new_repo(&tmp, "r");
+        git_ok(&repo, &["checkout", "-q", "-b", "work"]);
+        fs::write(repo.join(TARGET), FIVE_LINES).expect("dirty edit");
+        let today = head_numstat_added(&repo);
+        assert!(today > 0, "fixture must have real uncommitted work");
+        let r = run_measure(&repo, &tmp.join("logs"));
+        assert_eq!(r.lines.value().copied(), Some(today));
+    }
+
+    #[test]
+    fn committed_work_scores_like_the_same_work_uncommitted() {
+        // Clause 2, tested as the PAIR with clause 1: two arrangements of one content,
+        // plus master moved PAST the fork point. An implementation that always diffs
+        // against master reads 9 here (restoring master's rewrite of old.rs as
+        // insertions) where the merge-base reads 4 -- so the equality alone, at this
+        // fork, already catches it; clause 1 catches today's HEAD-diff code.
+        let tmp = scratch("committed-pair");
+        let logs = tmp.join("logs");
+        let edit_repo = |name: &str, commit: bool| {
+            let repo = new_repo(&tmp, name);
+            git_ok(&repo, &["checkout", "-q", "-b", "work"]);
+            // master advances after the branch left it, with work in another crate.
+            git_ok(&repo, &["checkout", "-q", "master"]);
+            fs::write(repo.join("crates/other/src/old.rs"), "o1\n").expect("master edit");
+            git_ok(&repo, &["add", "-A"]);
+            git_ok(&repo, &["commit", "-q", "-m", "master rewrites old.rs"]);
+            git_ok(&repo, &["checkout", "-q", "work"]);
+            fs::write(repo.join(TARGET), FIVE_LINES).expect("arm edit");
+            if commit {
+                git_ok(&repo, &["add", "-A"]);
+                git_ok(&repo, &["commit", "-q", "-m", "arm work"]);
+            }
+            repo
+        };
+        let committed = edit_repo("committed", true);
+        let uncommitted = edit_repo("dirty", false);
+        let a = run_measure(&committed, &logs).lines.value().copied();
+        let b = run_measure(&uncommitted, &logs).lines.value().copied();
+        assert_eq!(
+            a, b,
+            "committed and uncommitted arrangements of the same work"
+        );
+        assert_eq!(a, Some(4), "the committed lines, not 0 and not master's");
+    }
+
+    #[test]
+    fn a_commit_and_further_edits_count_once_each() {
+        // Clause 3: the total is the sum of the two arrangements, no line twice.
+        // The committed lines (+2) and the further edits (+2) are disjoint, so the
+        // equality is exact.
+        let tmp = scratch("both");
+        let logs = tmp.join("logs");
+        let both = new_repo(&tmp, "both");
+        git_ok(&both, &["checkout", "-q", "-b", "work"]);
+        fs::write(both.join(TARGET), THREE_LINES).expect("committed edit");
+        git_ok(&both, &["add", "-A"]);
+        git_ok(&both, &["commit", "-q", "-m", "first half"]);
+        fs::write(both.join(TARGET), FIVE_LINES).expect("further edits");
+        let commit_only = new_repo(&tmp, "commit-only");
+        git_ok(&commit_only, &["checkout", "-q", "-b", "work"]);
+        fs::write(commit_only.join(TARGET), THREE_LINES).expect("committed edit");
+        git_ok(&commit_only, &["add", "-A"]);
+        git_ok(&commit_only, &["commit", "-q", "-m", "first half"]);
+        let dirty_only = new_repo(&tmp, "dirty-only");
+        git_ok(&dirty_only, &["checkout", "-q", "-b", "work"]);
+        fs::write(dirty_only.join(TARGET), FURTHER_LINES).expect("further edits");
+        let total = run_measure(&both, &logs).lines.value().copied();
+        let committed = run_measure(&commit_only, &logs).lines.value().copied();
+        let uncommitted = run_measure(&dirty_only, &logs).lines.value().copied();
+        assert_eq!(committed, Some(2));
+        assert_eq!(uncommitted, Some(2));
+        assert_eq!(
+            total,
+            Some(committed.unwrap_or(0) + uncommitted.unwrap_or(0)),
+            "both halves counted, once each"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_worktree_is_missing_never_zero() {
+        // Clause 4, end to end in the pruned-worktree shape: a buildable crate whose
+        // git admin directory is gone. Lines must be Missing and the verdict must not
+        // blame the arm -- one level down, this is the defect the whole task exists
+        // to prevent.
+        let tmp = scratch("pruned-buildable");
+        let repo = new_repo(&tmp, "r");
+        fs::write(
+            repo.join("Cargo.toml"),
+            "[workspace]\nresolver = \"2\"\nmembers = [\"crates/demo\"]\n",
+        )
+        .expect("workspace toml");
+        fs::write(
+            repo.join("crates/demo/Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        )
+        .expect("crate toml");
+        fs::write(
+            repo.join(TARGET),
+            "#[test]\nfn exists() {\n    assert_eq!(2 + 2, 4);\n}\n",
+        )
+        .expect("crate lib.rs");
+        fs::remove_dir_all(repo.join(".git")).expect("prune the admin directory");
+        let r = run_measure(&repo, &tmp.join("logs"));
+        assert!(!r.lines.is_observed(), "no git means no line count");
+        assert_eq!(r.lines.value(), None, "never Some(0)");
+        assert_eq!(r.verdict, Verdict::Indeterminate);
+        assert!(!r.verdict.blames_arm());
+    }
+
+    #[test]
+    fn a_committed_change_to_the_target_is_in_scope() {
+        // Clause 5, in scope: a committed edit to the declared deliverable is a changed
+        // path, the crate set reads the same diff, and the scope gate sees the target.
+        let tmp = scratch("in-scope");
+        let repo = new_repo(&tmp, "r");
+        git_ok(&repo, &["checkout", "-q", "-b", "work"]);
+        fs::write(repo.join(TARGET), FIVE_LINES).expect("committed edit");
+        git_ok(&repo, &["add", "-A"]);
+        git_ok(&repo, &["commit", "-q", "-m", "arm work"]);
+        let r = run_measure(&repo, &tmp.join("logs"));
+        assert_eq!(r.lines.value().copied(), Some(4), "the commit is counted");
+        let sc = r.scope.value().expect("scope is observed");
+        assert!(sc.target_changed, "the committed change IS the target");
+        assert!(is_clean(sc), "nothing outside the target changed");
+        assert_eq!(
+            r.crates,
+            ["demo".to_string()]
+                .into_iter()
+                .collect::<BTreeSet<String>>(),
+            "crate set from the same base as the count"
+        );
+    }
+
+    #[test]
+    fn a_committed_change_outside_the_target_is_a_departure() {
+        // Clause 5, out of scope: a committed edit in another crate. Against HEAD this
+        // run would read as a 0-line no-op with an empty departure list; against the
+        // merge-base the file is a changed path and the scope gate says so.
+        let tmp = scratch("out-of-scope");
+        let repo = new_repo(&tmp, "r");
+        git_ok(&repo, &["checkout", "-q", "-b", "work"]);
+        fs::write(repo.join("crates/other/src/old.rs"), "x\n").expect("committed edit");
+        git_ok(&repo, &["add", "-A"]);
+        git_ok(&repo, &["commit", "-q", "-m", "arm work in another crate"]);
+        let r = run_measure(&repo, &tmp.join("logs"));
+        assert!(
+            r.lines.value().copied().unwrap_or(0) > 0,
+            "the committed work must not read as a no-op"
+        );
+        let sc = r.scope.value().expect("scope is observed");
+        assert!(!is_clean(sc), "a committed foreign change is a departure");
+        let departed: Vec<String> = sc
+            .departures
+            .iter()
+            .map(|d| match d {
+                Departure::Foreign { path } | Departure::Deleted { path } => path.clone(),
+            })
+            .collect();
+        assert_eq!(departed, vec!["crates/other/src/old.rs".to_string()]);
+        assert!(
+            r.crates.contains("other"),
+            "the crate set reads the same diff as the count"
+        );
     }
 }

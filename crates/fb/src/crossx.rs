@@ -2649,7 +2649,6 @@ mod tests {
         assert!(assembled.contains("use std::path::PathBuf"));
     }
 
-    #[test]
     /// The park-scope VOID: a braced group at file level sharing ONE name with an explicit
     /// import inside the test module. The lines are not equal, so a line-exact prune kept
     /// both and `BTreeMap` was imported twice (E0252) -- on the diagonal, which VOIDed the
@@ -2699,12 +2698,6 @@ mod tests {
         );
     }
 
-    #[test]
-    /// The graft bug that voided every `crates/fb` matrix. `top_level_uses` took the
-    /// first line of a wrapped import and injected `use farmerbob_core::scope::{` into
-    /// the test module -- an opening brace with no close, so the module ended with an
-    /// unclosed delimiter and the suite failed against its own code.
-    #[test]
     /// crossx.rs names "#[cfg(test)]" in its own comments, so extracting a suite from it
     /// found the boundary at a doc comment, lost every later import, and swept 1400 lines of
     /// implementation into the graft. All three diagonals failed and the matrix VOIDed.
@@ -2732,6 +2725,11 @@ mod tests {
         assert_eq!(top_level_uses(src), vec!["use a::B;", "use c::D;"]);
     }
 
+    /// The graft bug that voided every `crates/fb` matrix. `top_level_uses` took the
+    /// first line of a wrapped import and injected `use farmerbob_core::scope::{` into
+    /// the test module -- an opening brace with no close, so the module ended with an
+    /// unclosed delimiter and the suite failed against its own code.
+    #[test]
     fn top_level_uses_keeps_a_wrapped_import_whole() {
         let src = "use farmerbob_core::scope::{\n    assess, Change,\n    Declared,\n};\nuse std::path::Path;\n#[cfg(test)]\nmod tests {}\n";
         let uses = top_level_uses(src);
@@ -2764,6 +2762,7 @@ mod tests {
         assert_eq!(brace_delta("use a::{"), 1);
     }
 
+    #[test]
     fn prune_uses_drops_already_declared_import() {
         let src = "use std::collections::HashMap;\n#[cfg(test)]\nmod tests {\n    use std::collections::HashMap;\n}\n";
         let uses = top_level_uses(src);
@@ -3895,8 +3894,7 @@ mod crossx_cells_tests {
         std::fs::write(&sfile, "#[test] fn t() {}\n").unwrap();
         let cell4 = graft_suite_step(scratch.path(), tmp.path(), "suite4").unwrap_err();
         // Path 5
-        let cell5 = cargo_test_error_to_cell(&CargoTestError::Spawn(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        let cell5 = cargo_test_error_to_cell(&CargoTestError::Spawn(std::io::Error::other(
             "spawn failure",
         )));
         // Path 6

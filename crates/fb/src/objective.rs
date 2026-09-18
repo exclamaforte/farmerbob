@@ -658,6 +658,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[allow(clippy::too_many_arguments)]
     /// Build a row with every field supplied, for format pinning.
     fn row(
         task: &str,
@@ -1017,6 +1018,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn outcome_infrastructure_from_permission_kill() {
         let log = "permission requested: external_directory\n... rejected permission to use this specific tool call ...";
         let rec = json!({"log": "x.log", "verdict": "PASS"});
@@ -1279,7 +1281,3 @@ mod tests {
         }
     }
 }
-
-
-
-

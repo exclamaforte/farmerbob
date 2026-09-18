@@ -286,8 +286,8 @@ pub fn run_cmd(n: usize, seed: Option<u64>, needed: &[String], json_only: bool) 
 
     println!("seed {seed}  (selection is reproducible from it)\n");
     println!(
-        "{:<22}{:>9}{:>8}{:>9}{:>8}  {}",
-        "CHOSEN", "DRAWN p", "SCORE", "MEAN", "RUNS", ""
+        "{:<22}{:>9}{:>8}{:>9}{:>8}",
+        "CHOSEN", "DRAWN p", "SCORE", "MEAN", "RUNS"
     );
     for (arm, p, score) in &chosen {
         let post = reg
@@ -319,8 +319,8 @@ pub fn run_cmd(n: usize, seed: Option<u64>, needed: &[String], json_only: bool) 
         println!("  be applied to them. That is a gap in sources.toml, not a fact about them.");
     }
     println!(
-        "\n{:<22}{}",
-        "EXCLUDED", "why  (a filter, never evidence -- no posterior moved)"
+        "\n{:<22}why  (a filter, never evidence -- no posterior moved)",
+        "EXCLUDED"
     );
     for r in &reg {
         if let Some(reason) = eligibility(&r.info, needed, now, &healthy_free) {

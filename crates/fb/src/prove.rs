@@ -29,11 +29,6 @@ use anyhow::{Context, Result};
 use farmerbob_core::measurement::Measurement;
 use serde::Serialize;
 
-/// `$HOME`, required for every path the script builds from it.
-fn home() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| String::from("/home/gabe")))
-}
-
 /// The repo root: hardcoded to match the script's `$REPO`.
 fn repo_root() -> PathBuf {
     PathBuf::from("/home/gabe/Documents/farmerbob")
@@ -943,8 +938,8 @@ mod tests {
         assert_eq!(c2.claims, 1);
         assert_eq!(c2.on_confirmed_subjects, 0);
         // Non-TESTABLE and subject-with-no-row claims are skipped.
-        assert!(agg.critics.get("c3").is_none());
-        assert!(agg.critics.get("c4").is_none());
+        assert!(!agg.critics.contains_key("c3"));
+        assert!(!agg.critics.contains_key("c4"));
         // Totals sum observed confirmed/refuted across rows.
         assert_eq!(agg.confirmed_total, 2);
         assert_eq!(agg.refuted_total, 5);
@@ -952,7 +947,7 @@ mod tests {
 
     #[test]
     fn final_report_json_round_trips_with_indent_one() {
-        let rows = vec![worked_example()];
+        let rows = [worked_example()];
         let mut critics = BTreeMap::new();
         critics.insert(
             "c1".to_string(),

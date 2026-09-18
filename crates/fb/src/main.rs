@@ -424,8 +424,8 @@ fn agents(all: bool, json: bool) -> i32 {
     }
 
     println!(
-        "{:<24} {:<10} {:>8} {:>9}  {}",
-        "ARM", "BUCKET", "IN", "OUT", "MODEL"
+        "{:<24} {:<10} {:>8} {:>9}  MODEL",
+        "ARM", "BUCKET", "IN", "OUT"
     );
     for (arm, s) in reg.dispatchable() {
         let (i, o) = (s.price_in.unwrap_or(0.0), s.price_out.unwrap_or(0.0));

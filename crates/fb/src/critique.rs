@@ -8,17 +8,10 @@ use farmerbob_core::gate::{Observation, Verdict, judge};
 use farmerbob_core::measurement::Measurement;
 use std::ffi::OsStr;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 const REPO: &str = "/home/gabe/Documents/farmerbob";
-
-fn home() -> Measurement<PathBuf> {
-    match std::env::var_os("HOME") {
-        Some(value) => Measurement::observed(PathBuf::from(value)),
-        None => Measurement::instrument_failed("HOME is not set"),
-    }
-}
 
 fn read_text(path: &Path) -> Measurement<String> {
     match fs::read_to_string(path) {
