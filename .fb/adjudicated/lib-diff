@@ -1,0 +1,65 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-18. Three arms, three PASS.
+
+  gemini-38-flash    PASS  626L  24 tests  326s
+  glm-53-flash       PASS  504L  18 tests  571s
+  or-nemotron-ultra  PASS  343L  14 tests  808s
+
+  impl \ suite            gemini-38 glm-53-fl or-nemotr
+  gemini-38-flash          .         .         .
+  glm-53-flash             nocomp    .         .
+  or-nemotron-ultra        nocomp    .         .
+
+All three declare exactly the five pinned public items, so the two nocompile cells are not an
+API divergence in the implementations. The error:
+
+    no associated function or constant named `added` found for struct `DiffLine`
+
+gemini added a `DiffLine::added(..)` test constructor and built its inputs through it. The spec
+pins `DiffLine` as a struct with two public fields and no constructor, so its suite cannot run
+anywhere but its own tree.
+
+FOURTH OCCURRENCE, AND THE FAULT IS NOW MINE. The same shape has cost signal four times:
+`Registry::new()/insert()` on park-scope, five unpinned assertions on precondition, an inherent
+`Decision::grounds()` on park-grounds, and this. I filed it twice and changed nothing, so it
+happened again. The rubric stated the rule as intent -- "test the behaviour the specification
+requires, not your particular implementation's internals" -- which does not land, because a test
+constructor does not feel like an internal.
+
+The rubric now states it as the MEASUREMENT, with the four real examples and the consequence
+named: a suite that calls unpinned API fails to compile against every rival and forfeits the
+cross-examination signal. "The rule is not 'do not add API'. It is 'do not make your suite
+depend on API a rival has no reason to have'." farmerbob-vg0: disclose what is scored.
+
+WHAT THE CRITICS FOUND. gemini on glm is the most careful review of the round and finds no
+defect, which is the harder answer:
+
+  "`declared_module` leverages `strip_prefix(\"pub mod \")` followed by `split_once(';')` ...
+   This cleanly rejects trailing inline comments, trailing code, multiline declarations, and
+   double semicolons in a single branch without complex tokenizer machinery."
+
+  "The decision to reject block comments and raw identifiers aligns with the spec's directive
+   that the gate must strictly recognize the quoted rubric form rather than guessing."
+
+Its one real nit: `is_identifier` accepts a lone `_`, so `pub mod _;` classifies as a
+declaration though rustc rejects it. Degenerate, worth tightening, not worth the task.
+
+glm on or-nemotron: all four of the spec's "say so" documentation requirements are absent.
+Checked:
+
+  arm                 say-so docs   //! lines
+  glm-53-flash                  4          33
+  gemini-38-flash               2          54
+  or-nemotron-ultra             0          12
+
+The spec asks four times that a decision be explained to the reader -- why `Beyond::lines`
+cannot be empty, that a removed blank line is not forgiven, why blank-only `DeclarationsOnly`
+differs from `Untouched`, that a rejected shape surfaces as `Beyond` and is never silently
+permitted. This module exists to carry the gate's reasoning forward to the `Allowance` decision;
+undocumented, it carries a function.
+
+DECISION. glm on all four doc requirements, on a portable suite, and on the implementation
+gemini itself calls lean and strictly correct. gemini has six more tests and cannot run them
+anywhere; or-nemotron has the smallest suite and none of the reasoning.
+
+1416 core tests, clippy 9, farmerbob-core clippy 0.

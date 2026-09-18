@@ -88,6 +88,31 @@ traced to the spec rather than to any arm.
 A defect that appears in nearly every implementation is evidence about the specification, not
 about the field. Naming it in your handoff routes it where the fix belongs.
 
+## Your suite is run against OTHER implementations
+
+This is the rule that has cost the most signal, four times, and it is stated here in terms of
+what is MEASURED rather than of what is intended.
+
+Every candidate's test suite is extracted and run against every other candidate's code. A suite
+that calls anything the specification does not pin **fails to compile against every rival**, and
+those cells are recorded as API-incompatible: you forfeit the cross-examination signal you would
+otherwise have earned, however good your tests are.
+
+Four arms have lost it this way, each for an addition that was reasonable on its own:
+
+- a `Registry::new()` / `insert()` pair, used to build test fixtures;
+- five tests asserting cases the spec never pinned;
+- an inherent method beside the pinned free function, called five times in tests;
+- a `DiffLine::added(..)` constructor, used to build test inputs.
+
+None of those are bad code. Add them if they help a caller. **Your tests must go through the
+pinned surface anyway** -- construct values from their public fields, call the free function the
+Exact API names, and assert only on behaviour the specification fixes. If you would have to call
+your own addition to write the test, write the test the longer way.
+
+The rule is not "do not add API". It is "do not make your suite depend on API a rival has no
+reason to have".
+
 ## Reuse the crate's existing types
 
 If this spec names a type that already exists in `farmerbob-core` -- `Verdict`, `Grade`,

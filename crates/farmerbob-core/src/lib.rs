@@ -33,6 +33,7 @@ pub mod ids;
 pub mod lease;
 pub mod lease_manager;
 pub mod ledger;
+pub mod lib_diff;
 pub mod limit_signal;
 pub mod liveness;
 pub mod matrix;
