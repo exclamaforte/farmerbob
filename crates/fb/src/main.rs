@@ -9,6 +9,7 @@ mod eligible;
 mod escalate;
 mod import;
 mod ledger_cmd;
+mod reap_cmd;
 mod mutants;
 mod objective;
 mod pareto;
@@ -134,6 +135,18 @@ enum Command {
     /// nothing -- and one such was submitted, passing build, scope, lint and its own tests --
     /// satisfies every other check we own. This one it cannot satisfy.
     Differential { task: String },
+    /// Show which worktree directories may be removed, and with --execute, remove them.
+    ///
+    /// The first caller of the wtreap chain. Every rule lives in farmerbob-core and is
+    /// tested there; this reads the real world and refuses to act without --execute.
+    Reap {
+        /// Perform the admitted steps instead of printing them.
+        #[arg(long)]
+        execute: bool,
+        /// Permit `git worktree remove` on registered directories.
+        #[arg(long)]
+        unregister: bool,
+    },
     /// Record and read credit for spec defects and follow-ups proposed by arms.
     ///
     /// Two stages feed it: the spec critique that runs BEFORE implementation, and the
@@ -577,6 +590,7 @@ fn main() {
         Some(Command::Status) => status::run_cmd(),
         Some(Command::Eligible { arm }) => eligible::run_cmd(&arm),
         Some(Command::Differential { task }) => differential::run_cmd(&task),
+        Some(Command::Reap { execute, unregister }) => reap_cmd::run_cmd(execute, unregister),
         Some(Command::Ledger {
             record,
             arm,
