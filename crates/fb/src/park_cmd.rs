@@ -1,0 +1,243 @@
+//! `fb park` — the first caller of the quota chain.
+//!
+//! `park_after`, `blast_of`, `arms_in_blast`, `decide` and `grounds` were specified, critiqued
+//! and merged across five waves. Nothing called any of them, which is why the thing that
+//! motivated them kept happening: thirteen dispatch slots in one day spent on arms that refused
+//! before they started, and five free arms eligible and undispatched for 28.8 hours behind a
+//! park whose reset instant had been invented by hand.
+//!
+//! This reads a finished run's log, classifies it, and asks core what to do. Every rule lives
+//! in core and is tested there. What lives here is I/O, and the refusal to act without
+//! `--apply`.
+//!
+//! It does NOT invent a reset. `park_after` returns `Backoff` when the provider states no
+//! instant, and the `grounds` string that survives into the decision is the provider's own
+//! words -- which is the whole reason `park_grounds` added a field for it.
+
+use farmerbob_core::limit_signal::SignalRules;
+use farmerbob_core::outcome::{classify, RunFacts};
+use farmerbob_core::park_decision::{decide, grounds, Decision};
+use farmerbob_core::quota::{Blast, Registry, Source};
+use std::collections::BTreeMap;
+
+/// Build the core registry from `sources.toml`.
+///
+/// `quota::Registry` and `fb::sources::Registry` are two types over one file --
+/// farmerbob's own N-of-N finding, filed when every arm of `park-scope` invented
+/// a registry because the spec named one without saying where it lived. Until
+/// that is resolved, this is the projection, in one place, named for what it is.
+fn core_registry(reg: &crate::sources::Registry) -> Registry {
+    let mut sources = BTreeMap::new();
+    for (name, s) in &reg.sources {
+        sources.insert(
+            name.clone(),
+            Source {
+                provider: s.provider.clone(),
+                quota_bucket: s.quota_bucket.clone(),
+            },
+        );
+    }
+    Registry { sources }
+}
+
+/// The first bytes of a run's log, where a refusal is stated if it is stated at all.
+fn log_head(logs: &std::path::Path, task: &str, arm: &str) -> Option<String> {
+    let p = logs.join(format!("{task}--{arm}.log"));
+    let text = std::fs::read_to_string(p).ok()?;
+    Some(text.chars().take(4000).collect())
+}
+
+/// The facts a run recorded, as `outcome::classify` wants them.
+///
+/// The run json carries `rc`, `lines_added` and a `verdict`; it does NOT carry an
+/// outcome class. An earlier version of this file read `outcome_class` and refused
+/// on every run in the store, because the field does not exist -- an honest refusal
+/// that made the command useless. The classification lives in core and is called
+/// here rather than duplicated.
+///
+/// `declared` stays `None`: nothing in the pipeline writes an authoritative class
+/// today, and inventing one here would override the very rules being called.
+fn run_facts(logs: &std::path::Path, task: &str, arm: &str) -> Option<RunFacts> {
+    let text = std::fs::read_to_string(logs.join(format!("{task}--{arm}.json"))).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Some(RunFacts {
+        exit_code: v.get("rc").and_then(|c| c.as_i64()).map(|c| c as i32),
+        lines_added: v
+            .get("lines_added")
+            .and_then(|c| c.as_u64())
+            .map(|c| c as u32),
+        log_head: log_head(logs, task, arm),
+        declared: None,
+    })
+}
+
+/// The refusal formats this project has actually observed, as data.
+///
+/// A known subset and not a closed set, which is why `SignalRules` takes patterns
+/// rather than hard-coding them. Every string here was copied from a real log in
+/// this repository's history.
+fn rules(default_backoff_secs: u64) -> SignalRules {
+    // LINE-START ANCHORED. `line_starts_with_a_limit_pattern` requires the log line to BEGIN
+    // with the pattern, which is deliberate: an arm that QUOTES a refusal in its own prose
+    // must not be read as having been refused, and that false positive has bitten this
+    // project before. So every pattern here carries the `error: ` prefix the launchers
+    // actually emit. A first draft dropped it and matched nothing at all -- every real
+    // refusal in the store classified as Infrastructure via the shape rule instead, which
+    // is the right answer to the wrong question.
+    //
+    // Copied from fb-objective.sh, which curated them from real logs, so the two readers of
+    // the same evidence cannot disagree.
+    SignalRules::new(default_backoff_secs)
+        .with_pattern("error: individual quota reached")
+        .with_pattern("error: quota exceeded")
+        .with_pattern("error: rate limit exceeded")
+        .with_pattern("error: 429")
+        .with_pattern("usage limit reached")
+        .with_exit_code(429)
+}
+
+fn blast_word(b: Blast) -> &'static str {
+    match b {
+        Blast::Arm => "this arm only",
+        Blast::Bucket => "every arm on this vendor bucket",
+        Blast::Credential => "every arm on this credential",
+    }
+}
+
+
+/// An epoch-millisecond instant as RFC3339 UTC, without pulling in a date crate
+/// this binary does not otherwise use. Days-from-civil, the standard algorithm.
+fn format_instant(ms: u64) -> String {
+    let secs = ms / 1000;
+    let (mut days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    days += 719_468;
+    let era = days.div_euclid(146_097);
+    let doe = days.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}+00:00")
+}
+
+/// Decide, print, and with `apply`, write `parked_until` into `sources.toml`.
+pub fn run_cmd(task: &str, arm: &str, apply: bool, default_backoff_secs: u64) -> i32 {
+    let logs = crate::paths::logs();
+    let reg_path = crate::paths::repo().join("sources.toml");
+    let reg = match crate::sources::Registry::load(&reg_path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("fb park: reading the registry: {e}");
+            return 1;
+        }
+    };
+
+    let Some(head) = log_head(&logs, task, arm) else {
+        eprintln!("fb park: no log for {task}--{arm}; nothing to classify");
+        return 2;
+    };
+    let Some(facts) = run_facts(&logs, task, arm) else {
+        // Refusing is the point. A run with no recorded facts is not a run that
+        // succeeded, and guessing would park arms on evidence nobody gathered.
+        eprintln!("fb park: no run record for {task}--{arm}; refusing to guess");
+        return 2;
+    };
+    let class = classify(&facts, &rules(default_backoff_secs));
+
+    let now_ms = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_millis() as u64,
+        Err(_) => {
+            eprintln!("fb park: the clock is before the epoch; refusing to compute a park");
+            return 1;
+        }
+    };
+
+    let d = decide(
+        arm,
+        class,
+        &head,
+        &core_registry(&reg),
+        now_ms,
+        default_backoff_secs.saturating_mul(1000),
+    );
+
+    match &d {
+        Decision::Leave => {
+            println!("{task}--{arm}: {class:?} -> leave. This run says nothing about availability.");
+            0
+        }
+        Decision::ParkUntil { arms, blast, .. } | Decision::ParkFor { arms, blast, .. } => {
+            let until_ms = match &d {
+                Decision::ParkUntil { at_ms, .. } => *at_ms,
+                Decision::ParkFor { backoff_ms, .. } => now_ms.saturating_add(*backoff_ms),
+                // `d` was matched as a park two lines above, so Leave cannot reach here.
+                // Returning the current instant rather than panicking: an unreachable! in a
+                // command that edits the registry is a crash where a no-op park would do.
+                Decision::Leave => now_ms,
+            };
+            let when = format_instant(until_ms);
+            println!("{task}--{arm}: {class:?}");
+            println!("  blast: {} ({} arm(s))", blast_word(*blast), arms.len());
+            println!("  until: {when}");
+            match grounds(&d) {
+                Some("") => println!("  grounds: (the provider recorded none)"),
+                Some(g) => println!("  grounds: {}", g.lines().next().unwrap_or(g)),
+                None => {}
+            }
+            for a in arms {
+                println!("    {a}");
+            }
+            if !apply {
+                println!();
+                println!("DRY RUN. sources.toml was not changed. Re-run with --apply to park these arms.");
+                return 0;
+            }
+            match apply_parks(&when, arms) {
+                Ok(n) => {
+                    println!("parked {n} arm(s) until {when}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("fb park: {e}");
+                    1
+                }
+            }
+        }
+    }
+}
+
+/// Set `parked_until` on each named arm in `sources.toml`, in place.
+///
+/// Textual, deliberately: the registry carries comments that explain every past
+/// park and a serde round-trip would delete all of them. Those comments are the
+/// only record of why an arm was benched.
+fn apply_parks(when: &str, arms: &[String]) -> Result<usize, String> {
+    let path = crate::paths::repo().join("sources.toml");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("reading sources.toml: {e}"))?;
+    let mut out = String::with_capacity(text.len() + arms.len() * 64);
+    let mut n = 0;
+    let mut current: Option<String> = None;
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("[source.") {
+            current = rest.strip_suffix(']').map(str::to_string);
+        }
+        // Drop any existing parked_until for an arm we are about to re-park, so the
+        // file never carries two.
+        let in_target = current.as_deref().is_some_and(|c| arms.iter().any(|a| a == c));
+        if in_target && line.trim_start().starts_with("parked_until") {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+        if in_target && line.trim().starts_with("[source.") {
+            out.push_str(&format!("parked_until = \"{when}\"   # fb park\n"));
+            n += 1;
+        }
+    }
+    std::fs::write(&path, out).map_err(|e| format!("writing sources.toml: {e}"))?;
+    Ok(n)
+}

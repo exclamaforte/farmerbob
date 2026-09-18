@@ -15,6 +15,7 @@ mod pareto;
 mod paths;
 mod promote;
 mod prove;
+mod park_cmd;
 mod reap_cmd;
 mod score;
 mod select;
@@ -135,6 +136,22 @@ enum Command {
     /// nothing -- and one such was submitted, passing build, scope, lint and its own tests --
     /// satisfies every other check we own. This one it cannot satisfy.
     Differential { task: String },
+    /// Decide whether a finished run should park its arm, and how wide.
+    ///
+    /// The first caller of the quota chain. Every rule lives in farmerbob-core; this
+    /// reads the run's log and outcome class and refuses to act without --apply.
+    Park {
+        /// The task the run belongs to.
+        task: String,
+        /// The arm that ran.
+        arm: String,
+        /// Write parked_until into sources.toml instead of printing the decision.
+        #[arg(long)]
+        apply: bool,
+        /// Backoff used when the provider states no reset instant.
+        #[arg(long, default_value_t = 3600)]
+        backoff_secs: u64,
+    },
     /// Show which worktree directories may be removed, and with --execute, remove them.
     ///
     /// The first caller of the wtreap chain. Every rule lives in farmerbob-core and is
@@ -590,6 +607,8 @@ fn main() {
         Some(Command::Status) => status::run_cmd(),
         Some(Command::Eligible { arm }) => eligible::run_cmd(&arm),
         Some(Command::Differential { task }) => differential::run_cmd(&task),
+        Some(Command::Park { task, arm, apply, backoff_secs }) =>
+            park_cmd::run_cmd(&task, &arm, apply, backoff_secs),
         Some(Command::Reap {
             execute,
             unregister,
