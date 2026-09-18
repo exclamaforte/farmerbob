@@ -32,6 +32,19 @@
 //! separator there is. [`split_key`] extracts it; exact byte comparison is
 //! used everywhere, as everywhere else in this crate — `Park-Scope--glm` is
 //! not `park-scope--glm`.
+//!
+//! Listing-level contradictions: everything above classifies ONE entry. A
+//! listing can also disagree with itself — the same `dir` observed once with
+//! `registered: true` and once with `registered: false` — and no per-entry
+//! answer can see that, because [`disposal`] is never shown more than one
+//! entry at a time. The contradiction matters precisely because the two
+//! halves are not symmetric: only the unregistered half can ever be called
+//! [`Disposal::Reapable`], so a self-contradicting listing composes into a
+//! `reapable` name that git lists — a directory unsafe to delete.
+//! [`conflicts`] reports the disagreement, and [`safe_to_reap`] is the view
+//! a deleter must use. The doctrine is this module's own: absence of
+//! agreement is not evidence, whether the absence is in a missing record or
+//! in the input itself.
 
 /// What may be done with one worktree directory.
 ///
@@ -193,6 +206,103 @@ pub fn census(wts: &[Worktree], live: &[&str], settled: &[&str]) -> Census {
         }
     }
     c
+}
+
+/// A directory name observed more than once with disagreeing registration.
+///
+/// This is deliberately NOT a fifth [`Disposal`] variant. A conflict is a
+/// property of the LISTING, not of a directory's state: [`disposal`] sees
+/// one [`Worktree`] and can only report what that single entry's evidence
+/// supports, while the disagreement is visible only across several entries.
+/// Making it a variant would force `disposal` to report something no entry
+/// it was shown could justify, so it is reported here instead, beside the
+/// other aggregate views.
+///
+/// Both counts are non-zero by construction: a name is reported only when
+/// at least one entry carried each flag — that is what "disagree" means —
+/// so neither side of the disagreement can total zero. Their sum is the
+/// number of entries carrying the name, because every entry is counted into
+/// exactly one of the two buckets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conflict {
+    /// The directory name that was observed inconsistently.
+    pub dir: String,
+    /// How many entries said git lists it.
+    pub registered: u32,
+    /// How many said it does not.
+    pub unregistered: u32,
+}
+
+/// Every directory whose entries disagree about registration, sorted by
+/// `dir`, without duplicates.
+///
+/// One observation cannot disagree with itself, so a name appearing once is
+/// never reported. Identical duplicates — same name, same flag — are
+/// agreement, not conflict, and keep the treatment they were already
+/// pinned to have: counted twice by [`census`], listed once by [`reapable`].
+///
+/// A conflict is never resolved by majority, however lopsided the vote.
+/// Two observations agreeing is not evidence that the third was wrong —
+/// the agreeing pair could be the stale copies and the lone dissenter the
+/// only observation taken after git's state actually changed — and deleting
+/// a possibly-registered directory on a 2-1 vote is exactly the outcome
+/// this module exists to prevent. Uncertainty in the input lands in the
+/// same place as uncertainty in a missing record: nothing is deleted.
+///
+/// Nameability and registration-agreement are independent. A name that
+/// does not split on `--` is reported here exactly like any other: a
+/// conflict in an unnameable directory is still a conflict, whatever
+/// [`disposal`] would go on to decide about that directory's disposal.
+pub fn conflicts(wts: &[Worktree<'_>]) -> Vec<Conflict> {
+    let mut entries: Vec<(&str, bool)> = wts.iter().map(|wt| (wt.dir, wt.registered)).collect();
+    entries.sort_unstable();
+    let mut out: Vec<Conflict> = Vec::new();
+    let mut idx = 0;
+    while idx < entries.len() {
+        let dir = entries[idx].0;
+        let mut registered = 0;
+        let mut unregistered = 0;
+        while idx < entries.len() && entries[idx].0 == dir {
+            if entries[idx].1 {
+                registered += 1;
+            } else {
+                unregistered += 1;
+            }
+            idx += 1;
+        }
+        if registered > 0 && unregistered > 0 {
+            out.push(Conflict {
+                dir: dir.to_string(),
+                registered,
+                unregistered,
+            });
+        }
+    }
+    out
+}
+
+/// [`reapable`], with contradictory listings excluded.
+///
+/// This is what a caller that DELETES should use. [`reapable`] is kept
+/// unchanged because it is the honest answer to a different question —
+/// "what did [`disposal`] say" — and it cannot see a disagreement it is
+/// never told about: it classifies entries, and the contradiction lives
+/// between them. The two functions differ exactly on the conflicts: a name
+/// in `reapable` but not here is precisely a name whose entries disagree
+/// about registration. Replacing one with the other would make one of the
+/// two questions unanswerable.
+///
+/// The result is sorted, deduplicated, and always a subset of [`reapable`].
+/// An empty result is a real answer: it means nothing in this listing is
+/// safe to delete, which is a different statement from "nothing is
+/// reapable" — the listing may be full of reapable-looking entries that a
+/// single contradiction poisons.
+pub fn safe_to_reap(wts: &[Worktree<'_>], live: &[&str], settled: &[&str]) -> Vec<String> {
+    let poisoned: Vec<String> = conflicts(wts).into_iter().map(|c| c.dir).collect();
+    reapable(wts, live, settled)
+        .into_iter()
+        .filter(|dir| !poisoned.contains(dir))
+        .collect()
 }
 
 #[cfg(test)]
@@ -499,5 +609,304 @@ mod tests {
         assert_eq!(reapable(&wts, &[], &settled), ["a--b"]);
         // The sum invariant survives duplication too.
         assert_eq!((c.reapable) as usize, wts.len());
+    }
+
+    // --- conflicts & safe_to_reap: the listing contradicts itself -------------
+
+    #[test]
+    fn a_name_observed_with_both_flags_is_a_conflict_counted_on_each_side() {
+        // Clause 1: the same dir twice, once registered and once not, with
+        // the disagreement counted per side.
+        let wts = [unreg("a--b"), reg("a--b")];
+        assert_eq!(
+            conflicts(&wts),
+            [Conflict {
+                dir: "a--b".to_string(),
+                registered: 1,
+                unregistered: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_conflicted_name_is_never_safe_to_reap_whatever_the_evidence_says() {
+        // Clause 2: the exclusion holds over the whole (live, settled) cube
+        // for the poisoned name, not just one convenient cell of it. The
+        // listing carries only this name, so the whole result must be empty
+        // in every cell.
+        let key = "a--b";
+        let wts = [unreg(key), reg(key)];
+        for &is_live in &[false, true] {
+            for &is_settled in &[false, true] {
+                let live: &[&str] = if is_live { &[key] } else { &[] };
+                let settled: &[&str] = if is_settled { &[key] } else { &[] };
+                assert!(
+                    safe_to_reap(&wts, live, settled).is_empty(),
+                    "live={is_live} settled={is_settled}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn identical_duplicates_are_not_conflicts_and_keep_their_old_pinning() {
+        // Clause 3: same flag twice is agreement, not conflict — in both
+        // directions — and the pre-existing pinning of identical duplicates
+        // survives: counted twice by census, listed once by reapable.
+        let twice_unreg = [unreg("a--b"), unreg("a--b")];
+        assert!(conflicts(&twice_unreg).is_empty());
+        let twice_reg = [reg("a--b"), reg("a--b")];
+        assert!(conflicts(&twice_reg).is_empty());
+        let settled = ["a--b"];
+        assert_eq!(census(&twice_unreg, &[], &settled).reapable, 2);
+        assert_eq!(reapable(&twice_unreg, &[], &settled), ["a--b"]);
+        // With no conflicts the deletion-facing view IS the raw view.
+        assert_eq!(
+            safe_to_reap(&twice_unreg, &[], &settled),
+            reapable(&twice_unreg, &[], &settled)
+        );
+    }
+
+    #[test]
+    fn reapable_keeps_saying_what_disposal_said_even_where_it_is_unsafe() {
+        // Clause 4: `reapable` is unchanged by this task. On a
+        // contradictory listing it still contains the contested name,
+        // because one of its entries genuinely is Reapable, and
+        // `safe_to_reap` is the deletion-facing view that drops exactly
+        // that name. Both functions exist because they answer different
+        // questions; this is the case where the answers differ.
+        let wts = [
+            unreg("contested--arm"),
+            reg("contested--arm"),
+            unreg("quiet--arm"),
+        ];
+        let settled = ["contested--arm", "quiet--arm"];
+        assert_eq!(
+            reapable(&wts, &[], &settled),
+            ["contested--arm", "quiet--arm"]
+        );
+        assert_eq!(safe_to_reap(&wts, &[], &settled), ["quiet--arm"]);
+    }
+
+    #[test]
+    fn safe_to_reap_is_always_a_subset_of_reapable() {
+        // Clause 5, pinned as a property over a mixed listing rather than
+        // prose: every name the safe view returns must also be in the raw
+        // view — the safe view can only ever remove names.
+        let wts = [
+            unreg("contested--a"),
+            reg("contested--a"),
+            unreg("clean--b"),
+            reg("clean--c"),
+            unreg("live--d"),
+            unreg("mystery--e"),
+            unreg("no-separator"),
+        ];
+        let live = ["live--d"];
+        let settled = [
+            "contested--a",
+            "clean--b",
+            "clean--c",
+            "live--d",
+            "mystery--e",
+        ];
+        let raw = reapable(&wts, &live, &settled);
+        let safe = safe_to_reap(&wts, &live, &settled);
+        for name in &safe {
+            assert!(
+                raw.contains(name),
+                "{name} in safe_to_reap but not reapable"
+            );
+        }
+        // Built so the property is not vacuous: the raw view is non-empty
+        // and the safe view removed the one contested name from it.
+        assert_eq!(raw, ["clean--b", "contested--a", "mystery--e"]);
+        assert_eq!(safe, ["clean--b", "mystery--e"]);
+    }
+
+    #[test]
+    fn a_two_to_one_majority_does_not_resolve_a_conflict() {
+        // Clause 6: two observations agreeing is not evidence that the
+        // third was wrong — the agreeing pair could be the stale copies —
+        // and deleting a possibly-registered directory on a 2-1 vote is
+        // the outcome this module exists to prevent. Pinned in both
+        // directions so "majority unregistered" gets no free pass either.
+        let wts = [reg("a--b"), reg("a--b"), unreg("a--b")];
+        assert_eq!(
+            conflicts(&wts),
+            [Conflict {
+                dir: "a--b".to_string(),
+                registered: 2,
+                unregistered: 1,
+            }]
+        );
+        let settled = ["a--b"];
+        // The lone dissenter is the only entry disposal would ever call
+        // Reapable here, and its disagreement with the others is exactly
+        // why it must not be acted on.
+        assert_eq!(reapable(&wts, &[], &settled), ["a--b"]);
+        assert!(safe_to_reap(&wts, &[], &settled).is_empty());
+
+        let mirrored = [reg("c--d"), unreg("c--d"), unreg("c--d")];
+        assert_eq!(
+            conflicts(&mirrored),
+            [Conflict {
+                dir: "c--d".to_string(),
+                registered: 1,
+                unregistered: 2,
+            }]
+        );
+        let settled = ["c--d"];
+        assert_eq!(reapable(&mirrored, &[], &settled), ["c--d"]);
+        assert!(safe_to_reap(&mirrored, &[], &settled).is_empty());
+    }
+
+    #[test]
+    fn a_conflict_in_an_unnameable_dir_is_still_a_conflict() {
+        // Clause 7: nameability and registration-agreement are
+        // independent. `disposal` refuses to delete an unnameable
+        // directory regardless, but `conflicts` reports the disagreement
+        // in the listing exactly as it would for a nameable one.
+        let wts = [unreg("dangling-admin-entry"), reg("dangling-admin-entry")];
+        assert_eq!(
+            conflicts(&wts),
+            [Conflict {
+                dir: "dangling-admin-entry".to_string(),
+                registered: 1,
+                unregistered: 1,
+            }]
+        );
+        // It was never reapable, so the exclusion here changes nothing —
+        // but the poisoned name must flow through the filter without being
+        // crashed on or resurrected.
+        assert!(safe_to_reap(&wts, &[], &["dangling-admin-entry"]).is_empty());
+    }
+
+    #[test]
+    fn an_empty_listing_has_no_conflicts_and_nothing_safe_to_reap() {
+        assert!(conflicts(&[]).is_empty());
+        assert!(safe_to_reap(&[], &["x--y"], &["z--w"]).is_empty());
+    }
+
+    #[test]
+    fn a_conflict_free_listing_leaves_the_two_views_equal() {
+        // Boundary: with nothing contradictory, `safe_to_reap` equals
+        // `reapable` exactly — the pin is the equality, not merely the
+        // subset relation.
+        let wts = [
+            unreg("clean--b"),
+            unreg("clean--b"), // duplicate, same flag: agreement
+            reg("clean--c"),
+            unreg("live--d"),
+            unreg("mystery--e"),
+        ];
+        let live = ["live--d"];
+        let settled = ["clean--b", "clean--c"];
+        assert!(conflicts(&wts).is_empty());
+        assert_eq!(
+            safe_to_reap(&wts, &live, &settled),
+            reapable(&wts, &live, &settled)
+        );
+        assert_eq!(safe_to_reap(&wts, &live, &settled), ["clean--b"]);
+    }
+
+    #[test]
+    fn a_listing_where_every_dir_conflicts_reaps_nothing() {
+        // Boundary: every distinct name is poisoned, so the safe view is
+        // empty while `conflicts` carries one entry per distinct name —
+        // not one per conflicting entry.
+        let wts = [
+            unreg("a--one"),
+            reg("a--one"),
+            unreg("b--two"),
+            reg("b--two"),
+            reg("c--three"),
+            unreg("c--three"),
+        ];
+        let settled = ["a--one", "b--two", "c--three"];
+        assert!(safe_to_reap(&wts, &[], &settled).is_empty());
+        let cs = conflicts(&wts);
+        assert_eq!(cs.len(), 3);
+        for c in &cs {
+            assert_eq!(c.registered, 1);
+            assert_eq!(c.unregistered, 1);
+        }
+    }
+
+    #[test]
+    fn a_name_observed_once_cannot_conflict_with_itself() {
+        // Boundary: one observation has nothing to disagree with, whichever
+        // flag it carries.
+        let wts = [unreg("a--b"), reg("c--d")];
+        assert!(conflicts(&wts).is_empty());
+    }
+
+    #[test]
+    fn conflict_counts_sum_to_the_entries_carrying_the_name() {
+        // The counting contract: each side non-zero, sides summing to the
+        // number of entries carrying the name. Every entry lands in exactly
+        // one bucket, and a name is only reported when both buckets are
+        // non-empty — that is what "disagree" means — so neither side can
+        // be zero by construction.
+        let wts = [
+            reg("a--b"),
+            unreg("a--b"),
+            reg("a--b"),
+            reg("a--b"), // 3 registered, 1 unregistered
+            reg("c--d"),
+            reg("c--d"),
+            unreg("c--d"),
+            unreg("c--d"), // 2 and 2
+        ];
+        let cs = conflicts(&wts);
+        assert_eq!(cs.len(), 2);
+        for c in &cs {
+            assert!(c.registered > 0 && c.unregistered > 0);
+            let carrying = wts.iter().filter(|wt| wt.dir == c.dir).count();
+            assert_eq!((c.registered + c.unregistered) as usize, carrying);
+        }
+        // Sorted by dir, so the index order below is the pinned order.
+        assert_eq!(cs[0].registered, 3);
+        assert_eq!(cs[0].unregistered, 1);
+        assert_eq!(cs[1].registered, 2);
+        assert_eq!(cs[1].unregistered, 2);
+    }
+
+    #[test]
+    fn conflicts_are_sorted_and_one_per_distinct_name() {
+        // Byte order, like everywhere else in this module: the reporting
+        // order is the name's own sort, not the order the disagreement was
+        // observed in, and a thrice-observed name yields one entry.
+        let wts = [
+            unreg("z--last"),
+            reg("z--last"),
+            unreg("a--first"),
+            reg("a--first"),
+            unreg("m--mid"),
+            reg("m--mid"),
+            unreg("m--mid"),
+        ];
+        let cs = conflicts(&wts);
+        let names: Vec<&str> = cs.iter().map(|c| c.dir.as_str()).collect();
+        assert_eq!(names, ["a--first", "m--mid", "z--last"]);
+        assert_eq!(cs[1].registered, 1);
+        assert_eq!(cs[1].unregistered, 2);
+    }
+
+    #[test]
+    fn safe_to_reap_is_sorted_and_deduplicated() {
+        // Inherited from `reapable` and pinned here so a reimplementation
+        // of the safe view cannot quietly lose the set semantics. One
+        // poisoned name (observed three ways) is removed; the rest survive
+        // in byte order.
+        let wts = [
+            unreg("t--arm9"),
+            unreg("t--arm10"),
+            unreg("t--arm2"),
+            unreg("t--arm2"),
+            reg("t--arm2"),
+        ];
+        let settled = ["t--arm9", "t--arm10", "t--arm2"];
+        assert_eq!(safe_to_reap(&wts, &[], &settled), ["t--arm10", "t--arm9"]);
     }
 }

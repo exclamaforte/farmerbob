@@ -1,0 +1,56 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-18. Three arms, three PASS, and a completely clean matrix:
+
+  glm-53-flash      PASS  400L  36 tests  517s
+  claude-sonnet     PASS  301L  35 tests  157s
+  or-ling-30-flash  PASS  259L  35 tests  169s
+
+  impl \ suite            claude-so glm-53-fl or-ling-3
+  claude-sonnet            .         .         .
+  glm-53-flash             .         .         .
+  or-ling-30-flash         .         .         .
+
+Nine cells, nine passes. Cross-examination ranks nobody here and says so; three implementations
+of a tightly-pinned spec agreeing is agreement about the page.
+
+SO I MEASURED THE THING THE HARNESS LISTS AS NEVER MEASURED. DefectSensitivity has been
+unavailable for this whole project. It is available by hand: replace `safe_to_reap`'s body with
+`reapable(wts, live, settled)` -- the exact defect this task exists to prevent, a deletion list
+that ignores contradictory listings -- and count which suites notice.
+
+  glm-53-flash      6 tests fail
+  claude-sonnet     4
+  or-ling-30-flash  3
+
+glm on the measured axis and on test count, at a cost of 400 lines to 301 and 259.
+
+THE ONE CRITIQUE IS OR-LING ON GLM, and it is good. Its material finding, against the arm I am
+merging:
+
+  "`safe_to_reap` uses `Vec::contains` where a set lookup is needed. The function documents
+   itself as 'set subtraction' and the handoff calls it 'literal set subtraction,' but the
+   implementation collects conflict dirs into a `Vec<String>` and filters `reapable` via
+   `.contains()` -- an O(n*m) scan, not a set operation. For the function that gates what gets
+   deleted, this is the wrong data structure."
+
+Correct, and or-ling is scrupulous that it changes no test result. It is an idiom and
+complexity point on a function that will run over 327 directories, not a correctness one, so it
+does not outweigh a two-to-one margin on defect sensitivity. Filed rather than fixed in the
+merge, because editing a winner's diff on the way in is how an adjudicator's preferences get
+into the record unmeasured.
+
+It also flagged that several tests pin exact `Conflict` field counts and exact `reapable`
+outputs, "which locks in implementation details that should ideally be free to change". Here I
+disagree with the critic: the spec pins those counts by name, clause 6 pins the 2-1 case
+specifically, and a test asserting what the spec fixes is doing its job.
+
+WHAT THIS BUYS. `wtreap` could previously offer a directory for deletion when one observation
+said git lists it. Now a dir observed inconsistently is `Indeterminate` whatever `live` and
+`settled` say, majority does not resolve it -- two observations agreeing is not evidence the
+third was wrong -- and `safe_to_reap` is a strict subset of `reapable`. Both functions exist on
+purpose: `reapable` is the honest answer to "what did `disposal` say", `safe_to_reap` is what a
+caller that deletes should use.
+
+Still nothing calls it. 327 directories against 124 registrations remain on disk.
+
+1222 core tests, clippy 9, farmerbob-core clippy 0.
