@@ -40,6 +40,28 @@ for f in "$@"; do
     rc=1
   fi
 
+  # 4. THE SPEC MUST CARRY THE CURRENT RUBRIC.
+  #
+  # Nothing reads .fb/prompts/_rubric.md. Every spec was carrying a FROZEN COPY of another
+  # spec's tail, snapshotted days ago, so two rules added to _rubric.md this week -- the one
+  # about suites running against other implementations, and the one about not quoting a field
+  # the spec calls prose -- reached no arm at all. Both were added precisely because the defect
+  # had recurred, and both recurred again afterwards.
+  #
+  # That is farmerbob-vg0 turned inside out: disclose what is scored, into a file the arms
+  # never see. This check makes the disclosure verifiable instead of assumed.
+  rubric=.fb/prompts/_rubric.md
+  if [ -f "$rubric" ]; then
+    while IFS= read -r heading; do
+      [ -n "$heading" ] || continue
+      if ! grep -qF "$heading" "$f"; then
+        echo "$name: missing a current rubric section: $heading"
+        echo "$name:   append .fb/prompts/_rubric.md, not a copy of another spec's tail."
+        rc=1
+      fi
+    done < <(grep -E '^## ' "$rubric")
+  fi
+
   # 3. A declared target that contradicts the base. Exactly farmerbob-m71, and the reason
   #    wave58 and wave60 each burned four slots in under fifteen seconds.
   verb=$(grep -ohE '<!-- fb:(creates|modifies) [^ ]+ -->' "$f" | head -1 | awk '{print $2}' | sed 's/^fb://')
