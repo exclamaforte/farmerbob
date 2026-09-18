@@ -8,6 +8,7 @@ mod doctor;
 mod eligible;
 mod escalate;
 mod import;
+mod ledger_cmd;
 mod mutants;
 mod objective;
 mod pareto;
@@ -133,6 +134,31 @@ enum Command {
     /// nothing -- and one such was submitted, passing build, scope, lint and its own tests --
     /// satisfies every other check we own. This one it cannot satisfy.
     Differential { task: String },
+    /// Record and read credit for spec defects and follow-ups proposed by arms.
+    ///
+    /// Two stages feed it: the spec critique that runs BEFORE implementation, and the
+    /// FOLLOWUPS section of cross-critique. An accepted proposal is a positive signal
+    /// about an arm that nothing else here measures. See docs/PROPOSALS.md.
+    Ledger {
+        /// Append a ruling instead of printing the tally.
+        #[arg(long)]
+        record: bool,
+        /// The arm that made the proposal.
+        #[arg(long, default_value = "")]
+        arm: String,
+        /// The task it was made during. Without --record, filters the tally.
+        #[arg(long, default_value = "")]
+        task: String,
+        /// `spec` or `followup`.
+        #[arg(long, default_value = "")]
+        kind: String,
+        /// `accepted`, `rejected` or `duplicate`.
+        #[arg(long, default_value = "")]
+        ruling: String,
+        /// One line, as the arm wrote it.
+        #[arg(long, default_value = "")]
+        title: String,
+    },
     /// Strip every `#[cfg(test)]` item from every `.rs` file under a directory, in place.
     ///
     /// Exists so `fb-crossx.sh` stops carrying its own awk version of this, which truncated
@@ -551,6 +577,24 @@ fn main() {
         Some(Command::Status) => status::run_cmd(),
         Some(Command::Eligible { arm }) => eligible::run_cmd(&arm),
         Some(Command::Differential { task }) => differential::run_cmd(&task),
+        Some(Command::Ledger {
+            record,
+            arm,
+            task,
+            kind,
+            ruling,
+            title,
+        }) => {
+            if record {
+                ledger_cmd::record(&arm, &task, &kind, &ruling, &title)
+            } else {
+                ledger_cmd::show(if task.is_empty() {
+                    None
+                } else {
+                    Some(task.as_str())
+                })
+            }
+        }
         Some(Command::StripTests { dir }) => match crossx::strip_test_modules_in(&dir) {
             Ok(()) => 0,
             Err(e) => {

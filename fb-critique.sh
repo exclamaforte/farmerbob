@@ -152,7 +152,13 @@ open(sys.argv[2], "w").write(tpl.replace("{PATCH}", patch).replace("{HANDOFF}", 
 PY
     rm -f "$cw/.fb/critique.md"; mkdir -p "$cw/.fb"
     P="$(cat "$p")"
-    ( fb_launch "$critic" "$P" "$cw" ) > "$LOGS/critiques/$BEAD/$critic.log" 2>&1
+    # CONTINUE the critic's own implementation session. The critic is the same arm that
+    # implemented this task, running in its own worktree -- so it has just spent a full run
+    # against this spec, and starting cold made it re-read from scratch what it already knew.
+    # The comment above claimed the worktree kept context warm; it kept the DIRECTORY warm and
+    # the session was new every time. Continuation is best effort: if no session survives, the
+    # launcher starts fresh and the prompt is self-contained.
+    ( fb_launch "$critic" "$P" "$cw" continue ) > "$LOGS/critiques/$BEAD/$critic.log" 2>&1
     if [ -s "$cw/.fb/critique.md" ]; then
       cp "$cw/.fb/critique.md" "$LOGS/critiques/$BEAD/$critic.on.$subject.md"
       printf '  %-22s reviewed %-22s %s claims, %s words\n' "$critic" "$subject" \

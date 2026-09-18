@@ -88,9 +88,10 @@ pub fn plan(
    registration to remove and issuing one would fail.
 3. With `may_unregister: false`, a registered directory produces NO steps and appears in
    `skipped` as `RegisteredAndUnregisterNotPermitted`. Not a `Delete`, not a bare `Unregister`.
-4. Every directory in the listing appears EXACTLY ONCE across `steps` and `skipped` -- counted
-   by directory name, where a name in `steps` may carry two steps. Pin the partition: no
-   directory is silently absent from both.
+4. Every directory in **the deduplicated set of names from `wts`** appears EXACTLY ONCE across
+   `steps` and `skipped` -- where a name in `steps` may carry two steps. Pin the partition: no
+   directory is silently absent from both. "The listing" means the deduplicated set everywhere
+   in this spec; the raw slice is used only to compute conflicts.
 5. A conflicted directory -- observed both registered and unregistered -- is skipped as
    `Conflicted` and never appears in `steps`, whatever `may_unregister` says. This defers to
    `wtreap::conflicts` and must not re-derive the rule.
@@ -107,9 +108,12 @@ pub fn plan(
   with a reason. Say in the doc that this is a successful plan, not a failure.
 - A listing where EVERYTHING may be deleted and all are unregistered: `steps` is exactly one
   `Delete` per directory, in sorted order, and `skipped` is empty.
-- The SAME directory name appearing twice with identical entries: it is one directory. It
-  appears once in the plan. State what happens and pin it -- `wtreap::census` counts entries
-  while `reapable` returns a set, and a plan is about directories, not observations.
+- The SAME directory name appearing twice: **deduplicate by name FIRST, keeping the first
+  entry, and the deduplicated list is the input to every `wtreap` call and to the plan.** It
+  appears once. This is pinned, not delegated: `wtreap::census` counts entries while `reapable`
+  returns a set, and a plan is about directories, not observations. (Contradictory entries are
+  a conflict and clause 5 governs them; dedup does not silently pick a winner between them,
+  because `conflicts` is computed over the RAW listing before dedup. Pin both halves.)
 - A directory whose name does not split on `--`: `wtreap` calls it `Indeterminate` when
   unregistered, so it is skipped as `Indeterminate`. It is NOT a separate skip reason.
 
@@ -124,7 +128,10 @@ ambiguity `wtreap` exists to preserve.
 
 `steps` is in EXECUTION ORDER, which is the whole point: within a directory `Unregister`
 precedes `Delete`, and directories are visited in sorted name order so two runs over one
-listing produce identical plans. `skipped` is sorted by directory name with one entry per
+listing produce identical plans. **Sorted means `String::cmp`** -- bytewise, by Unicode scalar
+value, which is what `sort_unstable` on a `Vec<String>` already does. NOT natural order, NOT
+locale collation, NOT case-insensitive. `autopilot::natural_less` exists in this crate and is
+deliberately not used here; say so, because a reader will expect it. `skipped` is sorted by directory name with one entry per
 directory. Say in the doc that `steps` is not sorted as a whole -- it is grouped by directory
 and ordered within -- because a reader who sorts it breaks clause 1.
 

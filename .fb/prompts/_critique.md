@@ -69,6 +69,38 @@ compute; your reasoning is the part it cannot.
 `NO MATERIAL DEFECTS FOUND` is a legitimate and useful answer. Do not invent objections to
 look thorough — a false claim costs you more than an empty CLAIMS section.
 
+### FOLLOWUPS
+
+Optional, and new. A review turns up true things that are not defects in the patch you were
+handed: a function two modules away that this change makes obviously wrong, a rule enforced in
+four places that should be enforced in one, a test that passes for the wrong reason. Those used
+to have nowhere to go -- discarded, or bent into a CLAIM they do not fit.
+
+Put them here instead:
+
+    FOLLOWUPS
+
+    FOLLOWUP: <one line: the work, stated as a change to make>
+    WHY: <what is wrong now, and what it costs -- not "would be nicer">
+    SCOPE: <the file or files it touches>
+
+A `FOLLOWUP:` marker counts only at the start of a line.
+
+Rules, because this section is easy to abuse:
+
+- It must be **out of scope for this patch**. If the author should have done it, that is a
+  CLAIM, not a follow-up.
+- It must be about the **codebase**, not the specification and not the harness. A spec defect
+  belongs to the spec-critique stage, which runs before implementation.
+- It must be something you could hand to another arm as a task. "Improve error handling" is
+  not; "`safe_to_reap` filters with `Vec::contains` where its own doc claims set subtraction,
+  on the function that gates deletion across 327 directories" is.
+- Omit the section entirely if you have none. Empty is the common case and costs you nothing.
+
+The adjudicator rules each one Accepted, Rejected or Duplicate, and an accepted follow-up
+becomes a real task. Accepted and rejected counts are both recorded against you across tasks,
+so a speculative follow-up is not free.
+
 ## Comparison to your own implementation
 
 You may reference your own approach where it illuminates a real trade-off. Do not argue that
