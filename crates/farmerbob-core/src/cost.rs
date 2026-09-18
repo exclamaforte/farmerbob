@@ -338,6 +338,166 @@ fn parse_token_count(payload: &str) -> Measurement<u64> {
     }
 }
 
+/// Our figure against the provider's, over the same window.
+///
+/// A CLOSED set of exactly three outcomes: the two figures agree within
+/// tolerance, they differ by more than it, or no comparison was made. No
+/// fourth outcome exists, and [`Reconciliation::Unchecked`] is emphatically
+/// not a soft [`Reconciliation::Agrees`] -- an unreconciled board is not a
+/// reconciled one.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reconciliation {
+    /// The two agree within tolerance.
+    Agrees {
+        /// Our attributable figure for the window.
+        ours_usd: f64,
+        /// The provider's reported figure for the window.
+        theirs_usd: f64,
+    },
+    /// They differ by more than tolerance. `residual_usd` is theirs minus ours, so a
+    /// POSITIVE residual means we under-counted.
+    Differs {
+        /// Our attributable figure for the window.
+        ours_usd: f64,
+        /// The provider's reported figure for the window.
+        theirs_usd: f64,
+        /// `theirs - ours`: POSITIVE means we under-counted against a bill in hand.
+        residual_usd: f64,
+        /// The disagreement as a fraction of THEIRS; see [`reconcile`] for the
+        /// zero-denominator exception.
+        fraction: f64,
+    },
+    /// One side is unavailable, so no comparison was made. NOT agreement.
+    Unchecked {
+        /// Which side was unavailable, or why no comparison could be made.
+        missing: String,
+    },
+}
+
+/// Compare our attributable total with the provider's reported total.
+///
+/// `tolerance_fraction` is relative, e.g. `0.01` for one percent.
+///
+/// # Pinned semantics
+///
+/// * `residual_usd` is `theirs - ours`. A POSITIVE residual means we
+///   under-counted; on the board's first reconciliation (2026-09-17) it is
+///   `20.0299 - 16.8747 = 3.1552`.
+/// * `fraction` is `residual_usd / theirs_usd` -- the disagreement relative to
+///   THEIRS, the provider's figure -- and the denominator is pinned:
+///   `3.1552 / 20.0299 ≈ 0.1575`. Ours would give ≈ 0.1870; the two give
+///   different percentages and an unstated one is useless. The one exception:
+///   when `theirs` is zero and the totals are not both zero, the fraction is
+///   unbounded; since this function never returns an infinite or NaN
+///   fraction, it returns `f64::MAX` with the sign of `residual_usd` instead.
+/// * The tolerance boundary is INCLUSIVE: a difference of exactly
+///   `tolerance_fraction` is [`Reconciliation::Agrees`]; only a difference
+///   strictly greater is [`Reconciliation::Differs`]. With
+///   `tolerance_fraction: 0.0`, identical values agree and any difference at
+///   all differs.
+/// * Both figures zero is [`Reconciliation::Agrees`]: two parties agreeing
+///   that nothing was spent is agreement.
+/// * Negative money -- a refund -- is accepted and flows through the signed
+///   arithmetic unchanged.
+///
+/// # What is NOT a comparison
+///
+/// `theirs_usd: None` is [`Reconciliation::Unchecked`], never
+/// [`Reconciliation::Agrees`]: a provider we did not ask has not confirmed
+/// us. `ours_usd: None` is likewise [`Reconciliation::Unchecked`], with a
+/// reason naming which side was missing -- the two cases are different facts,
+/// and a reader must be able to tell them apart. A NaN or infinite figure on
+/// either side is [`Reconciliation::Unchecked`] too: a value that is not a
+/// number has not been compared. A negative or non-finite
+/// `tolerance_fraction` is nonsense input and also yields
+/// [`Reconciliation::Unchecked`]: with no usable tolerance there is nothing
+/// to compare against.
+///
+/// # An alarm, not a diagnosis
+///
+/// The outcome set here is closed at three, but the ways our figure can be
+/// wrong are OPEN: a stale `price_checked` date, an unpriced launcher, a
+/// missing retry, reasoning tokens billed but never counted. This function
+/// detects only that the totals disagree; it never reports which side is
+/// wrong or why.
+pub fn reconcile(
+    ours_usd: Option<f64>,
+    theirs_usd: Option<f64>,
+    tolerance_fraction: f64,
+) -> Reconciliation {
+    if !tolerance_fraction.is_finite() || tolerance_fraction < 0.0 {
+        return Reconciliation::Unchecked {
+            missing: format!(
+                "tolerance_fraction {tolerance_fraction} is not a usable fraction; \
+                 a tolerance must be finite and >= 0.0, so no comparison was made"
+            ),
+        };
+    }
+    let ours = match ours_usd {
+        Some(value) if value.is_finite() => value,
+        Some(value) => {
+            return Reconciliation::Unchecked {
+                missing: format!(
+                    "ours_usd is {value}, which is not a finite number; \
+                     a value that is not a number has not been compared"
+                ),
+            };
+        }
+        None => {
+            return Reconciliation::Unchecked {
+                missing: "ours_usd: our attributable total for the window is \
+                          unavailable, so no comparison was made"
+                    .to_string(),
+            };
+        }
+    };
+    let theirs = match theirs_usd {
+        Some(value) if value.is_finite() => value,
+        Some(value) => {
+            return Reconciliation::Unchecked {
+                missing: format!(
+                    "theirs_usd is {value}, which is not a finite number; \
+                     a value that is not a number has not been compared"
+                ),
+            };
+        }
+        None => {
+            return Reconciliation::Unchecked {
+                missing: "theirs_usd: the provider's reported total for the \
+                          window is unavailable; a provider we did not ask has \
+                          not confirmed us"
+                    .to_string(),
+            };
+        }
+    };
+
+    let residual = theirs - ours;
+    if residual == 0.0 {
+        return Reconciliation::Agrees {
+            ours_usd: ours,
+            theirs_usd: theirs,
+        };
+    }
+    let fraction = if theirs == 0.0 {
+        f64::copysign(f64::MAX, residual)
+    } else {
+        residual / theirs
+    };
+    if fraction.abs() <= tolerance_fraction {
+        Reconciliation::Agrees {
+            ours_usd: ours,
+            theirs_usd: theirs,
+        }
+    } else {
+        Reconciliation::Differs {
+            ours_usd: ours,
+            theirs_usd: theirs,
+            residual_usd: residual,
+            fraction,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -838,5 +998,204 @@ mod token_boundaries {
             tokens_from_log(Launcher::Codex, "tokens used\n-5\n"),
             Measurement::Missing(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod reconciliation {
+    use super::*;
+
+    fn missing_reason(result: Reconciliation) -> String {
+        match result {
+            Reconciliation::Unchecked { missing } => missing,
+            other => panic!("expected Unchecked, got {other:?}"),
+        }
+    }
+
+    // Clauses 1 and 5, the real numbers: the board's first reconciliation
+    // (2026-09-17). residual = theirs - ours is POSITIVE because we
+    // under-counted, and the fraction is of THEIRS, not ours.
+    #[test]
+    fn first_reconciliation_pins_residual_and_fraction() {
+        match reconcile(Some(16.8747), Some(20.0299), 0.01) {
+            Reconciliation::Differs {
+                residual_usd,
+                fraction,
+                ..
+            } => {
+                assert!(
+                    (residual_usd - 3.1552).abs() < 1e-9,
+                    "residual must be theirs minus ours: {residual_usd}"
+                );
+                assert!(
+                    residual_usd > 0.0,
+                    "a positive residual means we under-counted"
+                );
+                assert!(
+                    (fraction - 0.1575).abs() < 1e-4,
+                    "fraction is of THEIRS (3.1552/20.0299), not ours: {fraction}"
+                );
+            }
+            other => panic!("expected Differs, got {other:?}"),
+        }
+    }
+
+    // Clause 2: 0.5% is inside one percent.
+    #[test]
+    fn half_a_percent_is_inside_one_percent() {
+        assert!(matches!(
+            reconcile(Some(20.0), Some(20.1), 0.01),
+            Reconciliation::Agrees { .. }
+        ));
+    }
+
+    // Clause 3: a provider we did not ask has not confirmed us.
+    #[test]
+    fn provider_not_asked_is_unchecked_never_agrees() {
+        assert!(matches!(
+            reconcile(Some(20.0), None, 0.01),
+            Reconciliation::Unchecked { .. }
+        ));
+    }
+
+    // Clause 4: which side is missing is a different fact for each side.
+    #[test]
+    fn missing_sides_are_two_different_facts() {
+        let no_ours = missing_reason(reconcile(None, Some(20.0), 0.01));
+        let no_theirs = missing_reason(reconcile(Some(20.0), None, 0.01));
+        assert_ne!(no_ours, no_theirs);
+    }
+
+    // Corollary of clauses 3 and 4: with neither figure, nothing was compared.
+    #[test]
+    fn both_sides_missing_is_unchecked() {
+        assert!(matches!(
+            reconcile(None, None, 0.01),
+            Reconciliation::Unchecked { .. }
+        ));
+    }
+
+    // Clause 5 from the other side: ours above theirs is an over-count, and
+    // the residual carries the sign.
+    #[test]
+    fn an_overcount_has_negative_residual() {
+        match reconcile(Some(21.0), Some(20.0), 0.01) {
+            Reconciliation::Differs { residual_usd, .. } => {
+                assert!((residual_usd + 1.0).abs() < 1e-12);
+            }
+            other => panic!("expected Differs, got {other:?}"),
+        }
+    }
+
+    // Clause 6: 1.0/100.0 is exactly 0.01 in f64, so this sits ON the
+    // boundary, and the boundary is inclusive.
+    #[test]
+    fn exactly_at_tolerance_is_agreement() {
+        assert!(matches!(
+            reconcile(Some(99.0), Some(100.0), 0.01),
+            Reconciliation::Agrees { .. }
+        ));
+    }
+
+    // Clause 6: one cent the agreeing side of the boundary.
+    #[test]
+    fn one_cent_inside_the_tolerance_is_agreement() {
+        assert!(matches!(
+            reconcile(Some(99.1), Some(100.0), 0.01),
+            Reconciliation::Agrees { .. }
+        ));
+    }
+
+    // Clause 6: one cent the disagreeing side of the boundary.
+    #[test]
+    fn one_cent_outside_the_tolerance_is_disagreement() {
+        assert!(matches!(
+            reconcile(Some(98.9), Some(100.0), 0.01),
+            Reconciliation::Differs { .. }
+        ));
+    }
+
+    // Boundary: two parties agreeing that nothing was spent is agreement.
+    #[test]
+    fn both_zero_agree_that_nothing_was_spent() {
+        assert!(matches!(
+            reconcile(Some(0.0), Some(0.0), 0.01),
+            Reconciliation::Agrees { .. }
+        ));
+    }
+
+    // Boundary: a zero denominator must not surface as inf or NaN.
+    #[test]
+    fn zero_provider_against_real_spend_differs_with_finite_fraction() {
+        match reconcile(Some(5.0), Some(0.0), 0.01) {
+            Reconciliation::Differs {
+                residual_usd,
+                fraction,
+                ..
+            } => {
+                assert_eq!(residual_usd, -5.0);
+                assert!(
+                    fraction.is_finite(),
+                    "fraction must not be inf or NaN: {fraction}"
+                );
+            }
+            other => panic!("expected Differs, got {other:?}"),
+        }
+    }
+
+    // Boundary: tolerance zero separates identical from any difference.
+    #[test]
+    fn zero_tolerance_agrees_only_on_identical_values() {
+        assert!(matches!(
+            reconcile(Some(20.0), Some(20.0), 0.0),
+            Reconciliation::Agrees { .. }
+        ));
+        assert!(matches!(
+            reconcile(Some(20.0), Some(20.0 + 1e-9), 0.0),
+            Reconciliation::Differs { .. }
+        ));
+    }
+
+    // Boundary: a negative tolerance is nonsense input and compares nothing.
+    #[test]
+    fn negative_tolerance_compares_nothing() {
+        assert!(matches!(
+            reconcile(Some(1.0), Some(1.0), -0.01),
+            Reconciliation::Unchecked { .. }
+        ));
+    }
+
+    // Negative money is a refund: accepted, and residual stays theirs minus ours.
+    #[test]
+    fn refunds_are_accepted_and_signed_arithmetic_holds() {
+        assert!(matches!(
+            reconcile(Some(-1.0), Some(-1.0), 0.01),
+            Reconciliation::Agrees { .. }
+        ));
+        match reconcile(Some(-16.8747), Some(-20.0299), 0.01) {
+            Reconciliation::Differs { residual_usd, .. } => {
+                assert!((residual_usd + 3.1552).abs() < 1e-9);
+            }
+            other => panic!("expected Differs, got {other:?}"),
+        }
+    }
+
+    // A value that is not a number has not been compared, on either side.
+    #[test]
+    fn non_finite_figures_are_unchecked_never_agrees() {
+        for (ours, theirs) in [
+            (Some(f64::NAN), Some(20.0)),
+            (Some(f64::INFINITY), Some(20.0)),
+            (Some(20.0), Some(f64::NAN)),
+            (Some(20.0), Some(f64::NEG_INFINITY)),
+        ] {
+            assert!(
+                matches!(
+                    reconcile(ours, theirs, 0.01),
+                    Reconciliation::Unchecked { .. }
+                ),
+                "a value that is not a number has not been compared"
+            );
+        }
     }
 }
