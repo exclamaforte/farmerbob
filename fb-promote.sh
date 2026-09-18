@@ -131,6 +131,28 @@ json.dump({"claims": claims, "contradictions": contradictions}, open(out, "w"), 
 
 from collections import Counter
 k = Counter(c["kind"] for c in claims)
+
+# THIS STAGE'S OWN ARTEFACT, separate from claims.json.
+#
+# claims.json is shared: fb-critique writes it, this stage rewrites it with the classification
+# added, and fb-prove and fb-escalate read it. That sharing is deliberate and stays. What was
+# missing is a record that PROMOTE ITSELF ran, and the pipeline declared one -- promoted.json --
+# that nothing ever created. So `[ -s "$artefact" ]` was false on every invocation, promote
+# re-ran and re-verified every claim forever, and run_stage recorded "ok" regardless because it
+# only checked the exit code. Sixty-six tasks carry that signature with no artefact behind it.
+#
+# The counts below are what the stage prints; persisting them makes the declared artefact real,
+# gives promote a cache key, and leaves a machine-readable record of a classification that until
+# now existed only in a log line.
+summary = {
+    "bead": bead,
+    "claims": len(claims),
+    "critics": len({c["critic"] for c in claims}),
+    "kinds": {kind: k.get(kind, 0) for kind in ("CONTRADICTED", "TESTABLE", "CONFIRMATORY")},
+    "contradictions": len(contradictions),
+}
+promoted_path = out.replace(".claims.json", ".promoted.json")
+json.dump(summary, open(promoted_path, "w"), indent=1)
 print(f"  {len(claims)} claims from {len({c['critic'] for c in claims})} critics")
 for kind in ("CONTRADICTED", "TESTABLE", "CONFIRMATORY"):
     print(f"    {kind:<14}{k.get(kind, 0)}")
@@ -145,4 +167,5 @@ if contradictions:
         print(f"      {c['a']} expects: {c['a_expects']}")
         print(f"      {c['b']} expects: {c['b_expects']}")
 print(f"\n-> {out}")
+print(f"-> {promoted_path}")
 PY

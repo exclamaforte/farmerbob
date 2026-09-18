@@ -1248,6 +1248,45 @@ pub fn run_cmd(bead: &str) -> i32 {
         eprintln!("fb-promote: cannot write {}", out.display());
         return exit::ERROR;
     }
+
+    // THIS STAGE'S OWN ARTEFACT, beside the shared one.
+    //
+    // `claims.json` is shared on purpose: fb-critique writes it, this stage rewrites it with
+    // the classification added, and fb-prove and fb-escalate read it. What was missing is any
+    // record that PROMOTE ran -- and fb-pipeline.sh declared one, `<bead>.promoted.json`, that
+    // nothing ever created.
+    //
+    // The consequences ran for sixty-six tasks. run_stage's `[ -s "$artefact" ]` cache check
+    // was false on every invocation, so promote re-ran and re-verified every claim every time;
+    // and run_stage recorded the stage's signature on exit status alone, so all sixty-six
+    // reported "promote: ok" with nothing behind them. A stage whose failure state was
+    // indistinguishable from its success state, inside the pipeline's own bookkeeping. Counting
+    // artefacts found it; reading the logs never would have.
+    //
+    // Writing this makes the declared artefact real and gives promote a cache key. A failure
+    // here is NOT fatal: claims.json is the load-bearing output and is already on disk, so
+    // losing the summary must not discard the verification work. It is reported, not swallowed.
+    let promoted_path = base.join(format!("{bead}.promoted.json"));
+    let summary = serde_json::json!({
+        "bead": bead,
+        "claims": claims.len(),
+        "promoted": promoted.len(),
+        "contradictions": contradictions.len(),
+        "verification_refused": verification_refused,
+        "unreadable_subjects": unreadable_subject_count,
+    });
+    match serde_json::to_string_pretty(&summary) {
+        Ok(text) => {
+            if fs::write(&promoted_path, text).is_err() {
+                eprintln!(
+                    "fb-promote: wrote {} but could not write {}",
+                    out.display(),
+                    promoted_path.display()
+                );
+            }
+        }
+        Err(e) => eprintln!("fb-promote: cannot render the stage summary: {e}"),
+    }
     let mut report = String::new();
     render_report(
         &claims,

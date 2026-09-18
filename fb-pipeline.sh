@@ -80,8 +80,31 @@ run_stage() { # run_stage <name> <artefact> <keyfn> <command...>
     fi
   fi
   echo "  $name: running"
-  if "$@" >> "$LOGS/$T.pipeline.log" 2>&1; then echo "  $name: ok"; printf '%s' "$now" > "$sig"
-  else echo "  $name: FAILED (see $LOGS/$T.pipeline.log)"; return 1; fi
+  # A STAGE IS DONE WHEN ITS ARTEFACT EXISTS, NOT WHEN ITS COMMAND EXITS 0.
+  #
+  # This used to record the signature on exit status alone. `promote` declared
+  # $T.promoted.json and fb-promote.sh writes $T.claims.json, so the declared artefact was
+  # never created -- and sixty-six tasks recorded "promote: ok" with nothing at the path the
+  # pipeline names. The `[ -s "$artefact" ]` cache check above was therefore false every time,
+  # so promote re-ran and re-verified every claim on every invocation, forever.
+  #
+  # Nobody noticed because "ok" was printed either way: a stage whose failure state is
+  # indistinguishable from its success state, in the pipeline's own bookkeeping. Counting
+  # artefacts found it; reading the logs never would have.
+  #
+  # The two failures are now reported apart, because they need different fixes: a command that
+  # fails is a bug in the stage, and a command that succeeds without writing is a bug in what
+  # the pipeline believes the stage produces.
+  if ! "$@" >> "$LOGS/$T.pipeline.log" 2>&1; then
+    echo "  $name: FAILED (see $LOGS/$T.pipeline.log)"; return 1
+  fi
+  if [ ! -s "$artefact" ]; then
+    echo "  $name: RAN BUT PRODUCED NOTHING at $artefact"
+    echo "     the command exited 0 and the artefact is missing or empty."
+    echo "     Either the stage is broken or the pipeline names the wrong file."
+    return 1
+  fi
+  echo "  $name: ok"; printf '%s' "$now" > "$sig"
 }
 
 # DIFFERENTIAL. The only stage here that is not a gate on form.
