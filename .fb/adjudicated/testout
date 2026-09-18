@@ -1,0 +1,56 @@
+MERGED claude-sonnet
+Adjudicated 2026-09-18. Three arms, three PASS.
+
+  claude-sonnet     PASS  568L  23 tests  runtime unrecorded
+  or-ling-30-flash  PASS  539L  24 tests  226s
+  codex-luna        PASS  312L  10 tests  498s
+
+  impl \ suite            claude-so codex-lun or-ling-3
+  claude-sonnet            .         .         .
+  codex-luna               .         .         .
+  or-ling-30-flash         FAIL      .         .
+
+ONE DISCRIMINATING CELL AND IT IS REAL. sonnet's `near_miss_error_code_syntax_is_not_a_compile_
+marker` against or-ling:
+
+    left: DidNotCompile   right: Unreadable
+
+My spec pins the compile markers as `error[E....]:` and `could not compile`, and pins that the
+marker set is OPEN so an unrecognised shape falls to `Unreadable` and never to `Passed`.
+or-ling matches a broader substring, so something that merely resembles an error code is
+reported as a build failure.
+
+codex-luna found the same thing independently, reviewing or-ling without seeing the matrix:
+
+  "The broad compiler substring check is documented as a robustness trade-off, but it conflicts
+   with the specification's rule that unrecognised marker shapes fall to `Unreadable`."
+
+Two arms, one cell and one critique, same defect. Not spec noise: the clause is pinned and the
+fallback is named.
+
+codex-luna also found why or-ling's own suite missed it: "The tests cover the two result states
+independently but do not pin contradictory output containing both `ok.` and `FAILED`; that
+omission allowed the first precedence bug to survive."
+
+sonnet on codex-luna found no defect and said so carefully, which is the harder answer:
+
+  "I traced several edge orderings ... and the state machine resolves them correctly -- a header
+   line's leading `-` closes the block via the generic 'not blank, not indented' branch. It
+   works, but that closing behavior is incidental rather than named, so a reader has to
+   re-derive it."
+
+and corrected codex-luna's handoff, which claimed a scope contradiction between "no other
+files" and "handoff required": "a misreading -- the task separately fixes `.fb/handoff.md` as a
+required deliverable, distinct from the scope check over crate source files."
+
+DECISION. sonnet on 23 tests to codex-luna's 10, on owning the only discriminating suite in the
+field, and on the only critique that traced a rival's state machine rather than reading its
+surface. or-ling has one more test than sonnet and a confirmed defect; count is not depth.
+
+A NOTE ON THIS RUN'S RECORD. claude-sonnet's runtime is unrecorded because I edited
+fb-dispatch.sh while this wave was live, violating farmerbob-qoe, and its dispatcher died
+reading the file mid-write. The agent had already finished and written its deliverable, so the
+work is intact and the pipeline recovered the score from the worktree -- but the wallclock is
+genuinely lost rather than estimated, and is left blank for that reason. (farmerbob-n1vl)
+
+1299 core tests, clippy 9, farmerbob-core clippy 0.

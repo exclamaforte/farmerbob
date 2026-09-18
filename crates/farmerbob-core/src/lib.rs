@@ -60,6 +60,7 @@ pub mod slots;
 pub mod task;
 pub mod task_contract;
 pub mod taskid;
+pub mod testout;
 pub mod timing;
 pub mod verifier;
 pub mod vrouter;
