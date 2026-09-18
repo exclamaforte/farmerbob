@@ -40,7 +40,6 @@ pub mod ledger;
 pub mod lib_diff;
 pub mod limit_signal;
 pub mod liveness;
-pub mod matrix;
 pub mod measurement;
 pub mod mutate;
 pub mod outcome;
