@@ -317,7 +317,44 @@ for f in $(git -C "$WT" ls-files --others --exclude-standard crates/ 2>/dev/null
 done
 FILES=$(git -C "$WT" status --porcelain | wc -l)
 # an empty crate builds and "tests" clean -- count tests that actually RAN
-NTESTS=$(grep -oE '^test result: ok\. [0-9]+ passed' "$LOG" | awk '{s+=$4} END{print s+0}')
+# THE LAST INVOCATION, not every invocation in the log.
+#
+# This was `grep -oE '^test result: ok\. [0-9]+ passed' | awk '{s+=$4}'` -- a sum over the
+# WHOLE log. A `cargo test` run emits one result line per target (lib, doctests, compile-fail),
+# so an arm that runs the suite twice is credited twice, and the number stops being "how many
+# tests ran" and becomes "how many times the arm ran them, times the size of the workspace".
+#
+# 124 of the 421 run logs on this machine have more than one invocation, so roughly 29% of
+# every `tests` figure this project has recorded is inflated by an integer multiple. It is the
+# `tests=` column in `fb brief` and it feeds TestDepth in farmerbob_core::adjudicate, which
+# means the metric was REWARDING having needed a second attempt.
+#
+# wave87/field-shape is the demonstration. codex-luna scored tests_run=4566 against
+# gemini-38-flash's 1534 on the same module and looked like the best-tested candidate in the
+# field. It had run the suite three times; its module contains THREE `#[test]` functions, the
+# fewest of the four. or-nemotron-ultra, which actually wrote 42, scored 4779 for the same
+# wrong reason.
+#
+# The delimiter is the widest block in the log: a full `cargo test` opens with
+# `running <N> tests` for the lib target, and N is the largest such number in the run. Reset
+# the sum at every occurrence of that block and the surviving total is the last complete
+# invocation. Filtered re-runs (`cargo test <filter>`) open with a smaller N and do not reset
+# it, which is right -- they are not a scoring run.
+#
+# `null` when no invocation is found, never 0: "the suite never ran" and "the suite ran and
+# nothing passed" are different facts, and `tests` is already an Option downstream.
+#   (bead farmerbob-xbu1)
+NTESTS=$(awk '
+  NR==FNR {
+    if ($0 ~ /^running [0-9]+ tests?$/ && $2+0 > max) max = $2+0
+    next
+  }
+  {
+    if (max > 0 && $0 ~ /^running [0-9]+ tests?$/ && $2+0 == max) { s = 0; seen = 1 }
+    if (seen && $0 ~ /^test result: ok\. [0-9]+ passed/) s += $4
+  }
+  END { if (seen) print s+0; else print "null" }
+' "$LOG" "$LOG")
 # verdict is the only field that means anything: real work, compiles, tests exist and pass
 VERDICT="FAIL"
 # No absolute line threshold: it grades on VOLUME and fails correct implementations of
