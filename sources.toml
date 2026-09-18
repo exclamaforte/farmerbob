@@ -7,8 +7,26 @@
 
 # ---------------------------------------------------------------- native CLIs
 [source.claude-sonnet]
-status      = "disabled"
-disabled_reason = "the orchestrator runs on the same Anthropic plan and we are hitting its limits (user instruction, 2026-09-17, second time). Re-enabled that morning for a weekly reset that has since been consumed -- largely BY this arm, which ran 14 waves today. Kept verified-in-all-but-status: its launcher branch, --effort xhigh and the args in this entry all work and were exercised repeatedly, so re-enabling is a one-word change back to status = verified."
+status      = "verified"
+# RE-ENABLED 2026-09-18T00:20Z by owner instruction, for a FIVE HOUR WINDOW.
+#   EXPIRES 2026-09-18T05:20Z  (2026-09-17T22:20 local)
+# Third flip of this switch. The standing reason to keep it off is unchanged and still true:
+# the orchestrator runs on the same Anthropic plan, so every sonnet dispatch competes with the
+# adjudicator for one token budget, and the last re-enable consumed a weekly reset largely
+# through this arm, which ran 14 waves in a day.
+#
+# The window is the point. It is bounded on purpose so the competition cannot run away again,
+# and the expiry above is the instruction -- nothing enforces it, so if you are reading this
+# after 05:20Z and status is still "verified", that is the bug and disabling it is correct.
+# The prior disabled_reason is kept below verbatim rather than deleted, because the next person
+# to flip this needs the history and not just the current state.
+#
+# was: "the orchestrator runs on the same Anthropic plan and we are hitting its limits (user
+# instruction, 2026-09-17, second time). Re-enabled that morning for a weekly reset that has
+# since been consumed -- largely BY this arm, which ran 14 waves today. Kept
+# verified-in-all-but-status: its launcher branch, --effort xhigh and the args in this entry
+# all work and were exercised repeatedly, so re-enabling is a one-word change back to
+# status = verified."
 kind        = "cli"
 cmd         = "claude"
 args        = ["-p", "{prompt}", "--permission-mode", "bypassPermissions",
