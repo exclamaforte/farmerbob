@@ -1,0 +1,59 @@
+MERGED gemini-38-flash
+Adjudicated 2026-09-18. Four arms, FOUR PASS -- the first full-yield wave, immediately after
+the two quota-refusing arms came out of rotation.
+
+  gemini-38-flash    PASS  545L  33 tests  268s
+  glm-53-flash       PASS  394L  18 tests  422s
+  or-nemotron-ultra  PASS  372L  20 tests  416s
+  or-ling-30-flash   PASS  297L  21 tests  214s
+
+THE ENTIRE CROSS-EXAMINATION IS NOISE FROM ONE LINE OF MY SPEC.
+
+  impl \ suite            gemini-38 glm-53-fl or-ling-3 or-nemotr
+  gemini-38-flash          .         .         FAIL      .
+  glm-53-flash             .         .         FAIL      .
+  or-ling-30-flash         FAIL      FAIL      .         FAIL
+  or-nemotron-ultra        .         FAIL      FAIL      .
+
+Six failing cells. I ran three of them by hand and every one failed on the same boundary:
+
+  glm's suite on or-nemotron    duplicate_last_dispatch_latest_timestamp_wins_in_either_order
+  gemini's suite on or-ling     boundary_duplicate_dispatch_name_latest_wins
+  or-nemotron's suite on or-ling  neglected_duplicate_in_last_dispatch_last_wins
+
+The clause, in full, is mine:
+
+  "- The same name twice in `last_dispatch`: state which one wins and pin it."
+
+I meant "you decide, document your choice, and test it". Every arm read it as "the spec wants
+latest-wins pinned" or chose the other side, and the field split 2-2. gemini and glm take
+latest-wins; or-ling and or-nemotron do not.
+
+So `or-ling-30-flash` is NOT the broken arm its labels say it is. survival=0.00 and an
+OVER-FITTED suite are both artefacts of one ambiguous sentence, and its implementation has no
+demonstrated defect at all. The same is true of or-nemotron's 0.50. Every cross-camp failure is
+vetoed; nothing here ranks anyone.
+
+That is the second time in three tasks that the crossx label pointed the wrong way, and the
+second different cause -- N=3 ambiguity on marker-grammar, my own unpinned clause here. The
+instrument is honest about what it measures; what it measures is not always what it is named.
+
+WHAT THE CRITICS SAID. One critique landed out of four, or-ling on or-nemotron, and it is
+favourable and careful: it confirms the `parked_until_ms == now_ms -> ParkExpired` boundary is
+"a deliberate spec choice, not an ambiguity", praises `LastSeen::Never` vs `Ago(0)` as
+preventing "a real class of bugs where 'never dispatched' would be misreported as a large
+elapsed time", and finds one blemish -- a leftover comment claiming `Ago(0)` for future
+timestamps where the code correctly `continue`s past. Three arms wrote nothing; that is a
+harness gap, not a property of the field.
+
+DECISION, with crossx removed entirely. gemini on 33 tests to 21, 20 and 18, and all 33 map to
+a named clause or boundary of the spec -- unlike its precondition suite, where five did not. It
+covers what the others left: exact-case status comparison, one millisecond either side of the
+stale threshold, now_ms at zero, and large timestamps not overflowing. All four arms are clippy
+0 and all four survive their own suite.
+
+gemini-38-flash's third dispatch and second merge. On precondition it produced the only
+discriminating suite in a four-arm field; on marker-grammar the only implementation that
+survived a foreign suite; here the deepest in-spec suite in a field where everyone passed.
+
+1522 tests, clippy 9, farmerbob-core clippy 0.
