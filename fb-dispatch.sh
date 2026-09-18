@@ -221,6 +221,29 @@ CGPID=$!
   if [ -n "$CONT" ]; then
     a_c=(--continue); z_c=(--continue); o_c=(--continue); c_c=(--continue)
     echo "$SRC: continuing its spec-critique session"
+    # SAY THAT THE STAGE CHANGED. A continued session cannot tell these two turns apart:
+    # the critique turn wrapped the spec in _speccheck.md's instructions, and this turn IS
+    # the spec, verbatim. The model's last action was "critique this document", the new turn
+    # is that same document, and repeating the last action is the reasonable reading.
+    #
+    # wave86, the first wave in which CONT ever fired, cost a run to exactly that. codex-luna
+    # resumed its critique session and replied "Done. Wrote the findings to .fb/speccheck.md",
+    # ran the suite, and exited 0: NO-OP, +0 lines, no implementation at all. It is not a weak
+    # arm -- it passed wave59 and wave63 cold. gemini-38-flash continued in the same wave and
+    # passed with +387 lines, which is how this would have gone on being invisible.
+    #
+    # The continuation is worth keeping: the arm has already read {spec + code} and reasoned
+    # about it once, which is the entire point of running the critique first. It just has to
+    # be TOLD which stage it is in, and nothing in the prompt said so.  (bead farmerbob-81tg)
+    P="Your spec critique of this task is COMPLETE and has been recorded. This turn is the
+IMPLEMENTATION turn: write the code the task below specifies. Do not critique the spec again
+and do not write .fb/speccheck.md -- that file belongs to the previous turn and anything you
+write to it now is discarded.
+
+Everything you found while critiquing still applies. Where the spec is defective, the task
+below says what to do: implement the closest honest thing and say so in your handoff.
+
+$P"
   fi
   case "$SRC" in
     codex-luna)
