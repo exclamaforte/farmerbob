@@ -146,33 +146,83 @@ impl QuotaTracker {
         }
     }
 
-    /// Removes and returns every bucket whose park has expired.
+    /// Returns every bucket whose park has elapsed by `now`, without
+    /// mutating the tracker.
+    ///
+    /// This is a READ, not a drain: calling it twice with the same `now`
+    /// returns the same set both times, and a bucket it yields keeps its
+    /// full park history intact -- [`QuotaTracker::attempts`] for that
+    /// bucket is unchanged by this call, and a later `due` call still
+    /// yields it if nothing cleared it in between. The only thing that
+    /// clears a bucket's history is [`QuotaTracker::succeeded`]; draining
+    /// this iterator is not that, because a caller that happens not to
+    /// poll must not see different behaviour than one that polls
+    /// obsessively -- see `park_outcome_is_independent_of_polling_due` in
+    /// the tests.
+    ///
+    /// A bucket whose park instant equals `now` exactly has elapsed, and is
+    /// included; this agrees with [`QuotaTracker::is_parked`], which is
+    /// false at the same instant.
+    ///
+    /// Ordered by bucket name, ascending byte order on the wrapped string
+    /// (not map order, which is unspecified and would otherwise vary run to
+    /// run), so a caller that logs the result gets the same line every run.
     pub fn due(&mut self, now: u64) -> Vec<(Bucket, Vec<ResumeHandle>)> {
-        let due_buckets: Vec<Bucket> = self
+        let mut due_buckets: Vec<(Bucket, Vec<ResumeHandle>)> = self
             .buckets
             .iter()
             .filter(|(_, parked)| now >= parked.until)
-            .map(|(bucket, _)| bucket.clone())
+            .map(|(bucket, parked)| (bucket.clone(), parked.handles.clone()))
             .collect();
+        due_buckets.sort_by(|(a, _), (b, _)| a.0.cmp(&b.0));
         due_buckets
-            .into_iter()
-            .filter_map(|bucket| {
-                self.buckets.remove(&bucket).map(|parked| {
-                    let elapsed = parked
-                        .parked_total
-                        .saturating_add(parked.until.saturating_sub(parked.parked_since));
-                    let total = self.parked_totals.entry(bucket.clone()).or_default();
-                    *total = total.saturating_add(elapsed);
-                    (bucket, parked.handles)
-                })
-            })
-            .collect()
     }
 
-    /// Resets the consecutive-park backoff for a bucket after a successful run.
+    /// Whether this bucket is currently parked, without changing anything.
+    ///
+    /// A pure query: calling it any number of times returns the same
+    /// answer, and calling it leaves [`QuotaTracker::due`] returning
+    /// exactly what it would have returned had this never been called.
+    /// Agrees with [`QuotaTracker::due`] at the boundary: a park instant
+    /// exactly equal to `now_ms` has elapsed, so `due` yields it and this
+    /// returns `false`.
+    pub fn is_parked(&self, bucket: &Bucket, now_ms: u64) -> bool {
+        self.buckets
+            .get(bucket)
+            .is_some_and(|parked| now_ms < parked.until)
+    }
+
+    /// How many consecutive parks this bucket has accumulated since it was
+    /// last cleared.
+    ///
+    /// `None` when the tracker has never parked this bucket, and also when
+    /// [`QuotaTracker::succeeded`] has cleared its history since the last
+    /// time it was parked. These are the same answer to two different
+    /// questions -- this type does not distinguish "never parked" from
+    /// "parked, then cleared" -- and no caller should need to: both mean
+    /// there is no backoff history left to escalate from. `Some(0)` is
+    /// impossible: a bucket recorded here has been parked at least once.
+    pub fn attempts(&self, bucket: &Bucket) -> Option<u32> {
+        self.buckets.get(bucket).map(|parked| parked.attempts)
+    }
+
+    /// Clears a bucket's consecutive-park backoff history after a
+    /// successful run.
+    ///
+    /// This is the ONLY thing on `QuotaTracker` that clears a bucket's
+    /// history: [`QuotaTracker::due`] is a read and never does this. After
+    /// this call, [`QuotaTracker::attempts`] for `bucket` is `None`, and
+    /// [`QuotaTracker::is_parked`] is `false`, indistinguishable from a
+    /// bucket the tracker has never parked. Calling this on a bucket the
+    /// tracker has never parked, or has already cleared, is not an error;
+    /// `attempts` simply stays at `None`, which is where it already was.
     pub fn succeeded(&mut self, bucket: &Bucket) {
-        if let Some(parked) = self.buckets.get_mut(bucket) {
-            parked.attempts = 0;
+        if let Some(parked) = self.buckets.remove(bucket) {
+            let elapsed = parked
+                .parked_total
+                .saturating_add(parked.until.saturating_sub(parked.parked_since));
+            let total = self.parked_totals.entry(bucket.clone()).or_default();
+            *total = total.saturating_add(elapsed);
         }
     }
 
@@ -644,6 +694,13 @@ mod tests {
         );
     }
 
+    // UPDATED: previously named `succeeded_resets_attempts`, this passed
+    // verbatim with the body of `succeeded` deleted, because the old `due`
+    // removed the map entry first -- `succeeded` had nothing left to act on
+    // either way. `due` no longer removes, so the second `park` below lands
+    // on the SAME still-present entry unless `succeeded` actually cleared
+    // it: with `succeeded`'s body deleted, `park` would take the `Occupied`
+    // branch and `attempts` would be 2, failing the assertion below.
     #[test]
     fn succeeded_resets_attempts() {
         let mut tracker = QuotaTracker::new(10);
@@ -654,7 +711,7 @@ mod tests {
             evidence: "x".into(),
         };
         tracker.park(&hit, handle("a"), 0);
-        tracker.due(10);
+        tracker.due(10); // a read; must not help `succeeded` along
         tracker.succeeded(&bucket());
         tracker.park(&hit, handle("b"), 0);
         assert_eq!(
@@ -666,8 +723,152 @@ mod tests {
         );
     }
 
+    // UPDATED: previously named `due_delivers_once` and asserted the
+    // opposite of clause 1 (`due` draining the bucket so a second call
+    // returned nothing). `due` is now a pure read: see
+    // `due_is_idempotent` below for the current contract.
     #[test]
-    fn due_delivers_once() {
+    fn due_is_idempotent() {
+        let mut tracker = QuotaTracker::new(10);
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: Some(5),
+            evidence: "x".into(),
+        };
+        tracker.park(&hit, handle("a"), 0);
+        let first = tracker.due(5);
+        let second = tracker.due(5);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn due_does_not_clear_attempts() {
+        let mut tracker = QuotaTracker::new(10);
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: Some(5),
+            evidence: "x".into(),
+        };
+        tracker.park(&hit, handle("a"), 0);
+        assert_eq!(tracker.attempts(&bucket()), Some(1));
+        tracker.due(5);
+        assert_eq!(tracker.attempts(&bucket()), Some(1));
+    }
+
+    #[test]
+    fn succeeded_clears_attempts_to_none() {
+        let mut tracker = QuotaTracker::new(10);
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: None,
+            evidence: "x".into(),
+        };
+        tracker.park(&hit, handle("a"), 0);
+        assert!(tracker.attempts(&bucket()).is_some());
+        tracker.succeeded(&bucket());
+        assert_eq!(tracker.attempts(&bucket()), None);
+    }
+
+    #[test]
+    fn attempts_is_none_for_unseen_and_for_cleared_buckets() {
+        let never_seen = QuotaTracker::new(10);
+        assert_eq!(never_seen.attempts(&bucket()), None);
+
+        let mut cleared = QuotaTracker::new(10);
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: None,
+            evidence: "x".into(),
+        };
+        cleared.park(&hit, handle("a"), 0);
+        cleared.succeeded(&bucket());
+        assert_eq!(cleared.attempts(&bucket()), None);
+    }
+
+    // The property this whole task is about, pinned directly: identical
+    // event history (park at t=0 with window 10, limited again at t=20)
+    // must produce an identical park whether or not something happened to
+    // drain `due` in between. Named for the property, not for `due`, which
+    // is the mechanism that used to break it.
+    #[test]
+    fn park_outcome_is_independent_of_polling_due() {
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: None,
+            evidence: "x".into(),
+        };
+
+        let mut polled = QuotaTracker::new(10);
+        polled.park(&hit, handle("a"), 0);
+        polled.due(15); // drained mid-window; must change nothing
+        polled.park(&hit, handle("b"), 20);
+
+        let mut unpolled = QuotaTracker::new(10);
+        unpolled.park(&hit, handle("a"), 0);
+        unpolled.park(&hit, handle("b"), 20);
+
+        assert_eq!(polled.state(&bucket(), 20), unpolled.state(&bucket(), 20));
+        assert_eq!(polled.attempts(&bucket()), unpolled.attempts(&bucket()));
+    }
+
+    #[test]
+    fn is_parked_does_not_change_what_due_returns() {
+        let mut tracker = QuotaTracker::new(10);
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: Some(5),
+            evidence: "x".into(),
+        };
+        tracker.park(&hit, handle("a"), 0);
+        let before = tracker.due(5);
+        for _ in 0..5 {
+            tracker.is_parked(&bucket(), 5);
+            tracker.is_parked(&bucket(), 100);
+        }
+        let after = tracker.due(5);
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn due_on_an_empty_tracker_is_empty() {
+        let mut tracker = QuotaTracker::new(10);
+        assert!(tracker.due(0).is_empty());
+        assert!(tracker.due(u64::MAX).is_empty());
+    }
+
+    // Boundary, pinned on both halves together: a park instant exactly
+    // equal to `now` has elapsed, so `due` yields it and `is_parked`
+    // disagrees -- a caller must never see a bucket reported as both.
+    #[test]
+    fn park_instant_exactly_at_now_is_due_and_not_parked() {
+        let mut tracker = QuotaTracker::new(10);
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: Some(5),
+            evidence: "x".into(),
+        };
+        tracker.park(&hit, handle("a"), 0);
+        assert!(!tracker.is_parked(&bucket(), 5));
+        assert_eq!(tracker.due(5).len(), 1);
+    }
+
+    #[test]
+    fn succeeded_on_an_unparked_bucket_is_not_an_error() {
+        let mut tracker = QuotaTracker::new(10);
+        tracker.succeeded(&bucket());
+        assert_eq!(tracker.attempts(&bucket()), None);
+    }
+
+    #[test]
+    fn due_with_an_advancing_now_still_yields_an_uncleared_bucket() {
         let mut tracker = QuotaTracker::new(10);
         let hit = LimitHit {
             bucket: bucket(),
@@ -677,7 +878,38 @@ mod tests {
         };
         tracker.park(&hit, handle("a"), 0);
         assert_eq!(tracker.due(5).len(), 1);
-        assert!(tracker.due(5).is_empty());
+        assert_eq!(tracker.due(100).len(), 1);
+    }
+
+    #[test]
+    fn a_bucket_parked_drained_then_limited_again_has_attempts_two() {
+        let mut tracker = QuotaTracker::new(10);
+        let hit = LimitHit {
+            bucket: bucket(),
+            detected_at: 0,
+            reset_at: None,
+            evidence: "x".into(),
+        };
+        tracker.park(&hit, handle("a"), 0);
+        tracker.due(10); // drain; does not clear history
+        tracker.park(&hit, handle("b"), 10);
+        assert_eq!(tracker.attempts(&bucket()), Some(2));
+    }
+
+    #[test]
+    fn due_returns_buckets_in_ascending_name_order() {
+        let mut tracker = QuotaTracker::new(10);
+        for name in ["zeta", "alpha", "mid"] {
+            let hit = LimitHit {
+                bucket: Bucket(name.into()),
+                detected_at: 0,
+                reset_at: Some(0),
+                evidence: "x".into(),
+            };
+            tracker.park(&hit, handle("a"), 0);
+        }
+        let names: Vec<String> = tracker.due(0).into_iter().map(|(b, _)| b.0).collect();
+        assert_eq!(names, ["alpha", "mid", "zeta"]);
     }
 
     #[test]

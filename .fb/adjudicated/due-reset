@@ -1,0 +1,54 @@
+MERGED claude-sonnet
+Adjudicated 2026-09-18. Three arms, three PASS. First task of the sonnet window and its first
+merge of it.
+
+  gemini-38-flash    PASS  324L  45 tests  317s
+  or-nemotron-ultra  PASS  258L  44 tests  523s
+  claude-sonnet      PASS  253L  45 tests  235s
+
+  impl \ suite            claude-so gemini-38 or-nemotr
+  claude-sonnet            .         .         nocomp
+  gemini-38-flash          .         .         nocomp
+  or-nemotron-ultra        .         .         .
+
+DECIDED BY MUTATION, NOT BY PROXY. The task exists because `succeeded_resets_attempts` passed
+verbatim with the body of `succeeded` deleted -- a check whose failure state is
+indistinguishable from its success state. Clause 4 made the fix falsifiable, so I tested it the
+only honest way: gut `succeeded` in each candidate and run the suite.
+
+  claude-sonnet    3 tests fail
+  gemini-38-flash  2 tests fail
+
+Both fix the original defect. sonnet is more sensitive on the exact clause the task was written
+for, and does it in 253 lines against gemini's 324 for the same 45 tests. That is a measured
+axis, not a count standing in for one.
+
+THE TWO `nocomp` CELLS ARE A SIGNATURE VIOLATION, AND GEMINI NAMED IT:
+
+  "The specification explicitly instructed: 'Keep every existing public item in quota.rs ...
+   with their current signatures. Change due's BEHAVIOUR, not its signature'. The author changed
+   `due(&mut self, ...)` to `due(&self, ...)`. While making `due` take `&self` is more idiomatic
+   for a pure query ... it is a technical violation of the frozen signature constraint."
+
+Correct, and confirmed: or-nemotron is the only arm with `pub fn due(&self`. Its suite then
+fails to compile against both rivals, which is what the API-incompatibility count of 2 is.
+
+I will say the uncomfortable half, because it is mine. The spec ordered `due` to stop mutating
+and in the same breath froze a signature that advertises mutation. `&mut self` on a pure read is
+misleading and or-nemotron's instinct was right. The rule was explicit and testable and it broke
+it, so it does not win -- but the tension was manufactured by the spec, and a follow-up should
+change the signature deliberately rather than leave `&mut self` on a function that no longer
+mutates. Filed.
+
+gemini also caught two things in or-nemotron's work that a metric would not: the suite "does not
+test multiple resume handles parked into a single bucket before or across renewals", and the
+handoff "omitted explicitly declaring which existing test was updated (`due_delivers_once`
+replaced by `due_is_idempotent`), as required by the task". Clause 6 asked for exactly that
+disclosure. It was the only substantive critique in the field; or-nemotron on claude-sonnet
+wrote nothing.
+
+What the merge buys: `due` no longer deletes what it yields, so draining an iterator stopped
+being a write. The park an arm receives no longer depends on whether anyone happened to call
+`due` in between -- identical event history gave `until = 40` or `until = 30` before this.
+
+1208 core tests, clippy 9, farmerbob-core clippy 0.
