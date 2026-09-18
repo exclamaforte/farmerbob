@@ -1,0 +1,62 @@
+MERGED gemini-38-flash
+Adjudicated 2026-09-18. Four arms, three PASS:
+
+  gemini-38-flash    PASS  698L  42 tests  clippy 0  417s
+  glm-53-flash       PASS  651L  50 tests  clippy 3  1519s
+  or-nemotron-ultra  PASS  435L  45 tests  clippy 0   503s
+  or-inkling         NO-OP   0L  rc=0 after 645s
+
+THE FIRST MATRIX THAT ACTUALLY DISCRIMINATED.
+
+  impl \ suite            gemini-38 glm-53-fl or-nemotr
+  gemini-38-flash          .         .         FAIL
+  glm-53-flash             FAIL      .         FAIL
+  or-nemotron-ultra        FAIL      FAIL      .
+
+gemini's implementation is the only one that survives a suite other than its own.
+
+BOTH RIVALS HAVE CONFIRMED DEFECTS. I ran each failing cell by hand rather than trusting the
+label.
+
+glm, from gemini's suite, `tie_breaking_order_among_rejections`:
+
+    "<!-- fb:unknown a.rs --> prose"     left: [(1, UnknownWord)]   right: [(1, TrailingText)]
+
+The spec pins "a line with two independent faults reports the FIRST in the order the enum
+declares", and TrailingText is rank 2 against UnknownWord's rank 3. gemini PREDICTED this in
+its critique before I ran anything:
+
+  "returning immediately upon encountering an unknown word at line 350 truncates the pipeline
+   ... for unknown words, subsequent positions are bypassed, breaking the spec-mandated enum
+   priority whenever an unknown word co-occurs with a subsequent `Tab` or `TrailingText`."
+
+and then named the gap that hid it: "The test suite ... omits interactions between
+`UnknownWord` and higher-ranked faults, leaving the short-circuit defect untested." glm wrote
+fifty tests, more than anyone, and none of them crossed that pair.
+
+or-nemotron, from glm's suite, `tab_mixed_with_spaces_is_still_a_tab`:
+
+    left: []   right: [(1, Tab)]
+
+No rejection at all where clause 3 requires `Tab`. A tab mixed with spaces is silently
+accepted -- the failure state indistinguishable from the success state, in the module written
+to make refusals visible.
+
+ON THE "OVER-FITTED" LABEL, WHICH IS WRONG HERE. The harness marks gemini's suite OVER-FITTED
+because it fails 2 of 3, which is N-1-of-N. But the two failures are DIFFERENT confirmed
+defects in different arms, and the test that catches glm is an exhaustive walk of all ten
+ordered pairs of a precedence the spec fixes by name. That is the composition clause, tested
+completely, not a suite fitted to its author. At N=3 a correct suite catching a defect both
+rivals happen to have is indistinguishable from an over-fitted one, and the detector cannot
+tell them apart. Filed.
+
+DECISION. gemini on survival (1.00, the only arm to survive a foreign suite), on clippy (0
+against glm's 3 over a baseline of 0), and on the only substantive critique in the field --
+which correctly predicted, from reading the diff, a defect I then confirmed by execution.
+or-nemotron wrote no critique at all.
+
+Worth recording: this is gemini-38-flash's second dispatch as an implementer arm and its first
+merge. On precondition it produced the only discriminating suite in a four-arm field; here it
+produced the only implementation that survives one.
+
+1509 tests, clippy 9, farmerbob-core clippy 0.

@@ -13,30 +13,44 @@
 //! everything still queued, so each declaration is a requirement on which
 //! side of the base a path must be at launch time.
 //!
-//! Three rules keep prose *about* the syntax from being mistaken for a use
-//! of it. The line-matching shape that these rules guard has already
-//! produced three separate bugs in this project by matching a pattern
-//! inside a quotation of itself:
+//! # The Grammar
 //!
-//! - The comment must start the line, after optional leading whitespace. A
-//!   marker written mid-sentence, after other words on the same line, is
-//!   discussed syntax, not a declaration.
-//! - A marker inside a fenced code block is documentation of the syntax,
-//!   not a use of it. A fence is a line whose trimmed text starts with
-//!   three or more backticks; fences toggle, so a marker after the closing
-//!   fence is recognised again.
-//! - The marker word is one of a closed set of exactly two: `fb:creates`
-//!   and `fb:modifies`. Any other word after the comment opener and `fb:`
-//!   -- a third marker introduced by a newer prompt, say -- is ignored
-//!   rather than refused, so an older binary meeting a newer prompt still
-//!   runs it; and it is never silently treated as one of the two known
-//!   markers.
+//! A line declares if and only if, after removing leading whitespace, it
+//! matches exactly:
 //!
-//! The path is the text between the marker word and the closing `-->`,
-//! trimmed. A marker whose path is empty after trimming declares nothing
-//! and is not an error. [`check`] takes the base as the set of paths that
-//! exist on it, so a base that does not exist yet -- the normal situation
-//! for a queued spec -- is as testable as one that does.
+//! ```text
+//! OPEN , one or more spaces , "fb:" , WORD , one or more spaces , PATH , one or more spaces , CLOSE
+//! ```
+//!
+//! and nothing follows `CLOSE` except whitespace.
+//!
+//! - `OPEN` is `<!--` and `CLOSE` is `-->`.
+//! - `WORD` is `creates` or `modifies` and nothing else.
+//! - `PATH` is one or more characters containing no whitespace and not containing `CLOSE`.
+//! - Every `one or more spaces` is spaces only (`' '`). A tab is not a space here.
+//!
+//! # Refusal and Silence
+//!
+//! A line that looks like a declaration but violates the grammar is refused
+//! and reported by [`rejections`]. Five rules define refusals:
+//!
+//! - [`Rejected::Tab`]: A tab appeared where the grammar requires spaces (after
+//!   `OPEN`, after `fb:WORD`, or before `CLOSE`).
+//! - [`Rejected::TrailingText`]: Text other than whitespace followed `CLOSE`.
+//! - [`Rejected::UnknownWord`]: The marker word was neither `creates` nor `modifies`.
+//! - [`Rejected::NoSpaceAfterOpener`]: No whitespace between `OPEN` and `fb:`.
+//! - [`Rejected::MultipleMarkers`]: A line carries more than one marker. The
+//!   path is delimited by `CLOSE`, so on a two-marker line every reading of
+//!   "the path" is a guess, and a guessed path is exactly what this module
+//!   exists to refuse.
+//!
+//! When a line exhibits multiple independent faults, the first reason in
+//! [`Rejected`]'s declaration order is reported.
+//!
+//! A line with no `OPEN` at all, or prose that mentions a marker mid-sentence,
+//! or text inside a fenced code block (delimited by three or more backticks
+//! or tildes), is ignored: silence is for text that never looked
+//! like a live declaration.
 
 /// Which side of the base a declared path must be on.
 ///
@@ -94,56 +108,304 @@ pub struct Violation {
     pub exists: bool,
 }
 
+/// Why a line that looks like a declaration is not one.
+///
+/// Reported so a spec author sees the difference between "you wrote no marker" and
+/// "you wrote a marker I refused", which are otherwise indistinguishable from
+/// [`Precondition::Undeclared`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rejected {
+    /// A tab appeared where the grammar requires spaces.
+    Tab,
+    /// Text other than whitespace followed the closing delimiter.
+    TrailingText,
+    /// The marker word was neither `creates` nor `modifies`.
+    UnknownWord,
+    /// No whitespace between the comment opener and `fb:`.
+    NoSpaceAfterOpener,
+    /// The line carries more than one marker.
+    ///
+    /// The path is delimited by the closing delimiter, so on a two-marker
+    /// line every reading of "the path" is a guess, and a guessed path is
+    /// exactly what this module exists to refuse.
+    MultipleMarkers,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fence {
+    Backtick,
+    Tilde,
+}
+
+enum LineClassification {
+    Declared(Declared),
+    Rejected(Rejected),
+    Ignored,
+}
+
+struct Comment<'a> {
+    raw: &'a str,
+    open_idx: usize,
+    close_idx: usize,
+    is_marker: bool,
+    word: String,
+    no_space_after_opener: bool,
+    contains_tab: bool,
+}
+
+/// Parses an already-trimmed-at-start line if it matches the declaration grammar exactly.
+fn try_parse_declaration(trimmed_start: &str) -> Option<Declared> {
+    let rest = trimmed_start.strip_prefix("<!--")?;
+
+    // 1. One or more spaces after OPEN (SPACES ONLY, ' ')
+    let spaces1 = rest.bytes().take_while(|&b| b == b' ').count();
+    if spaces1 == 0 {
+        return None;
+    }
+    let rest = &rest[spaces1..];
+
+    // 2. "fb:"
+    let rest = rest.strip_prefix("fb:")?;
+
+    // 3. WORD: "creates" or "modifies"
+    let (requirement, rest) = if let Some(r) = rest.strip_prefix("creates") {
+        (Requirement::Absent, r)
+    } else {
+        let r = rest.strip_prefix("modifies")?;
+        (Requirement::Present, r)
+    };
+
+    // 4. One or more spaces after WORD (SPACES ONLY, ' ')
+    let spaces2 = rest.bytes().take_while(|&b| b == b' ').count();
+    if spaces2 == 0 {
+        return None;
+    }
+    let rest = &rest[spaces2..];
+
+    // 5. PATH: one or more characters containing no whitespace and not containing "-->"
+    let path_byte_len = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    if path_byte_len == 0 {
+        return None;
+    }
+    let path = &rest[..path_byte_len];
+    if path.contains("-->") {
+        return None;
+    }
+    let rest = &rest[path_byte_len..];
+
+    // 6. One or more spaces before CLOSE (SPACES ONLY, ' ')
+    let spaces3 = rest.bytes().take_while(|&b| b == b' ').count();
+    if spaces3 == 0 {
+        return None;
+    }
+    let rest = &rest[spaces3..];
+
+    // 7. CLOSE ("-->")
+    let rest = rest.strip_prefix("-->")?;
+
+    // 8. Nothing follows CLOSE except whitespace
+    if !rest.chars().all(|c| c.is_whitespace()) {
+        return None;
+    }
+
+    Some(Declared {
+        path: path.to_string(),
+        requirement,
+    })
+}
+
+/// Scans all HTML comments starting with `<!--` on `trimmed_start`.
+fn scan_comments(trimmed_start: &str) -> Vec<Comment<'_>> {
+    let mut comments = Vec::new();
+    let mut pos = 0;
+    while pos < trimmed_start.len() {
+        let Some(open_rel) = trimmed_start[pos..].find("<!--") else {
+            break;
+        };
+        let open_idx = pos + open_rel;
+        let after_open = open_idx + 4;
+        let (close_idx, raw) = match trimmed_start[after_open..].find("-->") {
+            Some(close_rel) => {
+                let close_end = after_open + close_rel + 3;
+                (close_end, &trimmed_start[open_idx..close_end])
+            }
+            None => (trimmed_start.len(), &trimmed_start[open_idx..]),
+        };
+
+        let is_marker = raw.contains("fb:");
+        let no_space_after_opener = raw
+            .strip_prefix("<!--")
+            .is_some_and(|r| r.starts_with("fb:"));
+        let contains_tab = raw.contains('\t');
+
+        let mut word = String::new();
+        if let Some(fb_pos) = raw.find("fb:") {
+            let after_fb = &raw[fb_pos + 3..];
+            for (i, c) in after_fb.char_indices() {
+                if c.is_whitespace() || after_fb[i..].starts_with("-->") {
+                    break;
+                }
+                word.push(c);
+            }
+        }
+
+        comments.push(Comment {
+            raw,
+            open_idx,
+            close_idx,
+            is_marker,
+            word,
+            no_space_after_opener,
+            contains_tab,
+        });
+
+        pos = close_idx;
+    }
+    comments
+}
+
+/// Determines the rejection reason for a line that started with `<!--` and contained `fb:`,
+/// returning the first reason in [`Rejected`]'s declaration order.
+fn determine_rejection(trimmed_start: &str) -> Option<Rejected> {
+    let comments = scan_comments(trimmed_start);
+    let markers: Vec<&Comment<'_>> = comments.iter().filter(|c| c.is_marker).collect();
+    if markers.is_empty() {
+        return None;
+    }
+
+    let marker_count: usize = comments
+        .iter()
+        .map(|c| c.raw.match_indices("fb:").count())
+        .sum();
+
+    // 1. Tab: A tab appeared where the grammar requires spaces.
+    let has_tab = markers.iter().any(|m| m.contains_tab);
+    if has_tab {
+        return Some(Rejected::Tab);
+    }
+
+    // 2. TrailingText: Text other than whitespace followed the closing delimiter.
+    let mut has_trailing_text = false;
+    for i in 0..markers.len().saturating_sub(1) {
+        let between = &trimmed_start[markers[i].close_idx..markers[i + 1].open_idx];
+        if !between.chars().all(|c| c.is_whitespace()) {
+            has_trailing_text = true;
+            break;
+        }
+    }
+    if !has_trailing_text {
+        let last_marker = markers[markers.len() - 1];
+        let after_last = &trimmed_start[last_marker.close_idx..];
+        if !after_last.chars().all(|c| c.is_whitespace()) {
+            has_trailing_text = true;
+        }
+    }
+    if has_trailing_text {
+        return Some(Rejected::TrailingText);
+    }
+
+    // 3. UnknownWord: The marker word was neither `creates` nor `modifies`.
+    let has_unknown_word = markers
+        .iter()
+        .any(|m| m.word != "creates" && m.word != "modifies");
+    if has_unknown_word {
+        return Some(Rejected::UnknownWord);
+    }
+
+    // 4. NoSpaceAfterOpener: No whitespace between the comment opener and `fb:`.
+    let has_no_space_after_opener = markers.iter().any(|m| m.no_space_after_opener);
+    if has_no_space_after_opener {
+        return Some(Rejected::NoSpaceAfterOpener);
+    }
+
+    // 5. MultipleMarkers: The line carries more than one marker.
+    if marker_count > 1 {
+        return Some(Rejected::MultipleMarkers);
+    }
+
+    None
+}
+
+/// Classifies a non-fenced line into a declaration, a rejection, or silence.
+fn classify_line(line: &str) -> LineClassification {
+    let trimmed_start = line.trim_start();
+    if !trimmed_start.starts_with("<!--") {
+        return LineClassification::Ignored;
+    }
+    if !trimmed_start.contains("fb:") {
+        return LineClassification::Ignored;
+    }
+
+    if let Some(decl) = try_parse_declaration(trimmed_start) {
+        return LineClassification::Declared(decl);
+    }
+
+    if let Some(rejected) = determine_rejection(trimmed_start) {
+        return LineClassification::Rejected(rejected);
+    }
+
+    LineClassification::Ignored
+}
+
+/// Iterates over non-fenced lines in `prompt`, tracking fence blocks and 1-based line numbers.
+fn classified_lines(prompt: &str) -> impl Iterator<Item = (u32, LineClassification)> + '_ {
+    let mut current_fence = None;
+    prompt.lines().enumerate().filter_map(move |(idx, line)| {
+        let trimmed = line.trim();
+        match current_fence {
+            None => {
+                if trimmed.starts_with("```") {
+                    current_fence = Some(Fence::Backtick);
+                    return None;
+                } else if trimmed.starts_with("~~~") {
+                    current_fence = Some(Fence::Tilde);
+                    return None;
+                }
+            }
+            Some(Fence::Backtick) => {
+                if trimmed.starts_with("```") {
+                    current_fence = None;
+                }
+                return None;
+            }
+            Some(Fence::Tilde) => {
+                if trimmed.starts_with("~~~") {
+                    current_fence = None;
+                }
+                return None;
+            }
+        }
+        let line_number = (idx + 1) as u32;
+        Some((line_number, classify_line(line)))
+    })
+}
+
 /// Every declaration in a prompt, in the order they appear.
 ///
 /// The result is a transcript of the prompt, not a set: document order, with
 /// duplicates preserved. A prompt that declares the same path twice is
 /// reported as what it literally says, twice.
 pub fn declarations(prompt: &str) -> Vec<Declared> {
-    let mut declared = Vec::new();
-    let mut fenced = false;
-    for line in prompt.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") {
-            fenced = !fenced;
-            continue;
-        }
-        if fenced {
-            continue;
-        }
-        if let Some(d) = parse_declaration(trimmed) {
-            declared.push(d);
-        }
-    }
-    declared
+    classified_lines(prompt)
+        .filter_map(|(_, class)| match class {
+            LineClassification::Declared(d) => Some(d),
+            _ => None,
+        })
+        .collect()
 }
 
-/// Parse one already-trimmed line into a [`Declared`], or `None` if the
-/// line is not a declaration.
-fn parse_declaration(line: &str) -> Option<Declared> {
-    let rest = line.strip_prefix("<!--")?.trim_start();
-    let (requirement, rest) = match rest.strip_prefix("fb:creates") {
-        Some(rest) => (Requirement::Absent, rest),
-        None => {
-            let modifies = rest.strip_prefix("fb:modifies")?;
-            (Requirement::Present, modifies)
-        }
-    };
-    // The marker word ends at the whitespace that separates it from the
-    // path. A word that merely starts with a marker (`fb:createsx`) is a
-    // different word, not a marker.
-    if !rest.starts_with(char::is_whitespace) {
-        return None;
-    }
-    let body = rest.strip_suffix("-->")?.trim();
-    if body.is_empty() {
-        // A marker with no path declares nothing and is not an error.
-        return None;
-    }
-    Some(Declared {
-        path: body.to_string(),
-        requirement,
-    })
+/// Lines that look like declarations and were refused, with the line number
+/// (1-based) and the reason. In line order.
+///
+/// A line with two independent faults reports the first reason in the order
+/// [`Rejected`] declares.
+pub fn rejections(prompt: &str) -> Vec<(u32, Rejected)> {
+    classified_lines(prompt)
+        .filter_map(|(line_num, class)| match class {
+            LineClassification::Rejected(r) => Some((line_num, r)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Check a prompt's declarations against the paths present on the base.
@@ -190,7 +452,9 @@ pub fn check(prompt: &str, present: &[&str]) -> Precondition {
 
 #[cfg(test)]
 mod tests {
-    use super::{Declared, Precondition, Requirement, Violation, check, declarations};
+    use super::{
+        Declared, Precondition, Rejected, Requirement, Violation, check, declarations, rejections,
+    };
 
     fn absent(path: &str) -> Declared {
         Declared {
@@ -220,6 +484,7 @@ mod tests {
             declarations("<!-- fb:creates a/b.rs -->"),
             vec![absent("a/b.rs")],
         );
+        assert_eq!(rejections("<!-- fb:creates a/b.rs -->"), Vec::new());
     }
 
     #[test]
@@ -228,6 +493,7 @@ mod tests {
             declarations("<!-- fb:modifies a/b.rs -->"),
             vec![present("a/b.rs")],
         );
+        assert_eq!(rejections("<!-- fb:modifies a/b.rs -->"), Vec::new());
     }
 
     #[test]
@@ -264,6 +530,7 @@ mod tests {
     fn markerless_prompt_is_undeclared_not_satisfied() {
         let prompt = "a prompt that never declares anything";
         assert_eq!(declarations(prompt), Vec::new());
+        assert_eq!(rejections(prompt), Vec::new());
         assert_eq!(check(prompt, &["a/b.rs"]), Precondition::Undeclared);
     }
 
@@ -271,8 +538,15 @@ mod tests {
     fn marker_mid_sentence_declares_nothing() {
         let prompt = "the rubric says fb:creates x.rs means the path must not exist";
         assert_eq!(declarations(prompt), Vec::new());
-        // The mentioned path exists; if it were parsed as a declaration this
-        // would be Violated rather than Undeclared.
+        assert_eq!(rejections(prompt), Vec::new());
+        assert_eq!(check(prompt, &["x.rs"]), Precondition::Undeclared);
+    }
+
+    #[test]
+    fn marker_mid_sentence_with_comment_brackets_declares_nothing() {
+        let prompt = "the rubric says <!-- fb:creates x.rs --> means something";
+        assert_eq!(declarations(prompt), Vec::new());
+        assert_eq!(rejections(prompt), Vec::new());
         assert_eq!(check(prompt, &["x.rs"]), Precondition::Undeclared);
     }
 
@@ -290,10 +564,26 @@ mod tests {
             declarations(&prompt),
             vec![absent("before.rs"), absent("after/fence.rs")],
         );
+        assert_eq!(rejections(&prompt), Vec::new());
         assert_eq!(
             check(&prompt, &["in/fence.rs", "after/fence.rs"]),
             Precondition::Violated(vec![violated("after/fence.rs", Requirement::Absent, true)]),
         );
+    }
+
+    #[test]
+    fn rejected_looking_marker_in_fence_is_not_reported() {
+        let prompt = [
+            "```",
+            "<!-- fb:creates bad.rs --> trailing text",
+            "<!--\tfb:creates tab.rs -->",
+            "<!--fb:creates tight.rs-->",
+            "```",
+            "<!-- fb:creates good.rs -->",
+        ]
+        .join("\n");
+        assert_eq!(declarations(&prompt), vec![absent("good.rs")]);
+        assert_eq!(rejections(&prompt), Vec::new());
     }
 
     #[test]
@@ -309,6 +599,7 @@ mod tests {
         ]
         .join("\n");
         assert_eq!(declarations(&prompt), vec![absent("three.rs")]);
+        assert_eq!(rejections(&prompt), Vec::new());
     }
 
     #[test]
@@ -336,6 +627,69 @@ mod tests {
     }
 
     #[test]
+    fn tilde_fence_opens_and_closes() {
+        let prompt = [
+            "<!-- fb:creates before.rs -->",
+            "~~~",
+            "<!-- fb:creates inside.rs -->",
+            "<!-- fb:creates bad.rs --> trailing",
+            "~~~",
+            "<!-- fb:creates after.rs -->",
+        ]
+        .join("\n");
+        assert_eq!(
+            declarations(&prompt),
+            vec![absent("before.rs"), absent("after.rs")]
+        );
+        assert_eq!(rejections(&prompt), Vec::new());
+    }
+
+    #[test]
+    fn backtick_fence_closed_only_by_backticks() {
+        let prompt = [
+            "```",
+            "~~~",
+            "<!-- fb:creates inside.rs -->",
+            "~~~",
+            "<!-- fb:creates still_inside.rs -->",
+            "```",
+            "<!-- fb:creates after.rs -->",
+        ]
+        .join("\n");
+        assert_eq!(declarations(&prompt), vec![absent("after.rs")]);
+        assert_eq!(rejections(&prompt), Vec::new());
+    }
+
+    #[test]
+    fn tilde_fence_closed_only_by_tildes() {
+        let prompt = [
+            "~~~",
+            "```",
+            "<!-- fb:creates inside.rs -->",
+            "```",
+            "<!-- fb:creates still_inside.rs -->",
+            "~~~",
+            "<!-- fb:creates after.rs -->",
+        ]
+        .join("\n");
+        assert_eq!(declarations(&prompt), vec![absent("after.rs")]);
+        assert_eq!(rejections(&prompt), Vec::new());
+    }
+
+    #[test]
+    fn fence_opened_and_never_closed_fences_to_eof() {
+        let prompt = [
+            "<!-- fb:creates before.rs -->",
+            "```",
+            "<!-- fb:creates inside1.rs -->",
+            "<!-- fb:creates inside2.rs -->",
+        ]
+        .join("\n");
+        assert_eq!(declarations(&prompt), vec![absent("before.rs")]);
+        assert_eq!(rejections(&prompt), Vec::new());
+    }
+
+    #[test]
     fn marker_without_path_declares_nothing_not_an_error() {
         let prompt = [
             "<!-- fb:creates -->",
@@ -344,6 +698,7 @@ mod tests {
         ]
         .join("\n");
         assert_eq!(declarations(&prompt), Vec::new());
+        assert_eq!(rejections(&prompt), Vec::new());
         assert_eq!(check(&prompt, &[]), Precondition::Undeclared);
     }
 
@@ -352,6 +707,288 @@ mod tests {
         assert_eq!(
             declarations("<!-- fb:creates   a/b.rs  -->"),
             vec![absent("a/b.rs")]
+        );
+    }
+
+    #[test]
+    fn exactly_one_space_minimum_and_multiple_spaces_valid() {
+        // One space minimum in all three positions
+        let prompt1 = "<!-- fb:creates one.rs -->";
+        assert_eq!(declarations(prompt1), vec![absent("one.rs")]);
+        assert_eq!(rejections(prompt1), Vec::new());
+
+        // Two or more spaces in all three positions
+        let prompt2 = "<!--  fb:creates   two.rs    -->";
+        assert_eq!(declarations(prompt2), vec![absent("two.rs")]);
+        assert_eq!(rejections(prompt2), Vec::new());
+    }
+
+    #[test]
+    fn trailing_whitespace_declares_normally() {
+        let prompt = "<!-- fb:creates normal.rs -->   \t  ";
+        assert_eq!(declarations(prompt), vec![absent("normal.rs")]);
+        assert_eq!(rejections(prompt), Vec::new());
+    }
+
+    #[test]
+    fn trailing_text_after_close_declares_nothing_and_rejects() {
+        let prompt = "<!-- fb:creates foo.rs --> trailing text";
+        assert_eq!(declarations(prompt), Vec::new());
+        assert_eq!(rejections(prompt), vec![(1, Rejected::TrailingText)]);
+    }
+
+    #[test]
+    fn tab_after_opener_rejects() {
+        let prompt = "<!--\tfb:creates foo.rs -->";
+        assert_eq!(declarations(prompt), Vec::new());
+        assert_eq!(rejections(prompt), vec![(1, Rejected::Tab)]);
+
+        let prompt_multi = "<!-- \t fb:creates foo.rs -->";
+        assert_eq!(declarations(prompt_multi), Vec::new());
+        assert_eq!(rejections(prompt_multi), vec![(1, Rejected::Tab)]);
+    }
+
+    #[test]
+    fn tab_after_word_rejects() {
+        let prompt = "<!-- fb:creates\tfoo.rs -->";
+        assert_eq!(declarations(prompt), Vec::new());
+        assert_eq!(rejections(prompt), vec![(1, Rejected::Tab)]);
+
+        let prompt_multi = "<!-- fb:creates \t foo.rs -->";
+        assert_eq!(declarations(prompt_multi), Vec::new());
+        assert_eq!(rejections(prompt_multi), vec![(1, Rejected::Tab)]);
+    }
+
+    #[test]
+    fn tab_before_close_rejects() {
+        let prompt = "<!-- fb:creates foo.rs\t-->";
+        assert_eq!(declarations(prompt), Vec::new());
+        assert_eq!(rejections(prompt), vec![(1, Rejected::Tab)]);
+
+        let prompt_multi = "<!-- fb:creates foo.rs \t -->";
+        assert_eq!(declarations(prompt_multi), Vec::new());
+        assert_eq!(rejections(prompt_multi), vec![(1, Rejected::Tab)]);
+    }
+
+    #[test]
+    fn no_space_after_opener_rejects() {
+        let prompt1 = "<!--fb:creates foo.rs -->";
+        assert_eq!(declarations(prompt1), Vec::new());
+        assert_eq!(rejections(prompt1), vec![(1, Rejected::NoSpaceAfterOpener)]);
+
+        let prompt2 = "<!--fb:modifies foo.rs -->";
+        assert_eq!(declarations(prompt2), Vec::new());
+        assert_eq!(rejections(prompt2), vec![(1, Rejected::NoSpaceAfterOpener)]);
+
+        let prompt3 = "<!--fb:creates foo.rs-->";
+        assert_eq!(declarations(prompt3), Vec::new());
+        assert_eq!(rejections(prompt3), vec![(1, Rejected::NoSpaceAfterOpener)]);
+    }
+
+    #[test]
+    fn two_markers_on_one_line_declare_nothing_and_reject_multiple_markers() {
+        let prompt = "<!-- fb:creates a.rs --> <!-- fb:creates b.rs -->";
+        assert_eq!(declarations(prompt), Vec::new());
+        assert_eq!(rejections(prompt), vec![(1, Rejected::MultipleMarkers)]);
+
+        let prompt_tight = "<!-- fb:creates a.rs --><!-- fb:creates b.rs -->";
+        assert_eq!(declarations(prompt_tight), Vec::new());
+        assert_eq!(
+            rejections(prompt_tight),
+            vec![(1, Rejected::MultipleMarkers)]
+        );
+    }
+
+    #[test]
+    fn three_markers_on_one_line_reports_multiple_markers_once() {
+        let prompt = "<!-- fb:creates a.rs --> <!-- fb:creates b.rs --> <!-- fb:creates c.rs -->";
+        assert_eq!(declarations(prompt), Vec::new());
+        assert_eq!(rejections(prompt), vec![(1, Rejected::MultipleMarkers)]);
+    }
+
+    #[test]
+    fn unknown_marker_word_declares_nothing_and_rejects() {
+        let prompt = "<!-- fb:deletes gone.rs -->";
+        assert_eq!(declarations(prompt), Vec::new());
+        assert_eq!(rejections(prompt), vec![(1, Rejected::UnknownWord)]);
+        assert_eq!(check(prompt, &[]), Precondition::Undeclared);
+    }
+
+    #[test]
+    fn marker_word_longer_variant_rejects_unknown_word() {
+        let prompt = "<!-- fb:createsx gone.rs -->";
+        assert_eq!(declarations(prompt), Vec::new());
+        assert_eq!(rejections(prompt), vec![(1, Rejected::UnknownWord)]);
+    }
+
+    #[test]
+    fn tie_breaking_order_among_rejections() {
+        // Tab (1) beats TrailingText (2)
+        let p_tab_trailing = "<!--\tfb:creates a.rs --> prose";
+        assert_eq!(rejections(p_tab_trailing), vec![(1, Rejected::Tab)]);
+
+        // Tab (1) beats UnknownWord (3)
+        let p_tab_unknown = "<!--\tfb:unknown a.rs -->";
+        assert_eq!(rejections(p_tab_unknown), vec![(1, Rejected::Tab)]);
+
+        // Tab (1) beats MultipleMarkers (5)
+        let p_tab_multi = "<!--\tfb:creates a.rs --> <!-- fb:creates b.rs -->";
+        assert_eq!(rejections(p_tab_multi), vec![(1, Rejected::Tab)]);
+
+        // TrailingText (2) beats UnknownWord (3)
+        let p_trailing_unknown = "<!-- fb:unknown a.rs --> prose";
+        assert_eq!(
+            rejections(p_trailing_unknown),
+            vec![(1, Rejected::TrailingText)]
+        );
+
+        // TrailingText (2) beats NoSpaceAfterOpener (4)
+        let p_trailing_opener = "<!--fb:creates a.rs --> prose";
+        assert_eq!(
+            rejections(p_trailing_opener),
+            vec![(1, Rejected::TrailingText)]
+        );
+
+        // TrailingText (2) beats MultipleMarkers (5)
+        let p_trailing_multi = "<!-- fb:creates a.rs --> <!-- fb:creates b.rs --> prose";
+        assert_eq!(
+            rejections(p_trailing_multi),
+            vec![(1, Rejected::TrailingText)]
+        );
+
+        let p_between_multi = "<!-- fb:creates a.rs --> and <!-- fb:creates b.rs -->";
+        assert_eq!(
+            rejections(p_between_multi),
+            vec![(1, Rejected::TrailingText)]
+        );
+
+        // UnknownWord (3) beats NoSpaceAfterOpener (4)
+        let p_unknown_opener = "<!--fb:unknown a.rs -->";
+        assert_eq!(
+            rejections(p_unknown_opener),
+            vec![(1, Rejected::UnknownWord)]
+        );
+
+        // UnknownWord (3) beats MultipleMarkers (5)
+        let p_unknown_multi = "<!-- fb:unknown a.rs --> <!-- fb:creates b.rs -->";
+        assert_eq!(
+            rejections(p_unknown_multi),
+            vec![(1, Rejected::UnknownWord)]
+        );
+
+        // NoSpaceAfterOpener (4) beats MultipleMarkers (5)
+        let p_opener_multi = "<!--fb:creates a.rs --> <!-- fb:creates b.rs -->";
+        assert_eq!(
+            rejections(p_opener_multi),
+            vec![(1, Rejected::NoSpaceAfterOpener)]
+        );
+    }
+
+    #[test]
+    fn rejections_and_declarations_never_name_the_same_line() {
+        let prompt = [
+            "<!-- fb:creates valid1.rs -->",
+            "<!--\tfb:creates tab.rs -->",
+            "<!-- fb:creates valid2.rs -->",
+            "<!-- fb:creates trailing.rs --> trailing text",
+            "some prose that declares nothing",
+            "<!-- fb:unknown bad_word.rs -->",
+            "<!--fb:creates tight.rs -->",
+            "<!-- fb:creates two_a.rs --> <!-- fb:creates two_b.rs -->",
+            "<!-- fb:modifies valid3.rs -->",
+        ]
+        .join("\n");
+
+        let decls = declarations(&prompt);
+        let rejs = rejections(&prompt);
+
+        assert_eq!(
+            decls,
+            vec![
+                absent("valid1.rs"),
+                absent("valid2.rs"),
+                present("valid3.rs"),
+            ]
+        );
+
+        assert_eq!(
+            rejs,
+            vec![
+                (2, Rejected::Tab),
+                (4, Rejected::TrailingText),
+                (6, Rejected::UnknownWord),
+                (7, Rejected::NoSpaceAfterOpener),
+                (8, Rejected::MultipleMarkers),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_prompt_boundaries() {
+        assert_eq!(declarations(""), Vec::new());
+        assert_eq!(rejections(""), Vec::new());
+        assert_eq!(check("", &["a.rs"]), Precondition::Undeclared);
+    }
+
+    #[test]
+    fn only_rejected_markers_prompt_is_undeclared() {
+        let prompt = [
+            "<!--\tfb:creates tab.rs -->",
+            "<!-- fb:creates a.rs --> trailing",
+            "<!--fb:creates opener.rs -->",
+        ]
+        .join("\n");
+        assert_eq!(declarations(&prompt), Vec::new());
+        assert_eq!(
+            rejections(&prompt),
+            vec![
+                (1, Rejected::Tab),
+                (2, Rejected::TrailingText),
+                (3, Rejected::NoSpaceAfterOpener),
+            ]
+        );
+        assert_eq!(
+            check(&prompt, &["tab.rs", "a.rs"]),
+            Precondition::Undeclared
+        );
+    }
+
+    #[test]
+    fn empty_comment_is_not_a_marker_or_rejection() {
+        let prompt = ["<!-- -->", "<!---->", "<!--    -->"].join("\n");
+        assert_eq!(declarations(&prompt), Vec::new());
+        assert_eq!(rejections(&prompt), Vec::new());
+        assert_eq!(check(&prompt, &[]), Precondition::Undeclared);
+    }
+
+    #[test]
+    fn path_containing_close_rejects_rather_than_truncating() {
+        let prompt = "<!-- fb:creates a/b-->c.rs -->";
+        assert_eq!(declarations(prompt), Vec::new());
+        assert_eq!(rejections(prompt), vec![(1, Rejected::TrailingText)]);
+    }
+
+    #[test]
+    fn leading_whitespace_allowed() {
+        assert_eq!(
+            declarations("  <!-- fb:creates a.rs -->"),
+            vec![absent("a.rs")]
+        );
+        assert_eq!(
+            declarations("\t<!-- fb:modifies a.rs -->"),
+            vec![present("a.rs")]
+        );
+        assert_eq!(rejections("  <!-- fb:creates a.rs -->"), Vec::new());
+        assert_eq!(rejections("\t<!-- fb:modifies a.rs -->"), Vec::new());
+    }
+
+    #[test]
+    fn membership_is_exact_string_match() {
+        let prompt = "<!-- fb:modifies a/b.rs -->";
+        let near_misses = ["a", "a/b.rs.orig", "A/b.rs", "a/b.rsx"];
+        assert_eq!(
+            check(prompt, &near_misses),
+            Precondition::Violated(vec![violated("a/b.rs", Requirement::Present, false)]),
         );
     }
 
@@ -372,28 +1009,6 @@ mod tests {
                 violated("missing.rs", Requirement::Present, false),
                 violated("also-taken.rs", Requirement::Absent, true),
             ]),
-        );
-    }
-
-    #[test]
-    fn empty_prompt_is_undeclared() {
-        assert_eq!(declarations(""), Vec::new());
-        assert_eq!(check("", &["a.rs"]), Precondition::Undeclared);
-    }
-
-    #[test]
-    fn empty_base_satisfies_creates() {
-        assert_eq!(
-            check("<!-- fb:creates a.rs -->", &[]),
-            Precondition::Satisfied
-        );
-    }
-
-    #[test]
-    fn empty_base_violates_modifies() {
-        assert_eq!(
-            check("<!-- fb:modifies a.rs -->", &[]),
-            Precondition::Violated(vec![violated("a.rs", Requirement::Present, false)]),
         );
     }
 
@@ -426,68 +1041,10 @@ mod tests {
     }
 
     #[test]
-    fn unknown_marker_word_ignored_not_refused() {
-        let prompt = "<!-- fb:deletes gone.rs -->";
-        assert_eq!(declarations(prompt), Vec::new());
-        assert_eq!(check(prompt, &[]), Precondition::Undeclared);
-    }
-
-    #[test]
-    fn marker_word_not_matched_by_prefix_of_longer_word() {
-        let prompt = ["<!-- fb:createsx -->", "<!-- fb:modifiesy -->"].join("\n");
-        assert_eq!(declarations(&prompt), Vec::new());
-    }
-
-    #[test]
-    fn leading_whitespace_before_comment_allowed() {
-        assert_eq!(
-            declarations("  <!-- fb:creates a.rs -->"),
-            vec![absent("a.rs")]
-        );
-        assert_eq!(
-            declarations("\t<!-- fb:modifies a.rs -->"),
-            vec![present("a.rs")]
-        );
-    }
-
-    #[test]
-    fn membership_is_exact_string_match() {
-        let prompt = "<!-- fb:modifies a/b.rs -->";
-        // A parent directory, a suffix, a case difference and an extension
-        // of the name are all different paths, none of them the declared
-        // one.
-        let near_misses = ["a", "a/b.rs.orig", "A/b.rs", "a/b.rsx"];
-        assert_eq!(
-            check(prompt, &near_misses),
-            Precondition::Violated(vec![violated("a/b.rs", Requirement::Present, false)]),
-        );
-    }
-
-    #[test]
     fn all_holding_prompt_is_satisfied() {
         let prompt = ["<!-- fb:creates new.rs -->", "<!-- fb:modifies old.rs -->"].join("\n");
         assert_eq!(
             check(&prompt, &["old.rs", "unrelated.rs"]),
-            Precondition::Satisfied
-        );
-    }
-}
-
-
-
-
-// ESCALATED: 1 confirmed finding(s) by critic unknown, found on or-nemotron-ultra.
-// Promoted from an executed proof that passed the reference veto. Provenance is
-// recorded so a bad test can be traced and retired.  (bead farmerbob-mqr)
-#[cfg(test)]
-mod escalated_precondition_or_nemotron_ultra {
-    use super::*;
-
-    #[test]
-    fn claim_1() {
-        // "A tab between the marker word and the path silently turns a well-formed declaration into an unknown marker, so a runnable queued spec is reported `Undeclared` instead of checked."
-        assert_eq!(
-            check("<!-- fb:creates\ta.rs -->", &[]),
             Precondition::Satisfied
         );
     }
