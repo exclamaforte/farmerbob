@@ -79,12 +79,29 @@ model       = "gemini-3.8-flash"
 provider    = "google-oauth"
 quota       = "plan"
 quota_bucket = "google-oauth-exclamaforte"   # possibly shared with the `gemini` CLI — unconfirmed
-parked_until = "2026-09-22T19:07:00+00:00"
-# "error: Individual quota reached. Please upgrade your subscription to increase your limits.
-#  Resets in 153h54m42s." -- observed 2026-09-16T09:12Z on three runs (bandit-route, crossx,
-#  defect-sens), each of which the harness scored NO-OP. A quota block is not an arm failure;
-#  those three are reclassified quota_limited and excluded from the posterior. (farmerbob-h04)
-notes       = "agy also exposes 3.7/3.6-flash, 3.1-pro, claude-sonnet-4-6, claude-opus-4-6, gpt-oss-120b"
+# UNPARKED 2026-09-17T21:40Z. Was parked_until 2026-09-22T19:07Z on:
+#   "error: Individual quota reached. Please upgrade your subscription to increase your limits.
+#    Resets in 153h54m42s." -- observed 2026-09-16T09:12Z on three runs (bandit-route, crossx,
+#    defect-sens), each of which the harness scored NO-OP. A quota block is not an arm failure;
+#    those three are reclassified quota_limited and excluded from the posterior. (farmerbob-h04)
+# The subscription was upgraded, which is exactly what that message asked for, so the reset
+# instant it stated no longer applies. Probed directly rather than assumed: `agy -p ... --model
+# gemini-3.1-pro-high` returned a completion at 21:39Z, five days before the stated reset.
+#
+# A park is a claim about the future and an upgrade falsifies it. Nothing in the harness
+# notices that, so this is a hand edit; farmerbob-core::quota::park_after decides when to SET
+# a park and nothing yet decides when one has been invalidated early.
+notes       = """`agy models` at 1.2.4, confirmed 2026-09-17, fourteen routes:
+  gemini-3.8-flash-{high,medium,low}
+  gemini-3.7-flash-{high,medium,low}
+  gemini-3.6-flash-{high,medium,low}
+  gemini-3.1-pro-{high,low}       <- PRO. No pro-tier route has ever been wired as an arm.
+  claude-sonnet-4-6               (thinking)
+  claude-opus-4-6-thinking
+  gpt-oss-120b-medium
+The two Claude routes bill to google-oauth, not to the Anthropic account, so they do not
+compete with the orchestrator for tokens the way claude-sonnet did. That is an observation,
+not a decision: they stay unwired until the owner says otherwise."""
 
 [source.glm-53-flash]
 status      = "verified"
