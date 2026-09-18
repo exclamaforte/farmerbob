@@ -7,37 +7,22 @@
 
 # ---------------------------------------------------------------- native CLIs
 [source.claude-sonnet]
-status      = "disabled"
-disabled_reason = """The five-hour window granted 2026-09-18T00:20Z EXPIRED at 05:20Z. Disabled
-at 07:07Z, 1h47m late, by the orchestrator noticing the clock rather than by anything enforcing
-it -- which is exactly what the note below predicted and called the bug.
-
-The window was honoured in substance: sonnet ran two tasks inside it, due-reset and
-wt-conflict, and WON due-reset on a measured axis -- gut succeeded() and its suite fails on
-three tests against gemini's two, in 253 lines to gemini's 324 for the same 45 tests.
-
-Re-enabling remains a one-word change. The standing reason to keep it off is unchanged: the
-orchestrator runs on the same Anthropic plan, so every sonnet dispatch competes with the
-adjudicator for one budget."""
-# RE-ENABLED 2026-09-18T00:20Z by owner instruction, for a FIVE HOUR WINDOW.
-#   EXPIRED 2026-09-18T05:20Z  (2026-09-17T22:20 local) -- honoured at 07:07Z, see above.
-# Third flip of this switch. The standing reason to keep it off is unchanged and still true:
-# the orchestrator runs on the same Anthropic plan, so every sonnet dispatch competes with the
-# adjudicator for one token budget, and the last re-enable consumed a weekly reset largely
-# through this arm, which ran 14 waves in a day.
+status      = "verified"
+# WINDOW: 2026-09-18T07:24Z -> EXPIRES 2026-09-18T12:24Z  (owner instruction, fourth flip)
+expires_at  = "2026-09-18T12:24:00+00:00"
+# `expires_at` is read by fb-status.sh, which prints a WINDOW line on every run and shouts
+# EXPIRED once the instant passes. The previous window ran 1h47m past its end because nothing
+# surfaced it and I only noticed by reading a clock -- the entry predicted exactly that and
+# called it the bug. Now the loop that runs every ten minutes cannot miss it.
 #
-# The window is the point. It is bounded on purpose so the competition cannot run away again,
-# and the expiry above is the instruction -- nothing enforces it, so if you are reading this
-# after 05:20Z and status is still "verified", that is the bug and disabling it is correct.
-# The prior disabled_reason is kept below verbatim rather than deleted, because the next person
-# to flip this needs the history and not just the current state.
+# The standing reason to keep this arm off is unchanged and still true: the orchestrator runs
+# on the same Anthropic plan, so every sonnet dispatch competes with the adjudicator for one
+# budget. A weekly reset was consumed that way once, largely by this arm at 14 waves in a day.
+# The window is the containment.
 #
-# was: "the orchestrator runs on the same Anthropic plan and we are hitting its limits (user
-# instruction, 2026-09-17, second time). Re-enabled that morning for a weekly reset that has
-# since been consumed -- largely BY this arm, which ran 14 waves today. Kept
-# verified-in-all-but-status: its launcher branch, --effort xhigh and the args in this entry
-# all work and were exercised repeatedly, so re-enabling is a one-word change back to
-# status = verified."
+# It earns its slot when it has one. Two tasks inside the last window, and it WON due-reset on
+# a measured axis: gut succeeded() and its suite fails on three tests against gemini's two, in
+# 253 lines to gemini's 324 for the same 45 tests.
 kind        = "cli"
 cmd         = "claude"
 args        = ["-p", "{prompt}", "--permission-mode", "bypassPermissions",

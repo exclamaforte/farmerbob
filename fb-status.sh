@@ -6,6 +6,48 @@ set -uo pipefail
 cd /home/gabe/Documents/farmerbob
 LOGS="$HOME/.local/share/farmerbob/logs"
 
+# TIME-BOXED ARMS. An arm enabled "for five hours" is a promise nothing in this harness keeps.
+# The last such window ran 1h47m past its end: the registry entry said plainly that if it was
+# still verified after the expiry that was the bug, and it was, and the only thing that caught
+# it was the orchestrator happening to read a clock. This prints on every status call -- which
+# the tick loop makes every ten minutes -- so an expiry cannot go unseen again. It REPORTS; it
+# does not disable. Disabling an arm is a decision and stays one.
+python3 - <<'PYEOF' 2>/dev/null
+import tomllib, datetime, sys
+try:
+    reg = tomllib.load(open('/home/gabe/Documents/farmerbob/sources.toml','rb'))['source']
+except Exception:
+    sys.exit(0)
+now = datetime.datetime.now(datetime.timezone.utc)
+rows = []
+for name, v in sorted(reg.items()):
+    raw = v.get('expires_at')
+    if not raw:
+        continue
+    try:
+        exp = datetime.datetime.fromisoformat(str(raw))
+    except ValueError:
+        rows.append(f"  {name}: expires_at is unparseable ({raw!r}) -- treat as EXPIRED")
+        continue
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=datetime.timezone.utc)
+    enabled = v.get('status') == 'verified'
+    left = exp - now
+    if left.total_seconds() <= 0:
+        over = -left
+        h, rem = divmod(int(over.total_seconds()), 3600)
+        state = "STILL ENABLED -- DISABLE IT" if enabled else "expired, already disabled"
+        rows.append(f"  {name}: window EXPIRED {h}h{rem//60:02d}m ago ({exp:%Y-%m-%dT%H:%MZ}) -- {state}")
+    elif enabled:
+        h, rem = divmod(int(left.total_seconds()), 3600)
+        rows.append(f"  {name}: window open, {h}h{rem//60:02d}m left (until {exp:%Y-%m-%dT%H:%MZ})")
+    else:
+        rows.append(f"  {name}: has a window until {exp:%Y-%m-%dT%H:%MZ} but is not enabled")
+if rows:
+    print("== time-boxed arms ==")
+    print("\n".join(rows))
+PYEOF
+
 live=$(systemctl --user list-units --type=scope --no-legend 2>/dev/null \
        | grep -o 'fb-[a-z0-9-]*--[a-z0-9_-]*' | sed 's/^fb-//' | sort -u)
 nlive=$(printf '%s' "$live" | grep -c . || true)
