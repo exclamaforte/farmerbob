@@ -43,10 +43,20 @@ pub enum Eligibility {
 }
 
 impl Registry {
-    /// `now` is the caller's clock. This module has none.
-    pub fn eligible(&self, arm: &str, now: DateTime<Utc>) -> Eligibility;
+    /// Eligibility INCLUDING the time box. `now` is the caller's clock; this
+    /// module has none.
+    pub fn eligible_at(&self, arm: &str, now: DateTime<Utc>) -> Eligibility;
 }
 ```
+
+`eligible(&self, arm: &str)` keeps its current signature and its current behaviour, and gains a
+doc line saying in terms that it is WINDOW-BLIND and that `eligible_at` is the one that is not.
+Do not change its signature and do not have it call a clock: a function that silently reads the
+system time is how this module would acquire the clock the whole design says it does not have.
+`Registry::dispatchable(&self)` also keeps its signature and keeps calling `eligible`.
+
+Migrating the twelve callers to `eligible_at` is a SEPARATE task and is not yours. Say in your
+handoff that `eligible` remains reachable and window-blind.
 
 `Source` gains the field it is missing:
 
@@ -61,12 +71,14 @@ the defect this task exists to remove.
 
 ## Falsifiable clauses
 
-1. An arm with no `expires_at` is unaffected: `eligible` returns exactly what it returned
+1. An arm with no `expires_at` is unaffected: `eligible_at` returns exactly what `eligible` returned
    before, for every existing case. Pin at least the `Ok`, `Disabled` and `RedundantPaidRoute`
    paths.
 2. An arm whose `expires_at` is in the future and whose status is dispatchable is `Ok`.
-3. An arm whose `expires_at` has passed is `WindowClosed`, whatever its status says, provided
-   that status would otherwise have been dispatchable.
+   `eligible` (no clock) returns `Ok` for a CLOSED window too, and that is correct for it: it is
+   documented as window-blind. Pin that difference on one arm, so the two are never confused.
+3. An arm whose `expires_at` has passed is `WindowClosed`. See clause 6 for how that interacts
+   with a status that is not dispatchable; the two clauses are one total order, not two rules.
 4. An arm whose `expires_at` cannot be parsed is `WindowClosed`. This follows `window`'s own
    rule and the reason must say the deadline was unreadable: assert that the prose mentions
    being unreadable and mentions the value, case-insensitively, and assert nothing about the
@@ -74,8 +86,15 @@ the defect this task exists to remove.
 5. **`Disabled` outranks `WindowClosed`.** An arm that is explicitly turned off in the registry
    reports `Disabled` with its recorded reason even when its window has also closed, because the
    registry's explicit statement is the more specific fact and is what an operator set by hand.
-6. `WindowClosed` outranks `RedundantPaidRoute` and outranks `NotDispatchable`: a closed window
-   is a harder stop than either, and reporting the softer one would hide it.
+6. The precedence is TOTAL and is exactly this, highest first:
+
+       Disabled  >  WindowClosed  >  NotDispatchable  >  RedundantPaidRoute  >  Ok
+
+   `Disabled` wins because it is what an operator set by hand. `WindowClosed` beats
+   `NotDispatchable` and `RedundantPaidRoute` because a closed window is the harder stop and
+   reporting a softer one would hide it. An arm with status `limited` and a closed window is
+   therefore `WindowClosed`, not `NotDispatchable`. No two variants are ever both applicable
+   once this order is applied.
 7. `WindowClosed.why` is non-empty for every arm that returns it.
 
 ## Boundaries, at N and at zero
@@ -89,6 +108,8 @@ the defect this task exists to remove.
 - An arm absent from the registry: unchanged, `NotDispatchable("absent from the registry")`.
 - An arm whose status is `disabled` AND whose window closed: `Disabled`. Clause 5.
 - An arm whose window closed and which is also a redundant paid route: `WindowClosed`. Clause 6.
+- An arm whose window closed and whose status is `limited`: `WindowClosed`, not `NotDispatchable`.
+  Clause 6. This is the pair the precedence exists to decide.
 
 ## Superset status on every enumerated list
 
@@ -100,7 +121,7 @@ tests may not assert on any variant outside these five.
 
 ## Composition of aggregate returns
 
-`eligible` returns exactly one `Eligibility`; the precedence in clauses 5 and 6 is total and
+`eligible_at` returns exactly one `Eligibility`; the precedence in clauses 5 and 6 is total and
 leaves no pair of variants both applicable. State the full ordering explicitly in a doc comment
 so a later reader does not have to derive it from the branch order.
 
@@ -113,15 +134,15 @@ an implementation that checks them in the wrong order.
 
 - No `unwrap()`, `expect()`, `panic!`, `todo!` or `unimplemented!` reachable from input, outside
   `#[cfg(test)]`.
-- Add no dependencies. `chrono` and `farmerbob-core` are already dependencies of `fb`.
-- **This change BREAKS the twelve callers of `eligible` in other files, because it takes a new
-  parameter. That breakage is EXPECTED and you must leave it.** Fixing those callers is a
-  departure from the declared scope and scores as one. `cargo build -p fb` will fail on files
-  you are not permitted to touch; that is the correct outcome. Say what you left broken in your
-  handoff.
-- `cargo test -p fb --lib sources` must pass for the tests you add in this file, and
-  `cargo clippy -p fb` must report nothing new for this file. Run them and report what you saw,
-  including the caller breakage.
+- Add no dependencies. `chrono` and `farmerbob-core` are both already in
+  `crates/fb/Cargo.toml`; verify that for yourself before writing `use chrono::...` rather than
+  taking this line's word for it.
+- **Nothing outside this file may break.** `eligible_at` is an ADDITION; `eligible` and
+  `dispatchable` keep their signatures, so every existing caller still compiles.
+  `cargo build -p fb` must succeed, and if it does not you have changed something you should
+  not have.
+- `cargo test -p fb` must pass and `cargo clippy -p fb -- -D warnings` must be clean. Run both
+  and report what you saw.
 
 ## How this will be scored
 
