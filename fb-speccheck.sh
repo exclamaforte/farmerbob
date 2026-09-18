@@ -81,6 +81,31 @@ for m in $(grep -ohE '\b(crate::)?[a-z_]+::[A-Z][A-Za-z]+' "$SPEC" \
 $(awk '/^#\[cfg\(test\)\]/{exit} {print}' "$f" | head -c 24000)"
 done
 
+# A wave for this bead must not be running. fb-speccheck OWNS the worktree path -- it creates
+# a bare directory there and removes it afterwards -- so if dispatch has already put a real
+# worktree there, the cleanup below would delete a live agent's tree. That is farmerbob-bal
+# exactly: eight of ten runs destroyed by a worktree removed under a running arm, and the
+# survivors looked like arms producing nothing.
+#
+# Caught before it happened: wave71 was queued for a bead whose spec critique was still
+# running, and the autopilot was one tick from launching it.
+for d in "$WT/$BEAD--"*; do
+  [ -e "$d" ] || continue
+  echo "REFUSING: $d exists -- a wave for $BEAD is dispatched or in flight." >&2
+  echo "  fb-speccheck owns that path and would delete it. Run the spec critique BEFORE" >&2
+  echo "  queueing the wave, which is the whole point of the stage." >&2
+  exit 1
+done
+
+# Hold a bead-scoped lock for the duration, so a wave launched while this is running blocks
+# rather than racing. fb-dispatch takes the same lock per (bead, arm).
+LOCKDIR="$HOME/.local/share/farmerbob"; mkdir -p "$LOCKDIR"
+exec 8>"$LOCKDIR/speccheck.$BEAD.lock"
+if ! flock -n 8; then
+  echo "REFUSING: another spec critique of $BEAD holds the lock" >&2
+  exit 1
+fi
+
 mkdir -p "$LOGS/speccheck/$BEAD"
 for arm in "${ARMS[@]}"; do
   while [ "$(jobs -rp | wc -l)" -ge "$SLOTS" ]; do sleep 2; done
@@ -123,7 +148,15 @@ PY
       printf '  %-22s (no report written)\n' "$arm"
     fi
     # Remove the directory, keep the session. fb-dispatch will `git worktree add` here.
-    rm -rf "$cw"
+    #
+    # NEVER remove a real worktree. If something created one at this path while the critique
+    # ran, deleting it destroys a live run -- so check what is there rather than trusting that
+    # what we made is what we are removing.
+    if [ -e "$cw/.git" ] || (cd "$cw" 2>/dev/null && git rev-parse --git-dir >/dev/null 2>&1); then
+      echo "  $arm: NOT removing $cw -- it is a git worktree now, not our scratch dir" >&2
+    else
+      rm -rf "$cw"
+    fi
   ) &
 done
 wait

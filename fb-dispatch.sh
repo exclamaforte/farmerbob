@@ -190,6 +190,13 @@ CGPID=$!
   # Best effort, never load-bearing: if no session exists the launcher starts cold and the
   # prompt is self-contained. A stage that only works when the agent remembers has a failure
   # state that looks like a slightly worse answer instead of an obvious one.
+  # Block while a spec critique of this bead is running: it owns this worktree path until it
+  # finishes and would remove the tree this dispatch is about to create. Blocking (no -n) is
+  # right here -- a spec critique is minutes and the alternative is racing it.
+  LOCKDIR="$HOME/.local/share/farmerbob"; mkdir -p "$LOCKDIR"
+  exec 8>"$LOCKDIR/speccheck.$BEAD.lock"
+  flock 8
+
   CONT=""
   [ -f "$LOG_ROOT/speccheck/$BEAD/$SRC.findings.md" ] && CONT=yes
   a_c=(); z_c=(); o_c=(); c_c=()
