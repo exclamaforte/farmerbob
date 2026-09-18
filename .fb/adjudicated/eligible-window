@@ -1,0 +1,55 @@
+MERGED glm-53-flash
+2 PASS, 2 NO-OP. or-ling-30-flash and or-nemotron-ultra were dead on arrival: OpenRouter's
+free tier hit its account-wide daily cap between the spec critique and dispatch, and both
+burned 76s producing nothing (farmerbob-j77x).
+
+  arm                 tests  lines  matrix
+  gemini-38-flash        19    730  2x2 all-pass
+  glm-53-flash           20    626  2x2 all-pass
+
+THE SPEC WAS UNIMPLEMENTABLE AND THE CRITIQUE STAGE CAUGHT IT. wave89 was killed during its
+first spec-critique run, before any implementation. gemini-38-flash returned four findings and
+three were fatal: chrono was not in crates/fb/Cargo.toml so the pinned signature could not
+compile; the frozen gate requires `cargo build -p <crate>` to succeed while the task text said
+that build WILL fail and that is correct; and Registry::dispatchable is IN sources.rs and calls
+self.eligible, so it was in scope with its signature unpinned. Four arms were minutes from
+burning on a task that could not pass its own gate. The spec was rewritten to ADD
+eligible_at(arm, now) rather than change eligible's signature, chrono was added as
+infrastructure, and clauses 3 and 6 were replaced by one total order.
+
+THE REWRITE WAS STILL WRONG AND THEY CAUGHT THAT TOO. gemini found that the Exact API's lead
+sentence still ordered `eligible` to gain a parameter while every line after it froze the
+signature. glm found two more: Eligibility::reason() is an exhaustive match every candidate is
+FORCED to extend for WindowClosed with nothing pinned about what it returns, though main.rs
+prints it as `refused_because`; and clause 4 pinned the word "unreadable" while the core module
+it defers to names the state Unparseable -- the prose-keyword trap the rubric itself warns
+about, sprung by my own clause.
+
+AND THE FIELD CONVERGED ANYWAY. Both arms kept eligible window-blind and added eligible_at,
+both wrote the identical reason() arm despite it being unpinned, both documented the same
+precedence. glm went further on its own finding and put BOTH "unreadable" and "unparseable" in
+its `why`, so gemini's two contains("unreadable") assertions pass against it rather than
+failing a conforming rival. Second wave running in which naming a defect before implementation
+converged the field instead of splitting it.
+
+winner: glm-53-flash, on the structure criterion, and gemini's own critique makes the case
+better than I can: routing both entry points through `decide(&self, arm, now: Option<...>)`
+"guarantees that existing routing rules cannot drift between the window-blind and window-aware
+code paths". gemini's submission duplicates the whole ladder -- absent, disabled, status,
+redundant-paid-route -- once in each method. Two copies of one rule is this project's signature
+defect; it is farmerbob-293m and the rubric's own "seven core concepts now exist two or three
+times in mutually incompatible shapes". glm also fits 20 tests into 626 lines against 19 in 730.
+
+glm's critique was assigned a NO-OP arm and it handled that correctly: "This is the pristine
+pre-task file verbatim -- 283 lines, the original eight tests, even the pre-existing broken
+intra-doc link at line 7. There is no design to judge."
+
+TWO FOLLOWUPS, BOTH VERIFIED, BOTH ACCEPTED:
+  - the four call sites are critique.rs:110 and main.rs:399/401/452, not the twelve my spec
+    claimed. I counted with grep including the definition and the tests; glm counted the call
+    sites. Until they move to eligible_at, "a closed window keeps dispatching no matter what
+    sources.rs implements" -- the gap is half closed, not closed.
+  - `cargo clippy -p fb -- -D warnings` fails on SEVEN pre-existing errors, so criterion 3 is
+    unreachable for every task scored on this crate. This is why the clippy column reads n/a
+    and why fb brief printed "no candidate cleared the gate" for a wave in which both surviving
+    arms produced correct, tested, documented code. Filed farmerbob-hm4j.
