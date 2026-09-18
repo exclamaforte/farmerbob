@@ -1,0 +1,62 @@
+MERGED or-nemotron-ultra
+Adjudicated 2026-09-18. Three arms, three PASS, and the strongest critique round this project
+has had -- all three arms wrote, and two independently found the same defect in my spec.
+
+  gemini-38-flash    PASS  652L  24 tests  237s
+  or-nemotron-ultra  PASS  575L  22 tests  253s
+  glm-53-flash       PASS  527L  14 tests  508s
+
+  impl \ suite            gemini-38 glm-53-fl or-nemotr
+  gemini-38-flash          .         .         .
+  glm-53-flash             FAIL      .         .
+  or-nemotron-ultra        FAIL      .         .
+
+MY CLAUSE 3 NAMES A FIELD THAT DOES NOT EXIST.
+
+  "3. `Park::Backoff { ms }` yields `ParkFor` carrying that exact `ms`."
+
+`quota::Park::Backoff` stores `{ until_ms, grounds }`. There is no `ms`. gemini and glm found
+this separately, neither having seen the matrix:
+
+  gemini: "Clause 3 prescribes that `Park::Backoff { ms }` yields `ParkFor` carrying 'that
+    exact ms'. However, `quota::Park::Backoff` stores `{ until_ms: u64, grounds: String }`,
+    not a duration `ms`."
+
+  glm:    "Clause 3 has two defensible readings: carry the decided `default_backoff_ms` ... or
+    translate the instant back ... The boundary list stops at `now_ms == 0`, so I file no
+    claim."
+
+glm declined to file a claim because the boundary was unpinned. That is the discipline the
+rubric asks for and it is the first time an arm has explicitly exercised it.
+
+The two readings diverge only at saturation, which is exactly where gemini's suite fails both
+rivals -- and I ran both cells before reading any of this. The SAME test both times,
+`large_timestamps_do_not_panic`, no panic, just `backoff_ms` 100 against u64::MAX. One
+disagreement repeated, on a case my spec never pinned. Vetoed.
+
+WHY NOT GEMINI, WHICH HAS WON THE LAST THREE. Its reading second-guesses the module clause 1
+tells it not to. From or-nemotron's critique:
+
+  "If `park_after` ever returns `Park::Backoff` with a computed backoff differing from the
+   caller's `default_backoff_ms` (e.g. exponential backoff), `decide` will silently use the
+   wrong duration because it ignores `Park::Backoff.until_ms`."
+
+Clause 1 says park_after owns the park decision entirely. Passing `default_backoff_ms` straight
+through bypasses what park_after actually constructed; translating `until_ms` back is faithful
+to it. gemini's own handoff concedes the risk and says fixing it needs a `quota.rs` change.
+or-nemotron and glm both take the faithful reading. or-nemotron over glm on 22 tests to 14.
+
+That reading has its own degenerate case and glm disclosed it against its own patch too: at
+saturation the remainder is 0, so `ParkFor { backoff_ms: 0 }` -- the value my boundary text
+calls parking nothing. Shared, spec-caused, filed.
+
+N-OF-N, FROM ALL THREE CRITICS: `grounds` is discarded. `park_after` builds it "for the next
+reader of the parked-until record" and my `Decision` has no field to carry it, so the audit
+trail dies exactly where this task builds the join. glm named it correctly as "evidence about
+the specification, not the patch". Filed.
+
+glm also found a real gap in or-nemotron's suite, which I am merging anyway and which should be
+fixed: "The suite's `ParkUntil` arms in the wide-blast tests are dead code ... a mutant
+truncating `arms` whenever the park is `Until` passes."
+
+1573 tests, clippy 9, farmerbob-core clippy 0.
