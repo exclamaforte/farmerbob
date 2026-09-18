@@ -7,9 +7,20 @@
 
 # ---------------------------------------------------------------- native CLIs
 [source.claude-sonnet]
-status      = "verified"
+status      = "disabled"
+disabled_reason = """The five-hour window granted 2026-09-18T00:20Z EXPIRED at 05:20Z. Disabled
+at 07:07Z, 1h47m late, by the orchestrator noticing the clock rather than by anything enforcing
+it -- which is exactly what the note below predicted and called the bug.
+
+The window was honoured in substance: sonnet ran two tasks inside it, due-reset and
+wt-conflict, and WON due-reset on a measured axis -- gut succeeded() and its suite fails on
+three tests against gemini's two, in 253 lines to gemini's 324 for the same 45 tests.
+
+Re-enabling remains a one-word change. The standing reason to keep it off is unchanged: the
+orchestrator runs on the same Anthropic plan, so every sonnet dispatch competes with the
+adjudicator for one budget."""
 # RE-ENABLED 2026-09-18T00:20Z by owner instruction, for a FIVE HOUR WINDOW.
-#   EXPIRES 2026-09-18T05:20Z  (2026-09-17T22:20 local)
+#   EXPIRED 2026-09-18T05:20Z  (2026-09-17T22:20 local) -- honoured at 07:07Z, see above.
 # Third flip of this switch. The standing reason to keep it off is unchanged and still true:
 # the orchestrator runs on the same Anthropic plan, so every sonnet dispatch competes with the
 # adjudicator for one token budget, and the last re-enable consumed a weekly reset largely
