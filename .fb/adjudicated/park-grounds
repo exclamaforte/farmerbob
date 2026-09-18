@@ -1,0 +1,59 @@
+MERGED gemini-38-flash
+Adjudicated 2026-09-18. Three arms, three PASS.
+
+  gemini-38-flash    PASS  546L  37 tests  clippy 0  272s
+  claude-sonnet      PASS  154L  28 tests  clippy 0  203s
+  or-nemotron-ultra  PASS   32L  22 tests  clippy 2  733s
+
+  impl \ suite            claude-so gemini-38 or-nemotr
+  claude-sonnet            .         nocomp    .
+  gemini-38-flash          .         .         .
+  or-nemotron-ultra        .         nocomp    .
+
+THE CRITIQUE DECIDED THIS ONE AND I CONFIRMED IT BY COUNTING. gemini on or-nemotron:
+
+  "Zero test coverage of the `grounds()` public API ... the author dismisses testing
+   `grounds()` as testing 'implementation detail, not behaviour.' This reasoning is flawed:
+   Clauses 4 and 5 specifically require pinning that `grounds(&Leave) == None` and
+   `grounds(&ParkUntil/ParkFor) == Some(exact)` (including `Some(\"\")`)."
+
+  "Loose substring checks instead of byte-for-byte equality ... The author tests only
+   `grounds.contains(\"3600\")` and `!grounds.is_empty()`. These loose checks would pass even
+   if `decide` truncated, trimmed, reformatted, or prepended text to the provider's reason."
+
+Counted across the three suites:
+
+  arm                grounds() calls   exact equalities   substring checks
+  gemini-38-flash                 54                 42                  0
+  claude-sonnet                   10                  8                  0
+  or-nemotron-ultra                0                  0                  2
+
+or-nemotron never calls the function this task adds, and its two assertions on the string are
+exactly the loose checks gemini describes. On a task whose entire point is carrying a reason
+VERBATIM so a parked arm's justification can be recovered, a suite that would pass on a
+truncated reason is not a suite. Add clippy 2 against a baseline of 0, and it is out.
+
+gemini's suite is the only one that tests clause 1 at the level clause 1 asks for -- it
+compares `g.as_bytes()` against the expected bytes, not just the strings. 42 exact equalities
+to sonnet's 8.
+
+THE TWO `nocomp` CELLS ARE GEMINI'S OWN DEVIATION AND I AM NOT HIDING IT. My Exact API says
+"add a reader" and pins one free function. gemini added that AND an inherent
+`impl Decision { pub fn grounds(&self) }`, then tested through the method five times, so its
+suite will not compile against either arm that implemented only what was pinned. That is the
+same flaw glm had on park-scope and gemini had on precondition: testing through an API surface
+the spec did not fix. It cost two cells of cross-examination and it is a real mark.
+
+It does not outweigh a five-to-one margin on the clause the task exists for. The method
+delegates to the free function and gemini disclosed it in its own critique as an ergonomic
+addition rather than concealing it. Filed.
+
+or-nemotron on claude-sonnet wrote nothing.
+
+WHAT THIS BUYS. All three park-wire arms independently reported being forced to discard
+`grounds` because the `Decision` enum I fixed had no field for it -- one called it "evidence
+about the specification, not the patch", and it was. A parked arm now keeps its justification,
+not just its instant. `grounds(&Leave)` is `None` and a park with an empty reason is `Some("")`,
+because nothing-to-justify and parked-with-nothing-recorded are different facts.
+
+1246 core tests, clippy 9, farmerbob-core clippy 0.
