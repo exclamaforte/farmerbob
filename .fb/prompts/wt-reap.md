@@ -1,4 +1,4 @@
-<!-- fb:modifies crates/farmerbob-core/src/wtreap.rs -->
+<!-- fb:creates crates/farmerbob-core/src/wtreap.rs -->
 # Task: deleting a worktree needs positive evidence, not the absence of a record
 
 Rust workspace, already builds. Work only inside `crates/farmerbob-core`.
