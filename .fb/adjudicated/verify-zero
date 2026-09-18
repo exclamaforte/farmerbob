@@ -1,0 +1,71 @@
+MERGED glm-53-flash
+Adjudicated 2026-09-18. Three arms, three PASS.
+
+  glm-53-flash       PASS  546L  17 tests   726s  survival 1/1
+  gemini-38-flash    PASS  483L  21 tests   423s
+  or-nemotron-ultra  PASS  339L  26 tests  1495s  survival 1/2
+
+  impl \ suite            gemini-38 glm-53-fl or-nemotr
+  gemini-38-flash          .         FAIL      .
+  glm-53-flash             .         .         .
+  or-nemotron-ultra        FAIL      .         .
+
+THE NEW VERDICT COLUMN EARNED ITS KEEP IMMEDIATELY. The old heuristic called glm's suite
+`discriminating`; `suite_verdict` printed beside it:
+
+    Inconclusive (too few failures to compare failure patterns across arms)
+
+One failing cell is one data point and the new reading says so instead of asserting a cause.
+That is the whole reason the module exists, and this is the first matrix where both readings
+appeared together.
+
+TWO DISCRIMINATING CELLS, ONE REAL AND ONE MINE.
+
+glm's suite on gemini -- `unrecognised_status_word_is_unreadable_never_passed`:
+
+    left: Passed { ran: 3 }   right: Unreadable
+
+The superset section says an unrecognised shape is `Unreadable` and NEVER `Passed`, and says
+why: `Unreadable` means "nothing established" and is the safe direction. gemini reads the counts
+regardless of the status word and reports a pass. Real defect, against a clause that spells out
+the failure mode it is preventing.
+
+gemini's suite on or-nemotron -- `boundary_saturation_at_u32_max`:
+
+    left: MatchedNothing { filtered_out: None }
+    right: MatchedNothing { filtered_out: Some(4294967295) }
+
+Mine. I pinned "counts larger than u32::MAX SATURATE" and, four bullets earlier, "a count that
+does not parse as a number yields None". A count above u32::MAX does both. or-nemotron took the
+second reading and gemini the first; neither is wrong. Vetoed and filed.
+
+WHAT THE CRITICS FOUND.
+
+gemini on glm is wholly favourable, and praises precisely the behaviour gemini itself gets
+wrong: "Requiring `ok.` or `FAILED.` before count parsing correctly treats unrecognised status
+tokens as `Unreadable` (the safe direction under the open-subset doctrine)."
+
+glm on or-nemotron, three findings, all verified:
+
+  "The status word drives the variant; counts only supply numbers. On 'ok. 0 passed; 1 failed'
+   this returns `Passed { ran: 0 }` -- a value the spec declares nonexistent -- dropping the
+   failed test, the 'everything fine' direction."
+
+  and it declined to call that a defect: "Real cargo lines never disagree with their counts, so
+  the spec underdetermines the fork and I record it as an ambiguity, not a defect (my own
+  implementation went counts-driven); the task author should pin it." Disclosing that it took the
+  other side of an unpinned fork is the discipline this stage exists to produce, and glm has now
+  done it twice.
+
+  "Two tests cannot fail: `verified_is_closed_set_of_four` asserts nothing." Checked -- it
+  constructs five values, discards them, and has no assertion. or-nemotron has the most tests in
+  the field and two of them cannot fail.
+
+  Documentation, counted:  glm 30 //! + 99 ///,  gemini 31 + 37,  or-nemotron 0 + 18.
+  or-nemotron has no module doc at all, as glm said.
+
+DECISION. glm on survival -- the only arm passing every suite -- on a suite that found a real
+defect in a rival, on documentation by a factor of three, and on the field's sharpest critique.
+It has the fewest tests at 17; twenty-six including two that cannot fail is not depth.
+
+1456 core tests, clippy 8.

@@ -772,7 +772,6 @@ mod tests {
     }
 }
 
-
 // ESCALATED: 1 confirmed finding(s) by critic gemini-38-flash, found on glm-53-flash.
 // Promoted from an executed proof that passed the reference veto. Provenance is
 // recorded so a bad test can be traced and retired.  (bead farmerbob-mqr)

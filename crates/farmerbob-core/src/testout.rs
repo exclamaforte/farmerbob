@@ -563,7 +563,6 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
     }
 }
 
-
 // ESCALATED: 1 confirmed finding(s) by critic claude-sonnet, found on codex-luna.
 // Promoted from an executed proof that passed the reference veto. Provenance is
 // recorded so a bad test can be traced and retired.  (bead farmerbob-mqr)
@@ -601,5 +600,3 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
         );
     }
 }
-
-
