@@ -1,3 +1,107 @@
+<!-- fb:creates crates/fb/src/fate_cmd.rs -->
+# Task: the decision exists and nothing can ask it
+
+Rust workspace, already builds. Work only inside `crates/fb`.
+Create `crates/fb/src/fate_cmd.rs` and add `mod fate_cmd;` to `crates/fb/src/main.rs`.
+Do not change any other file.
+
+## Why this exists
+
+`farmerbob_core::finding_fate::decide` was merged to say what should happen to a confirmed
+critique finding. Nothing calls it, and the shell that would call it has no way to ask.
+
+Today `fb-escalate.sh` escalates a finding, runs it against the merged reference, and on failure
+prints:
+
+    glm-53-flash: VETOED against the merged reference -- retracting
+
+The veto is right to refuse a failing test into a green suite. But the finding was ACCEPTED by
+the adjudicator, is real, and then exists nowhere but a bead somebody wrote by hand. The better
+the critic, the more likely its finding is about the arm that won, and the more certainly it is
+discarded.
+
+This command is the bridge: shell asks, core decides, shell acts. Writing the decision a second
+time in shell is how this harness ended up with four copies of its verdict logic.
+
+## Exact API
+
+```rust
+/// Decide the fate of a task's findings and print one line per finding.
+///
+/// `veto` is what happened when the escalated test ran against the merged
+/// reference: `passed`, `failed`, or `did-not-run`.
+///
+/// Returns a process exit code: 0 when every finding was decided, 2 when the
+/// task has no adjudication record or no claims to decide, 1 on an I/O or
+/// parse failure.
+pub fn run_cmd(task: &str, veto: &str) -> i32;
+```
+
+Wired as `fb fate <task> --veto <passed|failed|did-not-run>`. Everything else in the file is
+private.
+
+## What it must read
+
+- `.fb/adjudicated/<task>` — its first line begins `MERGED <arm>`, naming the arm that won.
+  That arm is the merged subject.
+- `<logs>/<task>.claims.json` — `{"claims": [...]}`, each claim carrying at least `critic` and
+  `subject`. A claim's `subject` is the arm the finding is ABOUT.
+
+For each claim, `subject_merged` is `claim.subject == merged_arm`, and the fate comes from
+`finding_fate::decide`.
+
+## Falsifiable clauses
+
+1. A claim whose `subject` equals the merged arm and `--veto passed` prints `ESCALATE`.
+2. The same claim with `--veto failed` prints `FILE-AS-KNOWN-DEFECT` and the reason
+   `finding_fate` supplies.
+3. The same claim with `--veto did-not-run` prints `UNVERIFIABLE`, never either of the above.
+4. A claim whose `subject` is NOT the merged arm prints `NO-SUBJECT` for every `--veto` value.
+5. **The decision is `finding_fate::decide`'s, imported and called.** Do not reimplement the
+   table. A test must pin that all six input combinations agree with `decide` called directly.
+6. An unrecognised `--veto` value returns 2 and decides nothing. It is NOT treated as
+   `did-not-run`: guessing which of three states the caller meant is how a harness reports a
+   fault it never observed.
+7. A missing `.fb/adjudicated/<task>` returns 2 and says which file was missing. An
+   unadjudicated task has no merged arm, so no fate can be decided -- and 2 rather than 0,
+   because "decided nothing" must not read as "everything was fine".
+8. A missing or unparseable claims file returns 2 and says which.
+
+## Boundaries, at N and at zero
+
+- A claims file with an empty `claims` array: return 2 and say there was nothing to decide.
+  Zero findings decided is not success.
+- An adjudication whose first line does not begin `MERGED `: return 2 naming the file. Some
+  records begin `VOID` or `SUPERSEDED`, and those tasks have no merged arm.
+- A claim missing `subject` or `critic`: skip it, print that it was skipped and why, and do NOT
+  let it change the exit code of the others. Say why skipping beats guessing.
+- N claims all about the merged arm: N lines, one per claim, in the order the file lists them.
+- The same critic appearing twice: two lines. This reports findings, not critics.
+
+## Superset status on every enumerated list
+
+The VETO VALUES are a CLOSED set of exactly three: `passed`, `failed`, `did-not-run`. Anything
+else is clause 6. `finding_fate::Fate` is CLOSED at four and defined in `farmerbob-core`; **use
+it, imported.** The FIELDS read from a claim are a known subset -- a claim may carry more and
+that is not an error.
+
+## Composition of aggregate returns
+
+One line per claim in input order, plus one line per skipped claim. The exit code reflects
+whether the COMMAND could decide, not what it decided: a task whose every finding is
+`FILE-AS-KNOWN-DEFECT` still exits 0, because deciding that is the command working.
+
+## Rules
+
+- No `unwrap()`, `expect()`, `panic!`, `todo!` or `unimplemented!` reachable from input, outside
+  `#[cfg(test)]`.
+- Add no dependencies. `serde_json` and `crate::paths` are available.
+- Tests build the two input files in a temp directory; they may not require a real task.
+- `cargo build -p fb` and `cargo test -p fb` must pass. Run them.
+## Do not fabricate
+
+If part of this cannot be done in your environment, say so plainly and leave it undone with a
+comment naming what you could not verify. Returning less with a stated reason is correct here.
 
 ## How this will be scored
 
@@ -88,55 +192,6 @@ traced to the spec rather than to any arm.
 A defect that appears in nearly every implementation is evidence about the specification, not
 about the field. Naming it in your handoff routes it where the fix belongs.
 
-## A field the spec calls prose is not a field your tests may quote
-
-If the specification describes a string by what it should SAY -- a reason, a grounds, a
-diagnostic, a message "for a human reading an adjudication" -- then its exact wording is NOT
-pinned, and a test asserting the exact text fails a rival that says the same thing differently.
-
-This has cost a cross-examination cell in three consecutive tasks:
-
-- a test asserting the exact text of `Inconclusive::reason`;
-- a test asserting `"fewer than two implementations failed"` and `"no test names were recorded"`;
-- a test asserting `reason.contains("fails against merged code")`.
-
-In each case the spec pinned that the string was NON-EMPTY and said what it should convey, and
-in each case a rival conveying it in other words was marked wrong.
-
-Test the requirement, not the sentence. If the spec says the reason must say the test failed
-against merged code, assert that it mentions failing and mentions merged -- separately,
-case-insensitively -- or assert only that it is non-empty. One arm put it exactly right while
-reviewing another: check "the semantic requirement ... without asserting on fragile, exact
-string formatting that would fail against rival implementations".
-
-The exception is a string the spec quotes verbatim as a value, such as a sentinel like
-`"(no output)"`. A quoted literal is pinned; a described one is not.
-
-## Your suite is run against OTHER implementations
-
-This is the rule that has cost the most signal, four times, and it is stated here in terms of
-what is MEASURED rather than of what is intended.
-
-Every candidate's test suite is extracted and run against every other candidate's code. A suite
-that calls anything the specification does not pin **fails to compile against every rival**, and
-those cells are recorded as API-incompatible: you forfeit the cross-examination signal you would
-otherwise have earned, however good your tests are.
-
-Four arms have lost it this way, each for an addition that was reasonable on its own:
-
-- a `Registry::new()` / `insert()` pair, used to build test fixtures;
-- five tests asserting cases the spec never pinned;
-- an inherent method beside the pinned free function, called five times in tests;
-- a `DiffLine::added(..)` constructor, used to build test inputs.
-
-None of those are bad code. Add them if they help a caller. **Your tests must go through the
-pinned surface anyway** -- construct values from their public fields, call the free function the
-Exact API names, and assert only on behaviour the specification fixes. If you would have to call
-your own addition to write the test, write the test the longer way.
-
-The rule is not "do not add API". It is "do not make your suite depend on API a rival has no
-reason to have".
-
 ## Reuse the crate's existing types
 
 If this spec names a type that already exists in `farmerbob-core` -- `Verdict`, `Grade`,
@@ -160,3 +215,22 @@ summary and any failures, which is the entire signal.
 **Not scored:** wallclock. Taking longer to produce better work is the preferred trade.
 There is a generous resource budget; a run is cut early only if it stops making progress or
 regresses past its own best error count.
+
+## Handoff (required)
+
+When you are done, write `.fb/handoff.md` in the repository root. Keep it under 300 words.
+
+**Do not state anything the harness can check.** No test counts, no "all tests pass", no "this
+handles empty input", no performance claims. Those are measured independently and a claim
+about them adds nothing — the harness has already run them by the time anyone reads this.
+
+Write only what cannot be measured:
+
+- **Approach.** The shape of the solution and why this shape rather than an obvious alternative.
+- **Trade-offs.** What you chose against, and what it would cost to choose differently.
+- **Risk.** Where you think this is most likely to be wrong, or hardest to change later.
+- **Deliberate omissions.** What the spec allows that you did not do, and why.
+
+If you found the specification ambiguous or underdetermined, say exactly where. That is the
+most valuable thing this file can contain: it routes back to the task author instead of
+becoming a defect argued about later.
