@@ -853,5 +853,3 @@ mod tests {
         assert!(entry.mean_grade.is_some());
     }
 }
-
-

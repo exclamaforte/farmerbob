@@ -1116,5 +1116,3 @@ mod escalated_marker_grammar_or_inkling {
         assert_eq!(check(prompt, &[]), Precondition::Undeclared);
     }
 }
-
-

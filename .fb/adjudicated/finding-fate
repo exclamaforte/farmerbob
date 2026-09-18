@@ -1,0 +1,58 @@
+MERGED gemini-38-flash
+Adjudicated 2026-09-18. Three arms, three PASS.
+
+  gemini-38-flash    PASS  342L  15 tests  49 //!  259s  survival 1/1
+  glm-53-flash       PASS  314L  12 tests  29 //!  353s
+  or-nemotron-ultra  PASS  199L  11 tests  10 //!  226s
+
+  impl \ suite            gemini-38 glm-53-fl or-nemotr
+  gemini-38-flash          .         .         .
+  glm-53-flash             .         .         FAIL
+  or-nemotron-ultra        .         .         .
+
+THE ONE FAILING CELL IS AN OVER-ASSERTION ON PROSE, AND GEMINI NAMED THE PRINCIPLE WITHOUT
+HAVING SEEN THE MATRIX. or-nemotron's suite on glm:
+
+    assertion failed: reason.contains("fails against merged code")
+
+My clause 3 pins that `reason` is non-empty and says the test fails against merged code. It does
+not fix the wording, and the field is documented as prose "for the bead body". or-nemotron
+asserts the exact phrase; a rival writing "does not pass against the merged reference" satisfies
+the clause and fails the test.
+
+gemini, reviewing glm:
+
+  "Testing `reason` via `lower.contains(\"fail\") && lower.contains(\"merged\")` properly checks
+   the semantic requirement of Clause 3 without asserting on fragile, exact string formatting
+   that would fail against rival implementations."
+
+That is the same defect glm reported in gemini on verify-zero one task ago, and the same one I
+filed after suite-verdict. Third occurrence; vetoed here, and the spec wording is the cause.
+
+WHAT ELSE THE CRITICS FOUND.
+
+glm on or-nemotron: "Clause 7's 'say why' is discharged in the wrong place. The spec says to say
+why a reason cannot be empty 'rather than guarding against it'. The public doc on both `reason`
+fields says only 'Never empty.'; the actual justification ... lives in a comment inside
+`#[cfg(test)]`, invisible to rustdoc and to a reader of the public API." Real, and precisely the
+kind of thing no count shows.
+
+or-nemotron on gemini: NO MATERIAL DEFECTS FOUND. The harder answer, and the record supports it
+-- nothing else in the field found anything against gemini either.
+
+gemini on glm also noted the cost of the API I fixed: `decide`'s signature takes no caller
+diagnostics, so every `reason` must be a static literal and "downstream bead formatters cannot
+embed instance-specific failure traces without an API revision". It judged respecting the fixed
+signature correct anyway. Worth carrying forward when something actually files these beads.
+
+DECISION. All three pinned the six-cell table in the doc, as asked. gemini on 15 tests to 12 and
+11, on 49 module-doc lines to 29 and 10, on surviving every suite, and on being the only arm no
+critic found a defect in.
+
+What this buys: when a critic finds a real defect in the arm that WINS, the finding stops
+vanishing. Escalation currently writes the test, watches it fail because the defect is real and
+unfixed, and retracts it -- so the better the critic, the more certainly its finding is lost.
+`FileAsKnownDefect` names that case, and `Unverifiable` keeps a veto that never ran from being
+mistaken for one that passed.
+
+1472 core tests, clippy 8.

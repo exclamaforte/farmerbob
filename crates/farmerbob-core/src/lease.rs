@@ -751,13 +751,3 @@ mod lease_manager_tests {
         assert!(granted(manager.request(&ghost, holder("b"), at(1))));
     }
 }
-
-
-
-
-
-
-
-
-
-
