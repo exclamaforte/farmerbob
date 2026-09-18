@@ -1221,15 +1221,69 @@ fn is_compile_error(out: &str) -> bool {
 /// Top-level `use` lines that appear before the first `#[cfg(test)]`.
 fn top_level_uses(src: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for line in src.lines() {
+    let mut lines = src.lines();
+    while let Some(line) = lines.next() {
         if line.contains("#[cfg(test)]") {
             break;
         }
-        if line.trim_start().starts_with("use ") {
-            out.push(line.to_string());
+        if !line.trim_start().starts_with("use ") {
+            continue;
         }
+        // A `use` may span several lines. Taking only the first injected
+        //
+        //     use farmerbob_core::scope::{
+        //
+        // into the grafted test module -- an opening brace with no close, so the
+        // module ended with an unclosed delimiter and the DIAGONAL failed: a suite
+        // that cannot compile against the code it shipped with. The invariant VOIDed
+        // the whole matrix, correctly, and the fault was the instrument's.
+        //
+        // This is why cross-examination kept voiding on `crates/fb` tasks and rarely
+        // on `farmerbob-core` ones: core modules import a few short paths, `fb`
+        // modules import enough to wrap. It cost every matrix on scope-cmd, and
+        // several before it that were written off as a graft failure without a cause.
+        //
+        // Accumulate until the statement closes: a `;` at brace depth zero.
+        let mut stmt = String::from(line);
+        let mut depth: i32 = brace_delta(line);
+        while depth > 0 || !ends_statement(&stmt) {
+            let Some(next) = lines.next() else { break };
+            depth += brace_delta(next);
+            stmt.push('\n');
+            stmt.push_str(next);
+        }
+        out.push(stmt);
     }
     out
+}
+
+/// Net brace depth of one line, ignoring braces inside strings, char literals
+/// and comments. A `use` rarely contains any, but `use a::{b as c};` beside a
+/// `// note { unbalanced` would otherwise never close.
+fn brace_delta(line: &str) -> i32 {
+    let mut depth = 0;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '/' if chars.peek() == Some(&'/') => break,
+            '"' => {
+                for d in chars.by_ref() {
+                    if d == '"' {
+                        break;
+                    }
+                }
+            }
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
+}
+
+/// Whether the accumulated statement has reached its terminating `;`.
+fn ends_statement(stmt: &str) -> bool {
+    stmt.trim_end().ends_with(';')
 }
 
 /// The `#[cfg(test)]` section of `src`, with every module declared at the
@@ -2062,6 +2116,39 @@ mod tests {
     }
 
     #[test]
+    /// The graft bug that voided every `crates/fb` matrix. `top_level_uses` took the
+    /// first line of a wrapped import and injected `use farmerbob_core::scope::{` into
+    /// the test module -- an opening brace with no close, so the module ended with an
+    /// unclosed delimiter and the suite failed against its own code.
+    #[test]
+    fn top_level_uses_keeps_a_wrapped_import_whole() {
+        let src = "use farmerbob_core::scope::{\n    assess, Change,\n    Declared,\n};\nuse std::path::Path;\n#[cfg(test)]\nmod tests {}\n";
+        let uses = top_level_uses(src);
+        assert_eq!(uses.len(), 2, "{uses:?}");
+        assert!(uses[0].ends_with("};"), "wrapped import truncated: {:?}", uses[0]);
+        let joined = uses.join("\n");
+        assert_eq!(
+            joined.matches('{').count(),
+            joined.matches('}').count(),
+            "injected uses must be brace-balanced: {joined}"
+        );
+        assert_eq!(uses[1], "use std::path::Path;");
+    }
+
+    #[test]
+    fn top_level_uses_keeps_single_line_imports_unchanged() {
+        let src = "use a::B;\nuse c::{D, E};\n#[cfg(test)]\nmod tests {}\n";
+        assert_eq!(top_level_uses(src), vec!["use a::B;", "use c::{D, E};"]);
+    }
+
+    /// A brace inside a trailing comment must not hold the statement open forever.
+    #[test]
+    fn brace_delta_ignores_comments_and_strings() {
+        assert_eq!(brace_delta("use a::{B}; // note {"), 0);
+        assert_eq!(brace_delta("let s = \"{\";"), 0);
+        assert_eq!(brace_delta("use a::{"), 1);
+    }
+
     fn prune_uses_drops_already_declared_import() {
         let src = "use std::collections::HashMap;\n#[cfg(test)]\nmod tests {\n    use std::collections::HashMap;\n}\n";
         let uses = top_level_uses(src);
