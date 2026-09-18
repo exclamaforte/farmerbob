@@ -9,8 +9,16 @@ Create `crates/farmerbob-core/src/precondition.rs` and add `pub mod precondition
 
 A task spec declares what it will touch, in an HTML comment at the top of the prompt:
 
-    <!-- fb:creates crates/farmerbob-core/src/wtreap.rs -->     must NOT exist on the base
-    <!-- fb:modifies crates/farmerbob-core/src/quota.rs -->     MUST exist on the base
+    fb:creates crates/farmerbob-core/src/wtreap.rs      must NOT exist on the base
+    fb:modifies crates/farmerbob-core/src/quota.rs      MUST exist on the base
+
+Each is written inside an HTML comment: `<`, `!`, `--`, a space, the marker, a space, `--`,
+`>`. This document deliberately does not spell that out anywhere below, because the FIRST
+LINE of this file is a real declaration and the dispatcher greps the whole prompt. An
+earlier draft printed the two examples above in their literal form and every arm refused
+the task -- `declares creates:crates/farmerbob-core/src/wtreap.rs but it already exists on
+the base` -- because the example was parsed as a declaration. Line 1 is the only literal
+marker here; read it for the exact shape.
 
 Specs are written days before they run and sit in a queue while other waves merge. A merge
 moves the base under everything still queued. Both directions have already cost real dispatch:
@@ -82,7 +90,7 @@ pub fn check(prompt: &str, present: &[&str]) -> Precondition;
 
 ## Falsifiable clauses
 
-1. `declarations("<!-- fb:creates a/b.rs -->")` is one `Declared { path: "a/b.rs",
+1. `declarations` over a prompt whose only line is a `fb:creates a/b.rs` marker is one `Declared { path: "a/b.rs",
    requirement: Absent }`. `fb:modifies` gives `Present`.
 2. A prompt with both markers returns both, **in the order they appear in the text**, not
    grouped by requirement and not sorted.
@@ -95,7 +103,7 @@ pub fn check(prompt: &str, present: &[&str]) -> Precondition;
    spec that passed its check are different states, and collapsing them is a check whose
    failure is indistinguishable from its success.
 6. **A marker is recognised only at the start of a line**, after optional leading
-   whitespace. A prompt that writes `see <!-- fb:creates x.rs -->` mid-sentence declares
+   whitespace. A prompt that writes a `fb:creates x.rs` marker mid-sentence, after other words on the same line, declares
    nothing. Pin this. It is why the rule exists: three separate bugs in this project came
    from a scanner matching its own syntax quoted inside prose, and every prompt carries an
    appended rubric that discusses these markers by name.
@@ -104,7 +112,7 @@ pub fn check(prompt: &str, present: &[&str]) -> Precondition;
    opening and closing fence is documentation of the syntax, not a use of it. Pin both the
    ignored-inside case and the recognised-after-the-close case.
 8. The path is the text between the marker word and ` -->`, trimmed. A marker with no path
-   (`<!-- fb:creates -->`) declares nothing and is not an error.
+   -- a `fb:creates` marker with nothing between it and the closing `-->` -- declares nothing and is not an error.
 9. `Violated` lists EVERY violation, not the first. A spec that is wrong in two ways should
    say so once, not across two dispatches.
 
@@ -126,7 +134,7 @@ pub fn check(prompt: &str, present: &[&str]) -> Precondition;
 ## Superset status on every enumerated list
 
 The MARKER WORDS are a CLOSED set of exactly two, `fb:creates` and `fb:modifies`. Anything
-else after `<!-- fb:` -- including a future third marker -- is not a declaration and is
+else after the comment opener and `fb:` -- including a future third marker -- is not a declaration and is
 ignored, not an error: an older binary meeting a newer prompt must not refuse it, and must
 not silently treat it as one of the two it knows. Say both halves in the doc.
 
