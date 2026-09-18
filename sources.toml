@@ -7,8 +7,27 @@
 
 # ---------------------------------------------------------------- native CLIs
 [source.claude-sonnet]
-status      = "verified"
-# WINDOW: 2026-09-18T07:24Z -> EXPIRES 2026-09-18T12:24Z  (owner instruction, fourth flip)
+status      = "disabled"
+disabled_reason = """The five-hour window granted 2026-09-18T07:24Z expired at 12:24Z. Disabled
+at 12:27Z, three minutes later, because fb-status.sh printed
+
+    claude-sonnet: window EXPIRED 0h03m ago (...) -- STILL ENABLED -- DISABLE IT
+
+on the first tick after the instant passed. The previous window ran 1h47m over and was caught
+only by reading a clock; the expiry is machine-readable now and the ten-minute loop cannot miss
+it. That is the whole difference, and it is the difference between a promise and a rule.
+
+The window earned its slot. Inside it sonnet WON due-reset on a measured axis -- gut succeeded()
+and its suite fails on three tests to gemini's two, in 253 lines to 324 for the same 45 -- and
+on store-batch it wrote the critique that disqualified the best suite in the field, catching
+three unnecessary pub(crate) edits in lib.rs that the path-level scope gate could not see.
+
+Re-enabling is a one-word change plus a new expires_at. The standing reason to keep it off is
+unchanged: the orchestrator runs on the same Anthropic plan, so every sonnet dispatch competes
+with the adjudicator for one budget."""
+# WINDOW: 2026-09-18T07:24Z -> EXPIRED 2026-09-18T12:24Z (owner instruction, fourth flip).
+# expires_at kept below so fb-status keeps reporting the window's history rather than falling
+# silent the moment it is honoured.
 expires_at  = "2026-09-18T12:24:00+00:00"
 # `expires_at` is read by fb-status.sh, which prints a WINDOW line on every run and shouts
 # EXPIRED once the instant passes. The previous window ran 1h47m past its end because nothing
