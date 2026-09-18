@@ -245,6 +245,12 @@
    "critic": "glm-53-flash",
    "found_on": "ifm-k2-horizon",
    "tests": 2
+  },
+  {
+   "task": "precondition",
+   "critic": "unknown",
+   "found_on": "or-nemotron-ultra",
+   "tests": 1
   }
  ]
 }
