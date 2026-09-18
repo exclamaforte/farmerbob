@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fb-wave — launch one dispatch wave detached, and refuse to launch a second on top of it.
+# fb-wave — launch one dispatch wave detached, and refuse to launch the SAME one twice.
 #
 # Two concurrent fb-admit runs on the same matrix each call
 #   git worktree remove --force && git worktree add
@@ -15,7 +15,22 @@ set -uo pipefail
 cd /home/gabe/Documents/farmerbob
 M="${1:?matrix.tsv}"
 LOG="${2:-$HOME/.local/share/farmerbob/logs/wave-$(basename "$M" .tsv).log}"
-LOCK="$HOME/.local/share/farmerbob/wave.lock"
+# PER-MATRIX, not global. The hazard this guards is documented above and is specific: two
+# fb-admit runs on the SAME matrix each call `git worktree remove --force && git worktree add`
+# for the SAME run, and the second deletes the first's worktree mid-flight. A worktree is named
+# <task>--<arm>, so two waves on DIFFERENT matrices cannot name the same directory and cannot
+# collide.
+#
+# The lock was global because that was the safe thing to write while the cause was still being
+# found. It then became the binding constraint on throughput: a wave is three or four arms
+# against a six-slot machine, so half the box sat idle by construction, and the autopilot's
+# slot-based launching -- added specifically to run two waves at once -- could never fire. It
+# reported "0/2 waves" on every launch it ever made.
+#
+# Same file, same flock, one name per matrix.
+LOCKDIR="$HOME/.local/share/farmerbob"
+LOCK="$LOCKDIR/wave.$(basename "$M" .tsv).lock"
+mkdir -p "$LOCKDIR"
 
 exec 9>"$LOCK"
 if ! flock -n 9; then
