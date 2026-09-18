@@ -88,10 +88,17 @@ removed.
 5. A matrix that differs from clause 4 by ONE cross-camp cell flipped to `Pass` returns `None`.
    That single cell is the whole difference between the two, and it is what nine verdicts
    missed.
-6. The `arms.len() < 4` guard is REMOVED. It was a proxy for the broken check, not a property
-   of partitions: `field_shape` reports `Partition` at three arms and never at two, and its
-   answer governs. Pin a three-arm genuine partition returning `Some` and a two-arm mutual
-   rejection returning `None`.
+6. The `arms.len() < 4` guard is REMOVED, and removing it changes nothing at three arms,
+   because `field_shape` checks `Isolated` BEFORE `Partition` and a three-arm split is always
+   two-plus-one. The lone arm fails every foreign suite in both directions, which is exactly
+   `Isolated`, so `shape` never returns `Partition` at three arms and `detect_partition`
+   returns `None` there. Pin that: a three-arm two-plus-one split returns `None`, and say in
+   your handoff that it is `Isolated` rather than "not a partition", because those are
+   different facts. A two-arm mutual rejection also returns `None`.
+
+   The guard still goes. It was a proxy for the broken check, and leaving a floor that
+   `field_shape` already enforces is a second copy of the rule -- which is the whole subject of
+   this task.
 7. `arms` is no longer used to compute the answer. If it is still needed to render, say what
    for; if it is not, say so in your handoff rather than silently keeping a parameter that does
    nothing.
@@ -100,7 +107,9 @@ removed.
 
 - ZERO arms and ONE arm: `field_shape::shape` returns `Missing`, so `None`.
 - TWO arms: never `Some`, whatever the cells say. Clause 6.
-- THREE arms: `Some` only for a genuine partition.
+- THREE arms: never `Some` either, and for a reason worth stating -- `Isolated` claims the
+  shape first. Clause 6.
+- FOUR arms: the smallest field in which `Some` is reachable at all.
 - Every off-diagonal cell `Cell::Error`: `Missing`, so `None`.
 - SOME cells `Error`: `field_shape` excludes them from every denominator and its answer governs.
   Do not re-derive that rule here; assert the behaviour, not the mechanism.
@@ -132,10 +141,15 @@ same argument at scale, and an implementation that satisfies all three cannot be
 - Add no dependencies. `farmerbob-core` is already a dependency and `field_shape` is already in
   it; verify that for yourself rather than taking this line's word for it.
 - `Matrix::new` returns `Result`; handle it. Inside `#[cfg(test)]` an `unwrap` is permitted.
-- `cargo test -p fb` must pass. **`cargo clippy -p fb -- -D warnings` currently fails on SEVEN
-  errors that predate this task** (dead code in `critique.rs`, `prove.rs`, `import.rs`, and
-  three empty-format-string literals in `select.rs` and `main.rs`). You are not permitted to fix
-  them and you are not scored on them. Report that your own file adds none.
+- `cargo test -p fb` must pass.
+- **The clippy criterion is NOT MEASURABLE on this crate and no candidate will be ranked by it.**
+  `cargo clippy -p fb -- -D warnings` fails on seven errors that predate this task -- dead code
+  in `critique.rs`, `prove.rs` and `import.rs`, and three empty-format-string literals in
+  `select.rs` and `main.rs`. Fixing them is a departure from the declared scope and scores as
+  one, so the bar is unreachable for everyone equally and is therefore not a discriminator. The
+  scored list below still names clippy; read this line as the measurement that list cannot take
+  here, exactly as it says under "A signature that cannot compute what the spec promises".
+  Report that your own file adds none. (bead farmerbob-hm4j)
 
 ## How this will be scored
 
@@ -145,8 +159,9 @@ optimise for the real bar rather than guess at it.
 **Gate (all required, else the run scores as failed):**
 - `cargo build -p <crate>` succeeds
 - `cargo test -p <crate>` passes, with at least one test that actually executes
-- **you change the file the task declares, and one line in the `lib.rs` beside it, and
-  nothing else.** Not "only that crate" --
+- **you change the file the task declares and nothing else** -- plus, ONLY when the task
+  CREATES a new file, the one `pub mod y;` line in the `lib.rs` beside it. A task that MODIFIES
+  an existing file touches one file and no other. Not "only that crate" --
   that is what this line used to say, and it understated the rule by a wide margin. The
   measurement is `farmerbob_core::scope`, it compares paths as exact strings, and it permits
   exactly two things: the declared target, and adding `pub mod y;` to the `lib.rs` beside it

@@ -7,8 +7,9 @@ optimise for the real bar rather than guess at it.
 **Gate (all required, else the run scores as failed):**
 - `cargo build -p <crate>` succeeds
 - `cargo test -p <crate>` passes, with at least one test that actually executes
-- **you change the file the task declares, and one line in the `lib.rs` beside it, and
-  nothing else.** Not "only that crate" --
+- **you change the file the task declares and nothing else** -- plus, ONLY when the task
+  CREATES a new file, the one `pub mod y;` line in the `lib.rs` beside it. A task that MODIFIES
+  an existing file touches one file and no other. Not "only that crate" --
   that is what this line used to say, and it understated the rule by a wide margin. The
   measurement is `farmerbob_core::scope`, it compares paths as exact strings, and it permits
   exactly two things: the declared target, and adding `pub mod y;` to the `lib.rs` beside it
