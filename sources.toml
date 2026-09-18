@@ -326,7 +326,14 @@ probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 53s
 quota_bucket = "openai"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-qwen38-flash]
-status = "verified"
+status = "disabled"
+disabled_reason = """Paid route retired 2026-09-17 while the free/plan arms carry the field.
+8 runs, $0.3511, 2 wins (consensus, costpartial) at $0.0439 per completed run -- it earned its
+keep and is being stood down on portfolio grounds, not for failing. It NO-OPed at rc=1 in 10s
+on wave61 and 7s on wave59, twice in a row, which is the shape of a refused arm rather than a
+bad one; nothing here establishes which, and that is the honest state.
+Re-enable to compare a paid qwen route against the plan arms on a port-class task, where paid
+arms have taken 8 of 9. On tightly-pinned single-file specs they buy nothing measurable."""
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
@@ -340,7 +347,13 @@ probe_verified = "2026-09-16"   # multi-turn capability probe: PASS in 29s
 quota_bucket = "qwen"   # the upstream vendor is what rate-limits, not openrouter
 
 [source.or-qwen38-max]
-status = "verified"
+status = "disabled"
+disabled_reason = """Retired 2026-09-17. The clearest loss in the pool: 3 runs, $1.9880, ZERO
+wins, at $0.6627 per completed run -- fifteen times or-hy3's rate and more than any other arm,
+for nothing merged. `notes` already called it the most expensive arm in the pool; three
+dispatches were enough to establish it was not buying anything back.
+This is a judgement about VALUE, not capability: all 3 runs completed and the probe passed in
+86s. It lost on price per merged result, which is the axis the project exists to measure."""
 kind = "opencode"
 launcher = "ori opencode"
 provider = "openrouter"
