@@ -71,11 +71,17 @@ can be given."""
 status      = "verified"
 kind        = "cli"
 cmd         = "agy"
-args        = ["-p", "{prompt}", "--model", "gemini-3.8-flash-low",
+args        = ["-p", "{prompt}", "--print-timeout", "45m",
+               "--model", "gemini-3.8-flash-high",
                "--add-dir", "{worktree}", "--dangerously-skip-permissions",
-               "--output-format", "stream-json"]
+               "--output-format", "text"]
 cwd_honored = false          # !! MUST pass --add-dir or it writes to its own scratch dir
-model       = "gemini-3.8-flash"
+model       = "gemini-3.8-flash-high"
+# These args now match fb-dispatch.sh's launch line, which is what actually runs. They did
+# not: the registry said -low and stream-json while the dispatcher has always sent -high and
+# text. Nothing read the difference, so nothing reported it, and the registry was describing
+# an arm that never ran. -high is the implementer tier, meant to sit alongside codex-luna at
+# xhigh and glm-53-flash rather than below them.
 provider    = "google-oauth"
 quota       = "plan"
 quota_bucket = "google-oauth-exclamaforte"   # possibly shared with the `gemini` CLI — unconfirmed
