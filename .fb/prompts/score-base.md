@@ -37,23 +37,39 @@ One private helper is added and the three `HEAD` call sites use it. Nothing publ
 /// The revision a worktree's work should be measured against: the point its
 /// branch left the base, so that committed and uncommitted work both count.
 ///
-/// `None` when git refuses to answer, which is NOT the same as "no commits".
+/// `None` means GIT REFUSED to read this worktree at all, which is not the
+/// same as "no commits" and not the same as "no common ancestor".
 fn measure_base(wt: &Path) -> Option<String>;
 ```
 
-`measure_base` returns the merge-base of `HEAD` and `master` -- `git merge-base HEAD master` --
-and falls back to the string `"HEAD"` when that command SUCCEEDS but prints nothing, which is
-what a worktree with no common ancestor does. It returns `None` only when git refuses.
+`measure_base` takes TWO observations, and it needs two because one cannot tell the cases apart.
+`git merge-base HEAD master` exits **1** when the histories share no common ancestor and exits
+**128** when the repository is unreadable, and the existing `git` helper maps every non-zero
+status to `None`. So:
 
-The three call sites become, with `base` the value `measure_base` returned:
+1. `git rev-parse --git-dir` -- is this worktree readable at all? `None` here means git refused,
+   and `measure_base` returns `None`.
+2. `git merge-base HEAD master` -- `Some(sha)` is the base. `None` here, having already
+   established that git is answering, means no common ancestor, and `measure_base` returns
+   `Some("HEAD".into())`, which reproduces today's behaviour for that worktree.
+
+The three call sites thread the base through, so a refusal reaches the existing
+`Measurement::Missing` path by the route it already takes:
 
 ```rust
-let numstat = git(wt, &["diff", "--numstat", &base, "--", "crates/"]);
-let tracked = git(wt, &["diff", "--name-only", &base, "--", "crates/"]);
+let base = measure_base(wt);
+let numstat = base
+    .as_deref()
+    .and_then(|b| git(wt, &["diff", "--numstat", b, "--", "crates/"]));
+let tracked = base
+    .as_deref()
+    .and_then(|b| git(wt, &["diff", "--name-only", b, "--", "crates/"]));
 ```
 
-`git(dir, args) -> Option<String>` already exists and already distinguishes refusal from empty
-output. Use it; do not add a second way to run git.
+`base` is an `Option<String>`; `as_deref()` is what makes it a `&str` for `git`. The existing
+`match (numstat, untracked_raw, tracked)` then sees `None` exactly as it does today when git
+refuses, and yields `Missing` with no further change. Do not add a second way to run git beyond
+the two observations above.
 
 ## Falsifiable clauses
 
@@ -65,7 +81,8 @@ output. Use it; do not add a second way to run git.
    arrangements of the same content, not as a fixed number.
 3. A worktree with BOTH a commit and further uncommitted edits counts both, once each. Pin that
    the total equals the sum, and that no line is counted twice.
-4. `measure_base` returns `None` when git refuses, and the existing rule then holds unchanged:
+4. `measure_base` returns `None` when git REFUSES -- `rev-parse --git-dir` fails -- and the
+   existing rule then holds unchanged:
    `lines_added` is `Measurement::Missing`, never `Some(0)`. The doc comment on `git` at the top
    of this file explains what that rule cost when it was got wrong; do not weaken it.
 5. `changed_paths` and the crate set are computed from the same base as the line count. A file
@@ -79,17 +96,22 @@ output. Use it; do not add a second way to run git.
   the case that must still work, and it is the one the fix could break.
 - ZERO commits and a dirty tree: unchanged from today.
 - ONE commit and a clean tree: the committed lines. The defect case.
-- A branch with no common ancestor with `master`: `git merge-base` succeeds and prints nothing,
-  so the base is `"HEAD"` and behaviour falls back to today's. Say so rather than treating an
-  empty answer as a refusal.
+- A branch with no common ancestor with `master`: `git merge-base` EXITS 1, which the `git`
+  helper reports as `None`. It is distinguished from a refusal only because `rev-parse` already
+  answered, and the base is then `"HEAD"`, reproducing today's behaviour. Pin both halves: a
+  readable worktree with no common ancestor gets `Some("HEAD")`, an unreadable one gets `None`.
+  Merging them is the defect this whole task is about, one level down.
 - Git refusing (the pruned `.git/worktrees/<name>` case, 103 of 181 worktrees historically):
   `Missing`. Clause 4.
 
 ## Superset status on every enumerated list
 
-The git subcommands this module may run are a CLOSED set of exactly four: `diff --numstat`,
-`diff --name-only`, `ls-files --others --exclude-standard`, and `merge-base`. Adding a fifth is
-a defect, and your tests may not assert on any other git invocation.
+The git subcommands this module may run are a CLOSED set of exactly five: `diff --numstat`,
+`diff --name-only`, `ls-files --others --exclude-standard`, `merge-base`, and
+`rev-parse --git-dir`. Adding a sixth is a defect, and your tests may not assert on any other
+git invocation. `rev-parse` is in the set for one stated reason: without it, exit 1 from
+`merge-base` and exit 128 from an unreadable repository are the same observation, and the
+module would have to guess which it was looking at.
 
 `Measurement` and `Absent` are `farmerbob_core::measurement`'s and you define neither.
 
