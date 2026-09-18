@@ -179,20 +179,46 @@ CGPID=$!
   #
   # 45 minutes: the longest legitimate run observed is 1304s (22 min), so the cap is roughly
   # double it. Override per wave with FB_RUN_TIMEOUT.
+  # CONTINUE the spec-critique session when this arm has one for this task.
+  #
+  # fb-speccheck runs at THIS path before dispatch, so the arm has already read the spec and
+  # the code once and returned findings on it. All four launchers key continuation to the
+  # working directory, and the session outlives the directory -- verified by deleting the
+  # directory between two turns and confirming the second still recalled the first, which is
+  # exactly what `git worktree add` does above.
+  #
+  # Best effort, never load-bearing: if no session exists the launcher starts cold and the
+  # prompt is self-contained. A stage that only works when the agent remembers has a failure
+  # state that looks like a slightly worse answer instead of an obvious one.
+  CONT=""
+  [ -f "$LOG_ROOT/speccheck/$BEAD/$SRC.findings.md" ] && CONT=yes
+  a_c=(); z_c=(); o_c=(); c_c=()
+  if [ -n "$CONT" ]; then
+    a_c=(--continue); z_c=(--continue); o_c=(--continue); c_c=(--continue)
+    echo "$SRC: continuing its spec-critique session"
+  fi
   case "$SRC" in
-    codex-luna)      run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" codex exec \
-                         --dangerously-bypass-approvals-and-sandbox --strict-config \
-                         -c model_reasoning_effort="${FB_CODEX_EFFORT:-xhigh}" \
-                         -m gpt-5.6-luna "$P" ;;
+    codex-luna)
+      if [ -n "$CONT" ]; then
+        run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" codex exec resume --last \
+            --dangerously-bypass-approvals-and-sandbox --strict-config \
+            -c model_reasoning_effort="${FB_CODEX_EFFORT:-xhigh}" \
+            -m gpt-5.6-luna "$P"
+      else
+        run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" codex exec \
+            --dangerously-bypass-approvals-and-sandbox --strict-config \
+            -c model_reasoning_effort="${FB_CODEX_EFFORT:-xhigh}" \
+            -m gpt-5.6-luna "$P"
+      fi ;;
     claude-sonnet)   run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" claude \
                          -p "$P" --permission-mode bypassPermissions --model sonnet \
-                         --effort "${FB_CLAUDE_EFFORT:-xhigh}" --output-format json ;;
+                         --effort "${FB_CLAUDE_EFFORT:-xhigh}" "${c_c[@]}" --output-format json ;;
     gemini-38-flash) run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" agy -p "$P" --print-timeout 45m --model gemini-3.8-flash-high --add-dir "$WT" \
-                         --dangerously-skip-permissions --output-format text ;;
-    glm-53-flash)    run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" zcode --prompt "$P" ;;
+                         "${a_c[@]}" --dangerously-skip-permissions --output-format text ;;
+    glm-53-flash)    run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" zcode "${z_c[@]}" --prompt "$P" ;;
     ifm-*)           set -a; . "$HOME/.config/farmerbob/secrets.env"; set +a
-                     run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" opencode run -m "$MODEL" "$P" ;;
-    or-*)            run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" ori opencode run -m "$MODEL" "$P" ;;
+                     run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" opencode run "${o_c[@]}" -m "$MODEL" "$P" ;;
+    or-*)            run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" ori opencode run "${o_c[@]}" -m "$MODEL" "$P" ;;
     # An arm the registry calls verified but this table cannot launch. sources.toml declares
     # `cmd` and `args` for every arm and NOTHING HERE READS THEM -- this case statement is a
     # second, authoritative-looking copy of the same fact, and claude-sonnet was re-enabled,
