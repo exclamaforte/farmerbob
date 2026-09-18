@@ -172,7 +172,40 @@ PYV
     tgt=$(fb_target "$T")
     crate=$(awk -F/ '{print $2}' <<< "$tgt")
     echo "reference veto: $T against merged HEAD ($crate)"
-    cargo test -p "$crate" "conformance_${T//-/_}" 2>&1 | grep -E '^test |test result:' | tail -20
+    # THE FILTER MUST MATCH WHAT `auto` WRITES, AND ZERO MATCHES IS NOT A PASS.
+    #
+    # Two bugs met here. `auto` names the grafted module `escalated_<task>_<arm>` (line 103)
+    # and this filtered on `conformance_<task>`, so it matched nothing by construction. And
+    # matching nothing printed
+    #
+    #   test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1440 filtered out
+    #
+    # which read as a pass. The instrument could not find what it was asked to check and said
+    # everything was fine -- inside the anti-invalid-test check, whose whole job is to stop a
+    # bad test being trusted. That is farmerbob_core::suite_match's rule, and this is the
+    # caller it was written for: zero matched means NOTHING WAS ESTABLISHED.
+    #
+    # Both marker shapes are tried because both exist in the tree: `escalated_*` from `auto`
+    # and `conformance_*` from older hand-grafted suites.
+    ran=0; failed=0
+    for marker in "escalated_${T//-/_}" "conformance_${T//-/_}"; do
+      out=$(cargo test -p "$crate" "$marker" 2>&1)
+      printf '%s\n' "$out" | grep -E '^test |test result:' | tail -20
+      line=$(printf '%s\n' "$out" | grep -E '^test result:' | tail -1)
+      p_n=$(printf '%s' "$line" | grep -oE '[0-9]+ passed' | grep -oE '^[0-9]+'); p_n=${p_n:-0}
+      f_n=$(printf '%s' "$line" | grep -oE '[0-9]+ failed' | grep -oE '^[0-9]+'); f_n=${f_n:-0}
+      ran=$(( ran + p_n + f_n )); failed=$(( failed + f_n ))
+    done
+    if [ "$ran" -eq 0 ]; then
+      echo "VERIFY MATCHED NOTHING for $T -- neither escalated_${T//-/_} nor conformance_${T//-/_}"
+      echo "  Zero tests ran. That is not a pass: nothing was established about the suite."
+      exit 1
+    fi
+    if [ "$failed" -gt 0 ]; then
+      echo "VERIFY FAILED for $T: $failed of $ran escalated test(s) fail against merged HEAD"
+      exit 1
+    fi
+    echo "verify ok: $ran escalated test(s) pass against merged HEAD"
     ;;
   credit)
     T="${2:?task}"; CRITIC="${3:?critic}"; SUBJECT="${4:?subject}"; N="${5:-1}"
