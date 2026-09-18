@@ -138,7 +138,21 @@ shim       = "shims/ifm-proxy.py"
 notes      = "vLLM-backed. IFM requires a `reasoning` field on every replayed assistant message; opencode omits it, so the shim injects it. Verified: PASSED gpu-lease, 552 lines, 41 requests patched."
 
 [source.ifm-k2-think]
-status     = "verified"      # multi-turn works via shims/ifm-proxy.py; PASSED the probe in 23s
+status     = "disabled"
+disabled_reason = """Retired 2026-09-18 for burning slots on refusals. Across waves 55-62 it
+produced FOUR of the eleven duds, more than any other arm. Nine of those eleven were quota
+refusals rather than capability failures and this arm was the largest single source: every
+recent dispatch ended NO-OP at rc=1 in 8-10 seconds, which is the ifm daily token cap refusing
+it before it started, not the arm failing a task.
+
+ifm-k2-horizon stays. It shares the account and will meet the same cap, but it is the half of
+the pair kept by owner instruction and it has passed.
+
+Re-enable when the ifm daily cap is known to have rolled, and preferably once
+quota::park_after is wired into dispatch, so a refusal parks the arm instead of costing a slot
+in every wave. Verified-in-all-but-status: the launcher, the shim and the probe all worked
+(PASSED in 23s), so re-enabling is a one-word change back to status = "verified"."""
+# was: status = "verified"   # multi-turn works via shims/ifm-proxy.py; PASSED the probe in 23s
 kind       = "opencode"
 launcher   = "opencode"   # NOT `ori opencode` -- ori replaces the env and drops IFM_API_KEY
 model      = "ifm/IFM/K2-Think-v2"
