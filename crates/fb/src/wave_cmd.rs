@@ -63,6 +63,31 @@ pub fn log_path(logs: &Path, matrix: &Path) -> PathBuf {
     logs.join(format!("wave-{stem}.log"))
 }
 
+/// This binary's path, fit to be re-executed.
+///
+/// `current_exe()` resolves /proc/self/exe, and when the binary has been REPLACED under a
+/// running process -- which `cargo build` does every time -- the kernel appends " (deleted)"
+/// to that link. Spawning the result is ENOENT, so a long-running `fb autopilot` silently
+/// lost the ability to launch anything the moment the tree was rebuilt: it claimed the
+/// matrix, moved it to dispatched/, failed to start it, and reported "IDLE, queue empty"
+/// on every tick afterwards.
+///
+/// A path that no longer names an executable falls back to the built binary in the tree,
+/// which is the one a rebuild just wrote.
+pub fn runnable_exe(current: Option<PathBuf>, fallback: PathBuf) -> PathBuf {
+    if let Some(p) = current {
+        let text = p.to_string_lossy().into_owned();
+        let stripped = text
+            .strip_suffix(" (deleted)")
+            .map(PathBuf::from)
+            .unwrap_or(p);
+        if stripped.is_file() {
+            return stripped;
+        }
+    }
+    fallback
+}
+
 /// Claim the matrix and run it.
 pub fn run(matrix: &Path, detach: bool) -> i32 {
     let repo = crate::paths::repo();
@@ -103,8 +128,8 @@ pub fn run(matrix: &Path, detach: bool) -> i32 {
             return 1;
         }
     };
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("fb"));
-    match std::process::Command::new(exe)
+    let exe = runnable_exe(std::env::current_exe().ok(), repo.join("target/debug/fb"));
+    match std::process::Command::new(&exe)
         .args(["admit", &path.to_string_lossy()])
         .current_dir(&repo)
         .stdout(file)
@@ -121,7 +146,16 @@ pub fn run(matrix: &Path, detach: bool) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("cannot start the wave: {e}");
+            // PUT THE MATRIX BACK. A launch that never started has not consumed its queue
+            // slot, and leaving it in dispatched/ makes the wave unrecoverable: the queue
+            // reads empty forever after and nothing says why.
+            if let Some(name) = path.file_name() {
+                let back = repo.join(".fb/queue").join(name);
+                if fs::rename(&path, &back).is_ok() {
+                    eprintln!("returned {} to the queue", name.to_string_lossy());
+                }
+            }
+            eprintln!("cannot start the wave with {}: {e}", exe.display());
             1
         }
     }
@@ -190,5 +224,47 @@ mod tests {
             log_path(Path::new("/l"), Path::new("/q/wave7.tsv")),
             PathBuf::from("/l/wave-wave7.log")
         );
+    }
+
+    /// `cargo build` replaces the binary under a running process, and the kernel then
+    /// appends " (deleted)" to /proc/self/exe. Spawning that path is ENOENT, which is how a
+    /// live `fb autopilot` silently stopped launching anything and reported "IDLE, queue
+    /// empty" on every tick instead.
+    #[test]
+    fn a_replaced_binary_falls_back_to_the_one_in_the_tree() {
+        let fallback = PathBuf::from("/repo/target/debug/fb");
+        assert_eq!(
+            runnable_exe(
+                Some(PathBuf::from("/repo/target/debug/fb (deleted)")),
+                fallback.clone()
+            ),
+            fallback,
+            "a deleted binary is not runnable, whatever its name says"
+        );
+        assert_eq!(runnable_exe(None, fallback.clone()), fallback);
+    }
+
+    /// A live binary is used as-is: the fallback is for the replaced case only.
+    #[test]
+    fn a_live_binary_is_used_unchanged() {
+        let me = std::env::current_exe().unwrap();
+        assert_eq!(runnable_exe(Some(me.clone()), PathBuf::from("/nope")), me);
+    }
+
+    /// A real file whose name genuinely ends in " (deleted)" still resolves to itself,
+    /// because the stripped path would not exist.
+    #[test]
+    fn the_suffix_is_only_stripped_when_the_stripped_path_exists() {
+        let d = std::env::temp_dir().join(format!("fb-wave-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let odd = d.join("x (deleted)");
+        std::fs::write(&odd, "").unwrap();
+        // Nothing at `d/x`, so the strip fails and the fallback stands rather than a path
+        // that is not there.
+        assert_eq!(
+            runnable_exe(Some(odd), PathBuf::from("/fb")),
+            PathBuf::from("/fb")
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
