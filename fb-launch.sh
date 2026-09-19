@@ -54,7 +54,15 @@ print(tomllib.load(open('$repo/sources.toml','rb'))['source'].get('$arm',{}).get
         /home/gabe/Documents/farmerbob/fb-isolated "$wd" codex exec \
             --dangerously-bypass-approvals-and-sandbox -m gpt-5.6-luna "$prompt"
       fi ;;
-    gemini-38-flash) /home/gabe/Documents/farmerbob/fb-isolated "$wd" agy -p "$prompt" --print-timeout 45m --model gemini-3.8-flash-high --add-dir "$wd" \
+    # agy takes its model from the REGISTRY, like ifm-* and or-* already do, rather than
+    # hardcoding one per arm. The old branch pinned gemini-3.8-flash-high here while
+    # sources.toml said something else entirely -- the registry was describing an arm that
+    # never ran, and nothing read the difference because nothing compared them.
+    #
+    # Parameterised, `agy models` output becomes registrable without touching this file:
+    # gemini-3.x, claude-sonnet-4-6, claude-opus-4-6-thinking, gpt-oss-120b.
+    gemini-38-flash|agy-*)
+                     /home/gabe/Documents/farmerbob/fb-isolated "$wd" agy -p "$prompt" --print-timeout 45m --model "$model" --add-dir "$wd" \
                          "${agy_c[@]}" --dangerously-skip-permissions --output-format text ;;
     glm-53-flash)    /home/gabe/Documents/farmerbob/fb-isolated "$wd" zcode "${zcode_c[@]}" --prompt "$prompt" ;;
     claude-sonnet)   /home/gabe/Documents/farmerbob/fb-isolated "$wd" claude -p "$prompt" \

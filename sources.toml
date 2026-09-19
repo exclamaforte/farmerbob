@@ -531,3 +531,33 @@ quota_bucket = "nex-agi"   # the upstream vendor is what rate-limits, not openro
 # observation of "no longer refused" cannot locate the boundary, and the message never carried
 # one to begin with. Treat the cadence as daily and unpinned until a refusal and a recovery are
 # timestamped either side of it.
+
+[source.agy-sonnet-46]
+status      = "verified"
+kind        = "cli"
+cmd         = "agy"
+args        = ["-p", "{prompt}", "--print-timeout", "45m",
+               "--model", "claude-sonnet-4-6",
+               "--add-dir", "{worktree}", "--dangerously-skip-permissions",
+               "--output-format", "text"]
+cwd_honored = false          # !! MUST pass --add-dir, same as every agy arm
+model       = "claude-sonnet-4-6"
+provider    = "agy-anthropic"
+quota       = "plan"
+quota_bucket = "agy-anthropic"   # UNCONFIRMED: owner reports agy bills Anthropic models to a
+                                 # pool separate from both the google-oauth bucket and the
+                                 # Anthropic plan. agy has no quota subcommand, so I could not
+                                 # verify it. If it turns out to share google-oauth-exclamaforte,
+                                 # this bucket lets three of each run at once instead of three
+                                 # across both, and the symptom will be provider rate-limiting
+                                 # -- which the harness already detects and parks on.
+#
+# WHY THIS IS NOT [source.claude-sonnet]. That arm is disabled because it runs through the
+# `claude` CLI on the owner's Anthropic plan -- the SAME budget the orchestrator adjudicates
+# from -- so every dispatch competed with the adjudicator. This one reaches Sonnet 4.6 through
+# agy, which bills elsewhere. The standing "no sonnet" rule was about the shared budget, not
+# about the model, and that reason does not apply here.
+#
+# Smoke-tested 2026-09-19 before registration:
+#   agy -p "Reply with exactly: PONG" --model claude-sonnet-4-6 --output-format text
+#   -> PONG, exit 0
