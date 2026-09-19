@@ -115,14 +115,13 @@ fn available_mb() -> Measurement<u64> {
         return Measurement::instrument_failed("cannot read /proc/meminfo");
     };
     for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("MemAvailable:") {
-            if let Some(kb) = rest
+        if let Some(rest) = line.strip_prefix("MemAvailable:")
+            && let Some(kb) = rest
                 .split_whitespace()
                 .next()
                 .and_then(|v| v.parse::<u64>().ok())
-            {
-                return Measurement::observed(kb / 1024);
-            }
+        {
+            return Measurement::observed(kb / 1024);
         }
     }
     Measurement::instrument_failed("/proc/meminfo has no MemAvailable")
