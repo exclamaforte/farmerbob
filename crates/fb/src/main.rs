@@ -27,6 +27,7 @@ mod objective;
 mod pareto;
 mod park_cmd;
 mod paths;
+mod pipeline_cmd;
 mod prices_cmd;
 mod prices_gather;
 mod promote;
@@ -122,6 +123,13 @@ enum Command {
         /// Decide even when no critique exists. Off by default, deliberately.
         #[arg(long)]
         allow_missing_critique: bool,
+    },
+    /// Run every stage for one task, in order, skipping what is already fresh.
+    Pipeline {
+        task: String,
+        #[arg(long, default_value = "farmerbob-core")]
+        krate: String,
+        target: Option<String>,
     },
     /// Count agent processes whose working directory is inside a candidate worktree.
     Live { args: Vec<String> },
@@ -884,6 +892,11 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Pipeline {
+            task,
+            krate,
+            target,
+        }) => pipeline_cmd::run(&task, &krate, target.as_deref()),
         Some(Command::Live { args }) => live_cmd::run(&args),
         Some(Command::Backfill { tasks }) => backfill_cmd::run(&tasks),
         Some(Command::Repro {
