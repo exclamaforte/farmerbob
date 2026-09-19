@@ -681,9 +681,10 @@ fn main() {
             let mut out = std::io::stdout();
             verify_gather::run(&score_path, &mut out)
         }
-        Some(Command::Timing { task: _ }) => {
+        Some(Command::Timing { task }) => {
             let mut out = std::io::stdout();
-            timing_cmd::run(&[], &mut out)
+            let rows = timing_cmd::gather(&task, &paths::worktrees());
+            timing_cmd::run(&rows, &mut out)
         }
         Some(Command::Prices { sources, catalogue }) => {
             let sources_path = match sources {
