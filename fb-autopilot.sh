@@ -136,7 +136,9 @@ while :; do
   # machine. Two false positives were live against zero real waves when this was fixed, so
   # the autopilot had been refusing to launch on the strength of a grep matching a grep.
   #   (beads farmerbob-7e2, farmerbob-05p)
-  waves=$(fb_running fb-admit.sh)
+  # `fb admit`, not fb-admit.sh: the admission half is a subcommand now, so the thing to
+  # count is a process whose argv is the binary followed by `admit`.
+  waves=$(pgrep -fc "target/debug/fb admit" 2>/dev/null || echo 0)
 
   slots=$(free_slots || echo "")
   beat "live=$live waves=$waves slots=${slots:-?} queued=$(ls -1 "$Q"/*.tsv 2>/dev/null | wc -l)"
@@ -162,7 +164,7 @@ while :; do
         base=$(basename "$next")
         if mv "$next" "$DONE/$base" 2>/dev/null; then
           say "launching $base: $arms arms, $live live of $slots slots, $waves/$MAX_WAVES waves"
-          if ./fb-wave.sh "$DONE/$base" >> "$LOG" 2>&1; then
+          if "$FB_BIN" wave "$DONE/$base" >> "$LOG" 2>&1; then
             say "launched $base"
             launched=1
           else
