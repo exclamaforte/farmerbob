@@ -616,7 +616,7 @@ model      = "nvidia/moonshotai/kimi-k3"
 provider   = "nvidia"
 quota      = "free"
 quota_bucket = "nvidia-build"
-notes      = "PONG passed. First real task (doctor-reach) came back NO-OP rc=1 in 7s with the provider returning UnknownError. A PONG is not evidence that an arm can do work; this entry is the proof."
+notes      = "PONG passed, then the first real task (doctor-reach) came back NO-OP rc=1 in 7s -- because dispatch hid opencode auth.json behind the per-run XDG_DATA_HOME, not because of the model. Fixed in fb-dispatch.sh; the arm PONGs through an isolated dir now. Still untested, and stays untested until it finishes a real task: a PONG is not evidence that an arm can do work."
 
 [source.oc-deepseek-v4-pro]
 status     = "disabled"
@@ -665,24 +665,24 @@ Ten days before registration. Same handling as oc-deepseek-v4-pro."""
 # dispatchable status; the first scored run is the evidence.
 
 [source.oc-cerebras-gptoss]
-status     = "untested"
+status     = "disabled"   # 2026-09-19: cerebras answers "Payment required ... visit your billing tab"
 kind       = "opencode"
 launcher   = "opencode"
 model      = "cerebras/gpt-oss-120b"
 provider   = "cerebras"
 quota      = "free"
 quota_bucket = "cerebras-gptoss"
-notes      = "Owner: 1M tokens. Separate bucket from the qwen route, per the owner's '1m for each'. Cerebras is authed in opencode's auth.json."
+notes      = "Owner: 1M tokens. Separate bucket from the qwen route, per the owner's '1m for each'. Authed in opencode auth.json, and with that auth reaching it the route still answers HTTP-level 'Payment required to access this resource. Visit your billing tab.' Re-enable when the owner confirms the free allowance is live on this key; the arm itself is a one-word status change away."
 
 [source.oc-cerebras-qwen]
-status     = "untested"
+status     = "disabled"   # 2026-09-19: same "Payment required" answer as the gptoss route
 kind       = "opencode"
 launcher   = "opencode"
 model      = "cerebras/qwen-3.8-27b"
 provider   = "cerebras"
 quota      = "free"
 quota_bucket = "cerebras-qwen"
-notes      = "Owner: 1M tokens. Owner said 28B; the id opencode actually offers is qwen-3.8-27b and that is what is registered."
+notes      = "Owner: 1M tokens. Owner said 28B; the id opencode actually offers is qwen-3.8-27b and that is what is registered. Same 'Payment required' reply as oc-cerebras-gptoss, so it is the key/account, not the model id."
 
 [source.oc-glm-53]
 status     = "untested"
@@ -756,6 +756,29 @@ notes      = "550B A55B. or-nemotron-ultra already runs a nemotron via OpenRoute
 # restarted opencode server, so I have no clean comparison. It is a hypothesis with a mechanism,
 # not a finding.
 #
-# NEXT STEP, for whoever picks this up: run one oc-* dispatch with the XDG redirection removed
-# from the oc-* branch only, and compare. That is the single decisive experiment and it takes
-# one wave.
+# CONFIRMED, same day, and it was the hypothesis above. The experiment did not need a wave:
+#
+#   XDG_DATA_HOME=<empty dir>  opencode run -m nvidia/moonshotai/kimi-k3 "Reply with exactly: PONG"
+#     -> rc=1, Error {"name":"UnknownError","message":"Unexpected server error."}
+#   cp ~/.local/share/opencode/auth.json <empty dir>/opencode/ ; same command
+#     -> rc=0, PONG
+#
+# Same model, same private dir, seconds apart, one variable. opencode keeps its provider keys in
+# $XDG_DATA_HOME/opencode/auth.json, the per-run isolation handed every oc-* run a fresh empty
+# dir, and the provider's answer to an unauthenticated call is a bare "Unexpected server error"
+# that names neither auth nor us. THAT is why it was indistinguishable from the vendors being
+# down, and it is the same shape as every other bug in this project: a failure state that looks
+# like something else entirely.
+#
+# Fixed in fb-dispatch.sh: the private XDG_DATA_HOME is now seeded with opencode's auth.json
+# before the run. The db stays isolated -- which is all farmerbob-p3r ever needed -- and the
+# credential comes along. fb-launch.sh never redirected XDG, which is why the speccheck critique
+# on oc-kimi-k3 succeeded while its implementation run did not; that asymmetry was the clue.
+#
+# WHAT THE FIX THEN EXPOSED: with auth actually present, the two cerebras arms answer
+#
+#   Error: Payment required to access this resource. Visit your billing tab.
+#
+# That is a real reply from cerebras, not our bug. The 1M free tokens are not reaching this key.
+# Both cerebras arms are disabled below until the owner sorts the billing tab out; nvidia is
+# unaffected and oc-kimi-k3 now PONGs through the isolated dir.

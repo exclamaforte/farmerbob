@@ -144,6 +144,21 @@ cp "$PROMPT_FILE" "$WT/.fb-task.md"
 FBSTATE="$HOME/.local/share/farmerbob/state/$RUN"
 rm -rf "$FBSTATE"
 mkdir -p "$FBSTATE/data" "$FBSTATE/state" "$FBSTATE/cache"
+# Isolating XDG_DATA_HOME also hides the CREDENTIALS that live under it. opencode keeps its
+# provider keys in $XDG_DATA_HOME/opencode/auth.json, so every oc-* run got a fresh empty dir,
+# found no key, and the provider answered with a bare
+#   Error: { "name": "UnknownError", "message": "Unexpected server error." }
+# -- a message that names neither auth nor us. Three arms across TWO vendors died this way in
+# under 8s each (wave144, wave145) and it read like the vendors were down. Seed the credential
+# into the private dir: the db stays isolated (that is what p3r needed), the key comes along.
+# Confirmed by experiment: same model, same private dir, rc=1 UnknownError without this copy
+# and rc=0 with it.
+for cred in "$HOME/.local/share/opencode/auth.json"; do
+  [ -f "$cred" ] || continue
+  cdir="$FBSTATE/data/${cred#$HOME/.local/share/}"; cdir="${cdir%/*}"
+  mkdir -p "$cdir"
+  cp "$cred" "$cdir/" || { echo "dispatch: could not seed $cred into $FBSTATE/data" >&2; exit 1; }
+done
 # Do not hand the implementer the orchestrator's own issue-tracker instructions.
 rm -f "$WT/CLAUDE.md" "$WT/AGENTS.md"
 rm -rf "$WT/.beads" "$WT/.cursor" "$WT/.codex" "$WT/.agents"
