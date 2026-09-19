@@ -43,14 +43,33 @@ pub fn run(args: &[String]) -> i32;
 stats the artefact itself, and calls `farmerbob_core::stage_outcome::classify` and
 `may_sign`. It must not re-implement either rule.
 
+THE GRAMMAR IS PINNED, exactly:
+
+    <name> then the two flags, in either order
+
+- `args[0]` is the stage NAME. It is required and it must not begin with `--`.
+- `--rc <i32>` and `--artefact <path>` follow, each as TWO arguments. The `--flag=value` form is
+  not accepted; that is clause 7.
+- The two flags may appear in either order, and both are required.
+- A flag given twice, an unrecognised flag, a flag with no value, or any argument after the
+  last flag's value is clause 7.
+
+Nothing else is legal input. This is stated because the first draft of this spec pinned only
+"a stage name and two flags", which two implementations could read four different ways.
+
 The artefact's size becomes the `Measurement<u64>` that `classify` takes:
 
 - the file exists and its length is readable: `Measurement::observed(len)`, and `len` may be 0;
 - the file does not exist: `Measurement::observed(0)`, because "not created" IS an observation
   that it holds no bytes;
-- the metadata call FAILS for any other reason -- a permission error, a broken symlink, an I/O
-  error: `Measurement::instrument_failed(..)` with the OS error in the reason. This is the case
-  the shell cannot express and the reason this command exists.
+- the metadata call fails with `ErrorKind::NotFound`: `Measurement::observed(0)`, exactly as
+  above. **A BROKEN SYMLINK IS THIS CASE, not the next one.** `std::fs::metadata` follows
+  symlinks and reports `NotFound` for a dangling one, so it is indistinguishable from a file
+  that was never created and must be treated as such. The first draft of this spec listed a
+  broken symlink as an instrument failure, which no implementation could have computed.
+- the metadata call fails for ANY OTHER reason -- a permission error, an I/O error, a path
+  component that is not a directory: `Measurement::instrument_failed(..)` with the OS error in
+  the reason. This is the case the shell cannot express and the reason this command exists.
 
 ## Falsifiable clauses
 
@@ -67,8 +86,11 @@ The artefact's size becomes the `Measurement<u64>` that `classify` takes:
    reason. This is the whole point; pin it.
 6. The exit status is `may_sign` negated, for every outcome: 0 exactly when the stage may be
    signed. Pin that no other combination of rc and artefact produces exit 0.
-7. A missing `--rc` or a missing `--artefact`, or an `--rc` that is not an integer, prints a
-   usage line and exits 2. Two is neither "may sign" nor "may not"; it is "you asked wrongly".
+7. Malformed input -- a missing `--rc` or `--artefact`, an `--rc` that is not an integer, a
+   repeated or unknown flag, a flag with no value, a first argument beginning with `--`, or a
+   trailing argument -- prints a usage line **to stderr**, prints NOTHING to stdout, and exits
+   2. Two is neither "may sign" nor "may not"; it is "you asked wrongly", and it is not a
+   classification, which is why it does not use the stdout channel the classification owns.
 
 ## Boundaries, at N and at zero
 
@@ -77,7 +99,9 @@ The artefact's size becomes the `Measurement<u64>` that `classify` takes:
 - `--rc 0`: the only rc that can lead to exit 0.
 - A NEGATIVE `--rc`, which is what a signal-killed process reports through some launchers:
   non-zero, so clause 1, and the value is preserved verbatim in the line.
-- `args` EMPTY: clause 7, usage, exit 2.
+- `args` EMPTY: clause 7, usage on stderr, exit 2.
+- An artefact path that is a DANGLING SYMLINK: `Observed(0)`, so clause 4, not clause 5. Pin it,
+  because it is the one case where the honest answer and the tempting answer differ.
 - A stage `name` that is the empty string: degenerate, not invalid. It classifies and prints
   like any other; the line is still non-empty.
 - An `--artefact` path that is a DIRECTORY: its metadata reads, and its length is whatever the
@@ -98,10 +122,12 @@ flag is clause 7.
 
 ## Composition of aggregate returns
 
-`run` prints EXACTLY ONE line to stdout per invocation and returns exactly one status. The line
-and the status are two renderings of one `StageOutcome` and can never disagree: whenever the
-status is 0 the line reports `Ran`, and whenever it is 1 the line reports one of the other
-three.
+`run` prints EXACTLY ONE line to stdout for every invocation that CLASSIFIES -- that is, every
+invocation exiting 0 or 1 -- and returns exactly one status. The line and the status are two
+renderings of one `StageOutcome` and can never disagree: whenever the status is 0 the line
+reports `Ran`, and whenever it is 1 the line reports one of the other three. An invocation
+exiting 2 classified nothing and writes nothing to stdout; its usage line goes to stderr.
+Clause 7.
 
 Say why clauses 3, 4 and 5 must be tested TOGETHER rather than separately: they are the three
 facts the shell collapses into one branch, and a test of any one alone passes against an
