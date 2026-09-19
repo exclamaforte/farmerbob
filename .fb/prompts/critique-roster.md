@@ -137,7 +137,7 @@ that was assigned and then failed must be visible as exactly that rather than ab
 - No `unwrap()`, `expect()`, `panic!`, `todo!` or `unimplemented!` reachable from input, outside
   `#[cfg(test)]`.
 - Add no dependencies.
-- **Do not run `cargo fmt`.**
+- The base you are given is rustfmt-clean; `cargo fmt` will touch your file and nothing else.
 - Tests that need a git repository create one in a temporary directory. Do NOT read this
   repository's own worktrees; they are mutable state shared with a running harness, and a test
   that launches a real arm is a test that spends money and hangs. Every test here must be able
@@ -146,6 +146,7 @@ that was assigned and then failed must be visible as exactly that rather than ab
 - RUN `cargo clippy -p fb --all-targets -- -D warnings` BEFORE you finish. `cargo test -p fb`
   may need `cargo build -p fb` first: a test in this crate shells out to `target/debug/fb` and
   reads a stale binary otherwise.
+
 
 
 ## How this will be scored
@@ -177,16 +178,21 @@ optimise for the real bar rather than guess at it.
   write it to satisfy the Gate". Write the handoff. It is exempt, it has always been exempt,
   and the scope measurement already excludes it. Nothing else is.
 
-  **DO NOT RUN `cargo fmt`.** This is now the single most common way a good implementation
-  loses its task, and it is worth its own line because it does not feel like a departure. This
-  workspace is not uniformly formatted, `cargo fmt` has no `--check`-only habit to fall back
-  on, and running it rewrites every file it disagrees with anywhere in the workspace.
-  score-delta/codex-luna shipped a careful, correct-looking 272-line implementation of its
-  actual target -- a `git archive` baseline, every failure represented as `Missing` -- and
-  scored `OUT-OF-SCOPE` on 17 departures that were ENTIRELY reformatting: line-wrapped
-  `assert!` calls in files the task never mentioned. Not one of them changed behaviour, and
-  all 17 counted. Format the file you were given, by hand, and leave the rest of the workspace
-  exactly as you found it.
+  **`cargo fmt` is safe, and this line used to say the opposite.** The base you are given is
+  rustfmt-clean -- `cargo fmt --all -- --check` exits 0 on it -- so running the formatter
+  rewrites your file and nothing else. Run it if you want it.
+
+  It was not always so, and the history is why this paragraph exists rather than a bare
+  permission. The workspace drifted dirty because every merge takes ONE file from ONE arm in
+  that arm's style and nothing normalised it afterwards. An arm that then ran a formatter had
+  every dirty file its build touched rewritten, and the scope gate counted each one as a
+  departure. One arm lost four runs that way, at 51, 52, 51 and 17 departures; the 51 was
+  exactly the number of rustfmt-dirty files its changes intersected. The arms were doing
+  ordinary Rust and the repository was wrong.
+
+  So if `cargo fmt` DOES touch a file you did not change, the base has drifted again. Revert
+  that file, keep your own, and say so in your handoff -- that sentence routes a harness bug
+  back where it belongs instead of costing you the run.
 
   Read this as permission, not only as prohibition. If the task's own instructions make the
   wider workspace fail to build -- a new enum variant breaking a caller in another crate, say

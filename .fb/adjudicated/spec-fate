@@ -1,0 +1,1 @@
+spec-fate MERGED agy-sonnet-46 -- spec critique found 2 real defects (unstated Refused arm, uncomputable empty-path boundary); implementer independently handled both. 11 tests, clippy clean.

@@ -1,3 +1,162 @@
+<!-- fb:creates crates/farmerbob-core/src/fmt_gate.rs -->
+# Task: an agent must never be blamed for formatting the base was already missing
+
+Rust workspace, already builds. Work only inside `crates/farmerbob-core`.
+Create `crates/farmerbob-core/src/fmt_gate.rs`. Declare it with one `pub mod fmt_gate;`
+line in `crates/farmerbob-core/src/lib.rs` and change nothing else.
+
+## Why this exists
+
+`cargo fmt` is ordinary Rust practice. In this harness it has been a disqualification.
+
+An agent is given a worktree, changes its one declared file, and runs the formatter before
+finishing. If the base was rustfmt-dirty, the formatter rewrites every dirty file the agent's
+build touched, and the scope gate counts every one as a departure. codex-luna has now lost
+four runs this way: three at 51, 52 and 51 departures, and score-delta this morning at 17. The
+51 is not a coincidence — it was exactly the number of rustfmt-dirty files its changes
+intersected.
+
+`rustfmt.toml` has said "Keep this repo rustfmt-clean, permanently" since 2026-09-17. Two days
+later it was dirty again in 19 files and 113 hunks, for the reason that comment itself names:
+every merge takes ONE file from ONE arm in that arm's style, and nothing normalises it
+afterwards. The workspace was renormalised in the commit before this task was written.
+
+A comment is not a mechanism. The mechanism has two halves, and this task is the decision both
+halves need:
+
+1. **Before dispatch** — a base that is not formatted must not be handed to an agent, because
+   any agent that then does the ordinary thing is punished for it.
+2. **After scoring** — when a departure IS a file the base had left unformatted, the blame
+   belongs to the base. That distinction does not exist today: `scope_departures` is one
+   number and every departure in it weighs the same.
+
+This module decides both. It runs no formatter and reads no files; a caller runs
+`cargo fmt --check` and brings it the answer.
+
+## Exact API
+
+```rust
+/// Whether a base may be handed to an agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dispatchable {
+    /// Nothing on this base would be rewritten by the formatter. An agent may
+    /// run it and touch only its own file.
+    Yes,
+    /// These paths would be rewritten by the formatter, in the order given.
+    /// An agent that runs it departs its scope through no fault of its own.
+    No {
+        /// The unformatted paths, in the order the caller gave them.
+        dirty: Vec<String>,
+    },
+}
+
+/// Whether a base is safe to dispatch against.
+///
+/// `dirty` is the set of paths `cargo fmt --check` reports, as the caller
+/// obtained it. This module does not run the formatter.
+pub fn dispatchable(dirty: &[String]) -> Dispatchable;
+
+/// Who a scope departure belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Blame {
+    /// The agent changed this file for its own reasons.
+    Agent,
+    /// The file was already unformatted on the base the agent was given.
+    /// Running an ordinary formatter rewrites it, so the change is the
+    /// base's doing, not the agent's.
+    BaseWasUnformatted,
+}
+
+/// One departure, with its blame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attributed {
+    /// The departed path, exactly as the caller gave it.
+    pub path: String,
+    /// Who it belongs to.
+    pub blame: Blame,
+}
+
+/// Split a run's scope departures between the agent and the base it was given.
+///
+/// `departures` are the paths the scope check flagged. `dirty_on_base` are the
+/// paths the formatter would have rewritten on the base BEFORE the run.
+pub fn attribute(departures: &[String], dirty_on_base: &[String]) -> Vec<Attributed>;
+
+/// How many departures the agent is answerable for.
+///
+/// This is the number a verdict should key on. `Attributed::len()` is the
+/// number to report, and they are different figures on purpose.
+pub fn agent_departures(attributed: &[Attributed]) -> u32;
+```
+
+Paths are compared as exact strings, the same way `crate::scope` compares them. This module
+does not normalise, canonicalise or resolve them; a caller that mixes absolute and relative
+paths gets the answer its inputs deserve, and that is the caller's bug to fix.
+
+## Falsifiable clauses
+
+1. `dispatchable(&[])` is `Yes`.
+2. `dispatchable(&["a.rs"])` is `No { dirty: vec!["a.rs"] }`. Clauses 1 and 2 pin that an empty
+   dirty set and a non-empty one are different answers, which is the whole gate.
+3. **The headline.** A departure that appears in `dirty_on_base` is `BaseWasUnformatted`. A
+   departure that does not is `Agent`. Pin both in one test over one input containing both;
+   pinning them separately does not show that the function distinguishes them.
+4. `agent_departures` counts only `Blame::Agent`. A run whose every departure was
+   `BaseWasUnformatted` has `agent_departures == 0` while `attribute(..).len()` is non-zero.
+   Pin that the two figures differ on that input; a verdict keying on the wrong one is the
+   defect this task exists to prevent.
+5. A path in `dirty_on_base` that is NOT among `departures` contributes nothing. It is not an
+   entry, not a count, and not an error: the agent simply did not touch it.
+6. `attribute(&[], &["a.rs"])` is empty. No departures means nothing to attribute, whatever the
+   base looked like.
+7. `attribute(&["a.rs"], &[])` is one entry, `Agent`. An empty base-dirty set means every
+   departure is the agent's — which is what a correctly formatted base should produce, and it
+   must not be a special case in the code.
+8. These functions are pure. Calling any of them twice with the same inputs gives the same
+   answer, and none of them reads the filesystem, the environment or a clock.
+
+## Boundaries, at N and at zero
+
+- Both inputs empty: `attribute` is empty, `agent_departures` is 0.
+- A departure listed twice: two entries, both attributed the same way. `attribute` returns one
+  entry PER DEPARTURE, not per distinct path, and `agent_departures` counts entries. The scope
+  check is not specified to deduplicate, so this module must not paper over it.
+- `dirty_on_base` listed twice: no effect. Membership is membership; a path is dirty or it is
+  not.
+- The empty string as a path: treated as any other string. Decide nothing special, and say so
+  in your handoff if you read this differently.
+- A path that differs only by case, or by a `./` prefix: NOT the same path. Exact string
+  comparison is pinned above; do not normalise.
+
+## Superset status on every enumerated list
+
+`Dispatchable` has exactly two variants. `Blame` has exactly two variants. Both lists are
+closed; a third — "partially formatted", "unknown" — is a defect. Where the formatter could not
+be RUN at all, that is the caller's `Measurement::Missing` to carry, and it must not be smuggled
+into these enums. This module answers only what it was given.
+
+## Composition of aggregate returns
+
+`attribute` returns exactly one `Attributed` per entry in `departures`, in `departures` order,
+each carrying that path unchanged. Nothing is filtered, merged, deduplicated or sorted. A caller
+that wants only the agent's departures filters them; a caller reporting "17 departures, 17 of
+them the base's" needs both figures, and clause 4 is the statement that it can have them.
+
+`No { dirty }` carries `dirty` in the caller's order, unchanged and unsorted.
+
+## Rules
+
+- No `unwrap()`, `expect()`, `panic!`, `todo!` or `unimplemented!` reachable from input, outside
+  `#[cfg(test)]`.
+- Add no dependencies. No filesystem, no process, no environment, no clock.
+- Derive `Debug, Clone, PartialEq, Eq` on every type this task defines.
+- **The base you are given is rustfmt-clean.** Run `cargo fmt` if you want it; it will touch
+  your file and nothing else. This instruction is the opposite of what the rubric said this
+  morning, and the reason is this very task: the base was dirty, and it is not any more.
+- Create `crates/farmerbob-core/src/fmt_gate.rs` plus the one `pub mod` line, and nothing else.
+- RUN `cargo clippy -p farmerbob-core --all-targets -- -D warnings` BEFORE you finish.
+
+
 
 ## How this will be scored
 
