@@ -948,17 +948,17 @@ mod tests {
     fn task_scope_is_clean() {
         use crate::scope::{Change, Declared, assess};
 
-        let declared = Declared {
-            target: "crates/farmerbob-core/src/reap_exec.rs".to_string(),
-        };
+        let declared = Declared::one("crates/farmerbob-core/src/reap_exec.rs".to_string());
         let changes = vec![
             Change {
                 path: "crates/farmerbob-core/src/reap_exec.rs".to_string(),
                 deleted: false,
+                formatting_only: false,
             },
             Change {
                 path: "crates/farmerbob-core/src/lib.rs".to_string(),
                 deleted: false,
+                formatting_only: false,
             },
         ];
         let sc = assess(&declared, &changes);

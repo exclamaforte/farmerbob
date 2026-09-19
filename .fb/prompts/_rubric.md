@@ -16,10 +16,23 @@ optimise for the real bar rather than guess at it.
   go. A task that MODIFIES an existing file touches one file and no other. Not "only that
   crate" --
   that is what this line used to say, and it understated the rule by a wide margin. The
-  measurement is `farmerbob_core::scope`, it compares paths as exact strings, and it permits
-  exactly two things: the declared target, and adding `pub mod y;` to the `lib.rs` beside it
-  when a NEW file needs that to compile. There is no tolerance band: ONE other changed file
-  is a departure, and a departure now yields the verdict `OutOfScope`, which is not a pass.
+  measurement is `farmerbob_core::scope`, and it compares paths as exact strings.
+
+  **A task declares a SET of files.** Most declare one. A task that legitimately spans
+  several lists them all, and touching any of them is in scope; so is adding `pub mod y;` to
+  the `lib.rs` beside each new file. A file outside the declared set is a departure, and a
+  departure yields the verdict `OutOfScope`, which is not a pass.
+
+  The set was a single file until 2026-09-19, and that was never a decision -- it was
+  inferred from an incident. One arm changed 51, 52 and 51 files across three runs and was
+  disqualified for wandering. It had not wandered: it had run `cargo fmt` on a
+  rustfmt-dirty repository, and 51 is exactly the number of dirty files its changes
+  intersected. The gate was tightened on the strength of a formatter artefact, and the
+  formatter bug was fixed separately the same day.
+
+  What that cost was not theoretical. A task adding one field to a struct could not pass if
+  any other file in the same crate constructed it: fixing those callers was OutOfScope and
+  leaving them was TESTS-FAIL. No legal move, and an arm lost a run to it.
 
   **`.fb/handoff.md` is the one exception, and it OVERRIDES the task's own Rules section.**
   Every spec's Rules says "change <target> and NOTHING else"; the Handoff section below then

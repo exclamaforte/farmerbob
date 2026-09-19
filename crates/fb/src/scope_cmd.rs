@@ -123,6 +123,10 @@ where
             changes.push(Change {
                 path: path.to_string(),
                 deleted,
+                // Not measured here: this command reads a name list, not diffs. false is
+                // the safe direction -- it counts the departure as semantic, which is what
+                // the gate did for every departure before the distinction existed.
+                formatting_only: false,
             });
         }
     }
@@ -136,6 +140,7 @@ where
             changes.push(Change {
                 path: path.to_string(),
                 deleted: false,
+                formatting_only: false,
             });
         }
     }
@@ -294,9 +299,7 @@ fn assess_arm(wt_path: &Path, target: &str) -> ArmAssessment {
     let changes = build_changes(&tracked_text, &untracked_text, |p| wt_path.join(p).exists());
 
     // Step 3: scope::assess
-    let declared = Declared {
-        target: target.to_string(),
-    };
+    let declared = Declared::one(target);
     let assessed_scope = assess(&declared, &changes);
 
     // Step 4: When changed set includes lib.rs beside target, run lib_diff::classify
@@ -368,8 +371,12 @@ fn print_arm_verdict(arm: &str, assessment: &ArmAssessment) {
             println!("{arm}: NOT CLEAN");
             for dep in &scope.departures {
                 match dep {
-                    Departure::Foreign { path } => println!("  departure: foreign file `{path}`"),
-                    Departure::Deleted { path } => println!("  departure: deleted file `{path}`"),
+                    Departure::Foreign { path, kind } => {
+                        println!("  departure: foreign file `{path}` ({kind:?})")
+                    }
+                    Departure::Deleted { path, kind } => {
+                        println!("  departure: deleted file `{path}` ({kind:?})")
+                    }
                 }
             }
             if let Some(LibChange::Beyond { lines }) = lib_change {
@@ -471,11 +478,13 @@ pub fn run_cmd(task: &str, arm: Option<&str>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use farmerbob_core::scope::Kind;
 
     fn change(path: &str) -> Change {
         Change {
             path: path.to_string(),
             deleted: false,
+            formatting_only: false,
         }
     }
 
@@ -483,6 +492,7 @@ mod tests {
         Change {
             path: path.to_string(),
             deleted: true,
+            formatting_only: false,
         }
     }
 
@@ -505,12 +515,7 @@ mod tests {
     fn clause1_target_only_change_is_clean() {
         let target = "crates/fb/src/scope_cmd.rs";
         let changes = [change(target)];
-        let sc = assess(
-            &Declared {
-                target: target.to_string(),
-            },
-            &changes,
-        );
+        let sc = assess(&Declared::one(target), &changes);
         let verdict = evaluate_verdict(&changes, sc, None);
         assert_eq!(
             verdict,
@@ -527,12 +532,7 @@ mod tests {
         let target = "crates/farmerbob-core/src/new_module.rs";
         let lib = "crates/farmerbob-core/src/lib.rs";
         let changes = [change(target), change(lib)];
-        let sc = assess(
-            &Declared {
-                target: target.to_string(),
-            },
-            &changes,
-        );
+        let sc = assess(&Declared::one(target), &changes);
         let lib_diff = [diff_add("pub mod new_module;")];
         let lib_change = classify(&lib_diff);
         let verdict = evaluate_verdict(&changes, sc, Some(lib_change));
@@ -551,12 +551,7 @@ mod tests {
         let target = "crates/farmerbob-core/src/new_module.rs";
         let lib = "crates/farmerbob-core/src/lib.rs";
         let changes = [change(target), change(lib)];
-        let sc = assess(
-            &Declared {
-                target: target.to_string(),
-            },
-            &changes,
-        );
+        let sc = assess(&Declared::one(target), &changes);
         let lib_diff = [
             diff_add("pub mod new_module;"),
             diff_add("pub(crate) conn: Connection,"),
@@ -588,12 +583,7 @@ mod tests {
         let target = "crates/farmerbob-core/src/batch.rs";
         let lib = "crates/farmerbob-core/src/lib.rs";
         let changes = [change(target), change(lib)];
-        let sc = assess(
-            &Declared {
-                target: target.to_string(),
-            },
-            &changes,
-        );
+        let sc = assess(&Declared::one(target), &changes);
         let lib_diff = [
             diff_rem("    conn: Connection,"),
             diff_add("    pub(crate) conn: Connection,"),
@@ -610,19 +600,15 @@ mod tests {
         let target = "crates/fb/src/scope_cmd.rs";
         let foreign = "crates/fb/src/other.rs";
         let changes = [change(target), change(foreign)];
-        let sc = assess(
-            &Declared {
-                target: target.to_string(),
-            },
-            &changes,
-        );
+        let sc = assess(&Declared::one(target), &changes);
         let verdict = evaluate_verdict(&changes, sc, None);
         match &verdict {
             ArmAssessment::Departed { scope, .. } => {
                 assert_eq!(
                     scope.departures,
                     vec![Departure::Foreign {
-                        path: foreign.to_string()
+                        path: foreign.to_string(),
+                        kind: Kind::Semantic
                     }]
                 );
             }
@@ -637,19 +623,15 @@ mod tests {
         let target = "crates/fb/src/scope_cmd.rs";
         let foreign = "crates/fb/src/unrelated.rs";
         let changes = [change(target), deleted(foreign)];
-        let sc = assess(
-            &Declared {
-                target: target.to_string(),
-            },
-            &changes,
-        );
+        let sc = assess(&Declared::one(target), &changes);
         let verdict = evaluate_verdict(&changes, sc, None);
         match &verdict {
             ArmAssessment::Departed { scope, .. } => {
                 assert_eq!(
                     scope.departures,
                     vec![Departure::Deleted {
-                        path: foreign.to_string()
+                        path: foreign.to_string(),
+                        kind: Kind::Semantic
                     }]
                 );
             }
@@ -709,6 +691,7 @@ mod tests {
                 allowed: vec![],
                 departures: vec![Departure::Foreign {
                     path: "bad.rs".to_string(),
+                    kind: Kind::Semantic,
                 }],
             },
             lib_change: None,
@@ -724,12 +707,7 @@ mod tests {
     fn boundary_worktree_changed_nothing_is_clean_and_distinguished() {
         let target = "crates/fb/src/scope_cmd.rs";
         let changes: [Change; 0] = [];
-        let sc = assess(
-            &Declared {
-                target: target.to_string(),
-            },
-            &changes,
-        );
+        let sc = assess(&Declared::one(target), &changes);
         let verdict = evaluate_verdict(&changes, sc, None);
         assert_eq!(
             verdict,
@@ -746,12 +724,7 @@ mod tests {
         let target = "crates/farmerbob-core/src/x.rs";
         let lib = "crates/farmerbob-core/src/lib.rs";
         let changes = [change(target), change(lib)];
-        let sc = assess(
-            &Declared {
-                target: target.to_string(),
-            },
-            &changes,
-        );
+        let sc = assess(&Declared::one(target), &changes);
         let lib_change = classify(&[]);
         assert_eq!(lib_change, LibChange::Untouched);
         let verdict = evaluate_verdict(&changes, sc, Some(lib_change));
@@ -770,12 +743,7 @@ mod tests {
         let target = "crates/farmerbob-core/src/lib.rs";
         assert_eq!(module_declaration_for(target), None);
         let changes = [change(target)];
-        let sc = assess(
-            &Declared {
-                target: target.to_string(),
-            },
-            &changes,
-        );
+        let sc = assess(&Declared::one(target), &changes);
         let verdict = evaluate_verdict(&changes, sc, None);
         assert_eq!(
             verdict,
@@ -829,6 +797,7 @@ mod tests {
                 allowed: vec![],
                 departures: vec![Departure::Foreign {
                     path: "bad.rs".to_string(),
+                    kind: Kind::Semantic,
                 }],
             },
             lib_change: None,
@@ -894,14 +863,17 @@ index 1234567..89abcdef 100644
                 Change {
                     path: "crates/fb/src/exists.rs".to_string(),
                     deleted: false,
+                    formatting_only: false,
                 },
                 Change {
                     path: "crates/fb/src/deleted.rs".to_string(),
                     deleted: true,
+                    formatting_only: false,
                 },
                 Change {
                     path: "crates/fb/src/untracked.rs".to_string(),
                     deleted: false,
+                    formatting_only: false,
                 },
             ]
         );

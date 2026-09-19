@@ -483,14 +483,10 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
                 .map(|p| Change {
                     path: p.clone(),
                     deleted: gone.contains(p),
+                    formatting_only: false,
                 })
                 .collect();
-            Measurement::observed(assess(
-                &Declared {
-                    target: t.to_string(),
-                },
-                &changes,
-            ))
+            Measurement::observed(assess(&Declared::one(t), &changes))
         }
         (None, _, _) => Measurement::instrument_failed(
             "git cannot read this worktree, so which files changed is unknown",
@@ -650,8 +646,8 @@ fn to_json(r: &Record) -> serde_json::Value {
         "scope_departures": r.scope.value().map(|sc| sc.departures.len()).unwrap_or(0),
         "scope_measured": r.scope.is_observed(),
         "departed": r.scope.value().map(|sc| sc.departures.iter().map(|d| match d {
-            Departure::Foreign { path } => path.clone(),
-            Departure::Deleted { path } => format!("{path} (deleted)"),
+            Departure::Foreign { path, .. } => path.clone(),
+            Departure::Deleted { path, .. } => format!("{path} (deleted)"),
         }).collect::<Vec<_>>()).unwrap_or_default(),
         "blames_arm": r.verdict.blames_arm(),
         "err": r.err.clone().unwrap_or_default(),
@@ -950,9 +946,7 @@ mod scope_integration {
     /// it was never asked to touch and that registered as "touched 2".  (bead farmerbob-jxp)
     #[test]
     fn a_rewrite_of_another_crate_is_a_departure_not_a_crate_count() {
-        let declared = Declared {
-            target: "crates/farmerbob-core/src/matrix.rs".into(),
-        };
+        let declared = Declared::one("crates/farmerbob-core/src/matrix.rs");
         let changes: Vec<Change> = [
             "crates/farmerbob-core/src/matrix.rs", // the deliverable
             "crates/farmerbob-core/src/lib.rs",    // the required module declaration
@@ -963,6 +957,7 @@ mod scope_integration {
         .map(|p| Change {
             path: (*p).to_string(),
             deleted: false,
+            formatting_only: false,
         })
         .collect();
 
@@ -982,17 +977,17 @@ mod scope_integration {
 
     #[test]
     fn declaring_the_new_module_is_not_a_departure() {
-        let declared = Declared {
-            target: "crates/farmerbob-core/src/scope.rs".into(),
-        };
+        let declared = Declared::one("crates/farmerbob-core/src/scope.rs");
         let changes = [
             Change {
                 path: "crates/farmerbob-core/src/scope.rs".into(),
                 deleted: false,
+                formatting_only: false,
             },
             Change {
                 path: "crates/farmerbob-core/src/lib.rs".into(),
                 deleted: false,
+                formatting_only: false,
             },
         ];
         assert!(
@@ -1422,7 +1417,7 @@ mod committed_work {
             .departures
             .iter()
             .map(|d| match d {
-                Departure::Foreign { path } | Departure::Deleted { path } => path.clone(),
+                Departure::Foreign { path, .. } | Departure::Deleted { path, .. } => path.clone(),
             })
             .collect();
         assert_eq!(departed, vec!["crates/other/src/old.rs".to_string()]);
@@ -1445,6 +1440,7 @@ mod deleted_list {
     //! assertion is made on any invocation the module itself does not make.
     use super::*;
     use farmerbob_core::measurement::Absent;
+    use farmerbob_core::scope::Kind;
 
     /// The declared deliverable: a module INSIDE the crate, so the crate root
     /// beside it can be deleted as its own case.
@@ -1654,6 +1650,7 @@ mod deleted_list {
             sc.departures,
             vec![Departure::Deleted {
                 path: TARGET.to_string(),
+                kind: Kind::Semantic
             }],
         );
         assert!(!is_clean(sc));
@@ -1675,6 +1672,7 @@ mod deleted_list {
             sc.departures,
             vec![Departure::Deleted {
                 path: DECLARATION.to_string(),
+                kind: Kind::Semantic
             }],
         );
     }
@@ -1694,6 +1692,7 @@ mod deleted_list {
             sc.departures,
             vec![Departure::Deleted {
                 path: FOREIGN.to_string(),
+                kind: Kind::Semantic
             }],
         );
         assert!(!is_clean(sc));
@@ -1713,6 +1712,7 @@ mod deleted_list {
             m.scope.value().expect("scope is observed").departures,
             vec![Departure::Foreign {
                 path: FOREIGN.to_string(),
+                kind: Kind::Semantic
             }],
         );
 
@@ -1723,6 +1723,7 @@ mod deleted_list {
             d.scope.value().expect("scope is observed").departures,
             vec![Departure::Deleted {
                 path: FOREIGN.to_string(),
+                kind: Kind::Semantic
             }],
         );
     }

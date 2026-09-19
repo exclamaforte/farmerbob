@@ -1,23 +1,57 @@
 //! Scope: whether a run stayed inside its declared deliverable.
 //!
-//! Every task in the harness declares exactly one deliverable — one file
-//! path. This module decides, from paths alone and without any I/O, whether
-//! a run's changes stayed inside that declaration: the target itself, the
-//! one module declaration a new file needs in order to compile, and nothing
-//! else.
+//! A task declares its deliverable as a SET of file paths. This module
+//! decides, from paths alone and without any I/O, whether a run's changes
+//! stayed inside that declaration: the declared files themselves, the module
+//! declaration a new file needs in order to compile, and nothing else.
+//!
+//! The set was a single path until 2026-09-19, and the single path was never
+//! a decision. It was inferred from an incident: one arm changed 51, 52 and
+//! 51 files across three runs and was disqualified for wandering. It had not
+//! wandered. It had run `cargo fmt` on a rustfmt-dirty repository, and 51 is
+//! exactly the number of dirty files its changes intersected -- as
+//! rustfmt.toml's own comment records. The gate was tightened to one file on
+//! the strength of a formatter artefact.
+//!
+//! The cost of that was not theoretical. scope-blame/glm-53-flash added a
+//! field to `Change` correctly and could not pass: two constructions of
+//! `Change` live in reap_exec.rs, in the same crate and a different file, so
+//! fixing them was OutOfScope and leaving them was TESTS-FAIL. No legal move.
+//!
+//! What the gate is actually for survives intact: an arm that touches a file
+//! outside what its task declared is out of scope, and that is still measured
+//! by exact string comparison with no guessing.
 //!
 //! Paths are compared as exact strings. Two spellings of the same file are
 //! two different paths here, by design: guessing at path equivalence is how
 //! a scope check silently permits something.
 
-/// The one file the task told the arm to produce, repo-relative,
-/// forward slashes, no leading `"./"`.
+/// The files the task told the arm to produce, repo-relative, forward
+/// slashes, no leading `"./"`.
 ///
-/// Example: `"crates/farmerbob-core/src/scope.rs"`.
+/// Example: `["crates/farmerbob-core/src/scope.rs"]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Declared {
-    /// The one file the task told the arm to produce.
-    pub target: String,
+    /// Every file the task declared. One entry is the common case and was
+    /// the only case until 2026-09-19; a task spanning several files lists
+    /// them all.
+    pub targets: Vec<String>,
+}
+
+impl Declared {
+    /// A declaration of a single file -- the common case, and what every
+    /// caller wrote before the set existed.
+    pub fn one(target: impl Into<String>) -> Declared {
+        Declared {
+            targets: vec![target.into()],
+        }
+    }
+
+    /// Whether `path` is one of the declared files. Exact string comparison,
+    /// like everything else here.
+    pub fn covers(&self, path: &str) -> bool {
+        self.targets.iter().any(|t| t == path)
+    }
 }
 
 /// A path that is permitted even though it is not the target.
@@ -33,6 +67,19 @@ pub enum Allowance {
     ModuleDeclaration,
 }
 
+/// Whether a departure changed behaviour, or only layout.
+///
+/// A formatting-only departure is still a departure -- it is still a rule
+/// broken, and it still costs an adjudicator the trouble of stripping it --
+/// but it cannot do the thing the scope gate exists to prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// The change alters what the file means.
+    Semantic,
+    /// The change alters only whitespace and line breaks.
+    FormattingOnly,
+}
+
 /// A change to a file that is neither the target nor allowed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Departure {
@@ -40,11 +87,17 @@ pub enum Departure {
     Foreign {
         /// The path exactly as it appeared in the change record.
         path: String,
+        /// Whether this change altered what the file means, or only its
+        /// layout, as [`Change::formatting_only`] reported it.
+        kind: Kind,
     },
     /// Deleted a file the run was not asked to touch.
     Deleted {
         /// The path exactly as it appeared in the change record.
         path: String,
+        /// Always [`Kind::Semantic`]: deleting a file is not a formatting
+        /// change, whatever [`Change::formatting_only`] said.
+        kind: Kind,
     },
 }
 
@@ -68,6 +121,11 @@ pub struct Change {
     pub path: String,
     /// True when the change is a deletion.
     pub deleted: bool,
+    /// True when this change is whitespace-only -- what
+    /// `git diff --ignore-all-space --ignore-blank-lines` reports as empty.
+    /// The caller measures it; this module performs no I/O and runs no
+    /// formatter.
+    pub formatting_only: bool,
 }
 
 /// Returns the `lib.rs` sitting in the same directory as `target` — the file
@@ -127,11 +185,24 @@ pub fn module_declarations_for(target: &str) -> Vec<String> {
 /// module declaration is [`Allowance::ModuleDeclaration`] and lands in
 /// [`Scope::allowed`] — unless it deletes that file, which is again a
 /// departure. Every other change is a departure, [`Departure::Foreign`] or
-/// [`Departure::Deleted`] according to [`Change::deleted`].
+/// [`Departure::Deleted`] according to [`Change::deleted`], carrying
+/// [`Kind::FormattingOnly`] when [`Change::formatting_only`] says the diff
+/// was whitespace-only -- except that a deletion is always
+/// [`Kind::Semantic`], whatever the flag says, because deleting a file is
+/// not a formatting change.
 ///
 /// Paths are compared as exact strings; nothing is normalised.
 pub fn assess(declared: &Declared, changes: &[Change]) -> Scope {
-    let declarations = module_declarations_for(&declared.target);
+    // One module-declaration allowance per declared file: a task creating three
+    // modules needs three `pub mod` lines, and granting only the first one's would
+    // reproduce the no-legal-move trap this set was introduced to remove.
+    let mut declarations: Vec<String> = declared
+        .targets
+        .iter()
+        .flat_map(|t| module_declarations_for(t))
+        .collect();
+    declarations.sort();
+    declarations.dedup();
 
     let mut scope = Scope {
         target_changed: false,
@@ -140,12 +211,19 @@ pub fn assess(declared: &Declared, changes: &[Change]) -> Scope {
     };
 
     for change in changes {
-        if change.path == declared.target {
+        let kind = if change.formatting_only && !change.deleted {
+            Kind::FormattingOnly
+        } else {
+            Kind::Semantic
+        };
+
+        if declared.covers(&change.path) {
             // A task asks for a file to exist; deleting it is not
             // producing it.
             if change.deleted {
                 scope.departures.push(Departure::Deleted {
                     path: change.path.clone(),
+                    kind,
                 });
             } else {
                 scope.target_changed = true;
@@ -156,6 +234,7 @@ pub fn assess(declared: &Declared, changes: &[Change]) -> Scope {
             if change.deleted {
                 scope.departures.push(Departure::Deleted {
                     path: change.path.clone(),
+                    kind,
                 });
             } else {
                 scope.allowed.push(change.path.clone());
@@ -163,10 +242,12 @@ pub fn assess(declared: &Declared, changes: &[Change]) -> Scope {
         } else if change.deleted {
             scope.departures.push(Departure::Deleted {
                 path: change.path.clone(),
+                kind,
             });
         } else {
             scope.departures.push(Departure::Foreign {
                 path: change.path.clone(),
+                kind,
             });
         }
     }
@@ -187,6 +268,42 @@ pub fn is_clean(scope: &Scope) -> bool {
     scope.departures.is_empty()
 }
 
+/// Departures the agent is answerable for: those of kind [`Kind::Semantic`].
+///
+/// This is the figure a verdict keys on. [`Scope::departures`] keeps every
+/// departure, formatting-only ones included -- `scope.departures.len()` is
+/// the figure to REPORT -- and they are different numbers on purpose: a run
+/// whose every departure is formatting-only has departures and no semantic
+/// ones at all.
+pub fn semantic_departures(scope: &Scope) -> usize {
+    scope
+        .departures
+        .iter()
+        .filter(|departure| {
+            matches!(
+                departure,
+                Departure::Foreign {
+                    kind: Kind::Semantic,
+                    ..
+                } | Departure::Deleted {
+                    kind: Kind::Semantic,
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
+/// Whether the run departed in a way that could affect the measurement.
+///
+/// False for a run whose every departure is [`Kind::FormattingOnly`], true
+/// as soon as one is [`Kind::Semantic`]. A run with no departures at all is
+/// semantically clean too, so this agrees with [`is_clean`] there and
+/// disagrees exactly when a formatting-only departure is being discounted.
+pub fn is_semantically_clean(scope: &Scope) -> bool {
+    semantic_departures(scope) == 0
+}
+
 /// The one allowance this module grants, if the path earns one.
 fn allowance_for(path: &str, declarations: &[String]) -> Option<Allowance> {
     declarations
@@ -199,8 +316,8 @@ impl Departure {
     /// The path this departure is about, for ordering and de-duplication.
     fn path(&self) -> &str {
         match self {
-            Departure::Foreign { path } => path,
-            Departure::Deleted { path } => path,
+            Departure::Foreign { path, .. } => path,
+            Departure::Deleted { path, .. } => path,
         }
     }
 }
@@ -215,7 +332,8 @@ fn deletion_rank(departure: &Departure) -> u8 {
 }
 
 /// Sorts departures ascending by path across both variants and collapses
-/// equal paths to one entry, preferring `Deleted`.
+/// equal paths to one entry, preferring `Deleted`. The entry kept is the
+/// first of its run after the sort, and its [`Kind`] rides along with it.
 fn sort_and_dedup_departures(departures: &mut Vec<Departure>) {
     departures.sort_by(|a, b| {
         a.path()
@@ -230,15 +348,14 @@ mod tests {
     use super::*;
 
     fn declared(target: &str) -> Declared {
-        Declared {
-            target: target.to_string(),
-        }
+        Declared::one(target.to_string())
     }
 
     fn change(path: &str) -> Change {
         Change {
             path: path.to_string(),
             deleted: false,
+            formatting_only: false,
         }
     }
 
@@ -246,6 +363,15 @@ mod tests {
         Change {
             path: path.to_string(),
             deleted: true,
+            formatting_only: false,
+        }
+    }
+
+    fn formatting_only(path: &str) -> Change {
+        Change {
+            path: path.to_string(),
+            deleted: false,
+            formatting_only: true,
         }
     }
 
@@ -333,10 +459,12 @@ mod tests {
             scope.departures,
             vec![
                 Departure::Foreign {
-                    path: String::from("crates/x/src/other.rs")
+                    path: String::from("crates/x/src/other.rs"),
+                    kind: Kind::Semantic,
                 },
                 Departure::Deleted {
-                    path: String::from("crates/y/src/gone.rs")
+                    path: String::from("crates/y/src/gone.rs"),
+                    kind: Kind::Semantic,
                 },
             ]
         );
@@ -354,7 +482,8 @@ mod tests {
         assert_eq!(
             scope.departures,
             vec![Departure::Deleted {
-                path: String::from("crates/x/src/lib.rs")
+                path: String::from("crates/x/src/lib.rs"),
+                kind: Kind::Semantic,
             }]
         );
     }
@@ -372,7 +501,8 @@ mod tests {
         assert_eq!(
             scope.departures,
             vec![Departure::Deleted {
-                path: String::from("crates/x/src/y.rs")
+                path: String::from("crates/x/src/y.rs"),
+                kind: Kind::Semantic,
             }]
         );
         assert!(!is_clean(&scope));
@@ -443,10 +573,12 @@ mod tests {
             scope.departures,
             vec![
                 Departure::Foreign {
-                    path: String::from("crates/a.rs")
+                    path: String::from("crates/a.rs"),
+                    kind: Kind::Semantic,
                 },
                 Departure::Deleted {
-                    path: String::from("crates/b.rs")
+                    path: String::from("crates/b.rs"),
+                    kind: Kind::Semantic,
                 },
             ]
         );
@@ -474,10 +606,12 @@ mod tests {
             scope.departures,
             vec![
                 Departure::Foreign {
-                    path: String::from("crates/a.rs")
+                    path: String::from("crates/a.rs"),
+                    kind: Kind::Semantic,
                 },
                 Departure::Deleted {
-                    path: String::from("crates/b.rs")
+                    path: String::from("crates/b.rs"),
+                    kind: Kind::Semantic,
                 },
             ]
         );
@@ -500,16 +634,20 @@ mod tests {
             scope.departures,
             vec![
                 Departure::Foreign {
-                    path: String::from("crates/a.rs")
+                    path: String::from("crates/a.rs"),
+                    kind: Kind::Semantic,
                 },
                 Departure::Deleted {
-                    path: String::from("crates/b.rs")
+                    path: String::from("crates/b.rs"),
+                    kind: Kind::Semantic,
                 },
                 Departure::Foreign {
-                    path: String::from("crates/c.rs")
+                    path: String::from("crates/c.rs"),
+                    kind: Kind::Semantic,
                 },
                 Departure::Deleted {
-                    path: String::from("crates/d.rs")
+                    path: String::from("crates/d.rs"),
+                    kind: Kind::Semantic,
                 },
             ]
         );
@@ -529,6 +667,186 @@ mod tests {
         assert!(scope.allowed.is_empty());
         assert_eq!(scope.departures.len(), 2);
     }
+
+    // Clause 1: the formatting_only flag decides a foreign departure's
+    // kind -- both ways, over one input containing both.
+    #[test]
+    fn clause1_formatting_only_flag_decides_a_foreign_departures_kind() {
+        let scope = assess(
+            &declared("crates/x/src/y.rs"),
+            &[change("crates/a.rs"), formatting_only("crates/b.rs")],
+        );
+        assert_eq!(
+            scope.departures,
+            vec![
+                Departure::Foreign {
+                    path: String::from("crates/a.rs"),
+                    kind: Kind::Semantic,
+                },
+                Departure::Foreign {
+                    path: String::from("crates/b.rs"),
+                    kind: Kind::FormattingOnly,
+                },
+            ]
+        );
+    }
+
+    // Clause 2, the headline: departures without semantic ones. All four
+    // figures pinned on the one value.
+    #[test]
+    fn clause2_all_formatting_only_departures_are_semantically_clean_but_not_clean() {
+        let scope = assess(
+            &declared("crates/x/src/y.rs"),
+            &[
+                formatting_only("crates/a.rs"),
+                formatting_only("crates/b.rs"),
+            ],
+        );
+        assert_eq!(scope.departures.len(), 2);
+        assert_eq!(semantic_departures(&scope), 0);
+        assert!(is_semantically_clean(&scope));
+        assert!(!is_clean(&scope));
+    }
+
+    // Clause 3: one Semantic departure among formatting-only ones makes the
+    // run not semantically clean. The semantic change is LAST in the input
+    // (and sorts last) so an implementation that stops early is caught.
+    #[test]
+    fn clause3_one_semantic_departure_makes_the_run_not_semantically_clean() {
+        let scope = assess(
+            &declared("crates/x/src/y.rs"),
+            &[
+                formatting_only("crates/a.rs"),
+                formatting_only("crates/b.rs"),
+                change("crates/z.rs"),
+            ],
+        );
+        assert_eq!(semantic_departures(&scope), 1);
+        assert!(!is_semantically_clean(&scope));
+        assert!(!is_clean(&scope));
+    }
+
+    // Clause 4: a deletion is Semantic even when the caller flags it
+    // formatting-only; the flag cannot make a deletion a layout change.
+    #[test]
+    fn clause4_a_deleted_change_is_semantic_even_when_flagged_formatting_only() {
+        let scope = assess(
+            &declared("crates/x/src/y.rs"),
+            &[Change {
+                path: String::from("crates/gone.rs"),
+                deleted: true,
+                formatting_only: true,
+            }],
+        );
+        assert_eq!(
+            scope.departures,
+            vec![Departure::Deleted {
+                path: String::from("crates/gone.rs"),
+                kind: Kind::Semantic,
+            }]
+        );
+        assert_eq!(semantic_departures(&scope), 1);
+        assert!(!is_semantically_clean(&scope));
+    }
+
+    // Clause 5: is_clean keeps its meaning -- false whenever departures
+    // exist, whatever their kinds. The formatting-only field is what
+    // separates it from is_semantically_clean (clause 2 pins that side).
+    #[test]
+    fn clause5_is_clean_counts_formatting_only_departures_too() {
+        let mixed = assess(
+            &declared("crates/x/src/y.rs"),
+            &[
+                formatting_only("crates/a.rs"),
+                change("crates/z.rs"),
+                deleted("crates/d.rs"),
+            ],
+        );
+        assert_eq!(mixed.departures.len(), 3);
+        assert!(!is_clean(&mixed));
+        assert!(!is_semantically_clean(&mixed));
+
+        let all_formatting = assess(
+            &declared("crates/x/src/y.rs"),
+            &[formatting_only("crates/a.rs")],
+        );
+        assert!(!is_clean(&all_formatting));
+        assert!(is_semantically_clean(&all_formatting));
+    }
+
+    // Clause 6: target_changed and allowed are untouched. A non-deleted
+    // change to the target is not a departure, and formatting_only has no
+    // bearing on that.
+    #[test]
+    fn clause6_a_target_change_is_not_a_departure_whatever_the_flag_says() {
+        let scope = assess(
+            &declared("crates/x/src/y.rs"),
+            &[Change {
+                path: String::from("crates/x/src/y.rs"),
+                deleted: false,
+                formatting_only: true,
+            }],
+        );
+        assert!(scope.target_changed);
+        assert!(scope.allowed.is_empty());
+        assert!(scope.departures.is_empty());
+        assert!(is_clean(&scope));
+        assert!(is_semantically_clean(&scope));
+        assert_eq!(semantic_departures(&scope), 0);
+    }
+
+    // Clause 6: an allowed path with formatting_only true is still allowed,
+    // still not a departure.
+    #[test]
+    fn clause6_an_allowed_path_with_formatting_only_stays_allowed() {
+        let scope = assess(
+            &declared("crates/x/src/y.rs"),
+            &[Change {
+                path: String::from("crates/x/src/lib.rs"),
+                deleted: false,
+                formatting_only: true,
+            }],
+        );
+        assert!(!scope.target_changed);
+        assert_eq!(scope.allowed, vec![String::from("crates/x/src/lib.rs")]);
+        assert!(scope.departures.is_empty());
+        assert!(is_clean(&scope));
+        assert!(is_semantically_clean(&scope));
+    }
+
+    // Boundary at zero: no departures at all, and all three figures agree.
+    // That agreement is what makes clause 2's disagreement meaningful.
+    #[test]
+    fn boundary_with_no_departures_all_three_figures_agree() {
+        let scope = assess(&declared("crates/x/src/y.rs"), &[]);
+        assert!(is_clean(&scope));
+        assert!(is_semantically_clean(&scope));
+        assert_eq!(semantic_departures(&scope), 0);
+
+        let target_only = assess(
+            &declared("crates/x/src/y.rs"),
+            &[change("crates/x/src/y.rs")],
+        );
+        assert!(target_only.departures.is_empty());
+        assert!(is_clean(&target_only));
+        assert!(is_semantically_clean(&target_only));
+        assert_eq!(semantic_departures(&target_only), 0);
+    }
+
+    // Boundary at one: a single formatting-only departure already separates
+    // is_clean from is_semantically_clean. The boundary is at one, not at
+    // some threshold.
+    #[test]
+    fn boundary_exactly_one_formatting_only_departure_still_counts_zero_semantic() {
+        let scope = assess(
+            &declared("crates/x/src/y.rs"),
+            &[formatting_only("crates/a.rs")],
+        );
+        assert_eq!(scope.departures.len(), 1);
+        assert_eq!(semantic_departures(&scope), 0);
+        assert!(is_semantically_clean(&scope));
+        assert!(!is_clean(&scope));
+    }
 }
 
 #[cfg(test)]
@@ -541,6 +859,7 @@ mod binary_crate_roots {
             .map(|p| Change {
                 path: (*p).to_string(),
                 deleted: false,
+                formatting_only: false,
             })
             .collect()
     }
@@ -551,9 +870,7 @@ mod binary_crate_roots {
     /// doing what it was told.
     #[test]
     fn declaring_a_module_from_main_rs_is_not_a_departure() {
-        let declared = Declared {
-            target: "crates/fb/src/critique.rs".into(),
-        };
+        let declared = Declared::one("crates/fb/src/critique.rs");
         let sc = assess(
             &declared,
             &changed(&["crates/fb/src/critique.rs", "crates/fb/src/main.rs"]),
@@ -566,9 +883,7 @@ mod binary_crate_roots {
     /// A library crate's root still works exactly as before.
     #[test]
     fn declaring_a_module_from_lib_rs_is_still_not_a_departure() {
-        let declared = Declared {
-            target: "crates/farmerbob-core/src/scope.rs".into(),
-        };
+        let declared = Declared::one("crates/farmerbob-core/src/scope.rs");
         let sc = assess(
             &declared,
             &changed(&[
@@ -586,9 +901,7 @@ mod binary_crate_roots {
     /// The allowance covers the roots and nothing else: a real stray edit still departs.
     #[test]
     fn a_sibling_module_is_still_a_departure() {
-        let declared = Declared {
-            target: "crates/fb/src/critique.rs".into(),
-        };
+        let declared = Declared::one("crates/fb/src/critique.rs");
         let sc = assess(
             &declared,
             &changed(&[
@@ -609,19 +922,19 @@ mod binary_crate_roots {
     /// Deleting a crate root is a violation, exactly as deleting lib.rs always was.
     #[test]
     fn deleting_a_crate_root_is_still_a_departure() {
-        let declared = Declared {
-            target: "crates/fb/src/critique.rs".into(),
-        };
+        let declared = Declared::one("crates/fb/src/critique.rs");
         let sc = assess(
             &declared,
             &[
                 Change {
                     path: "crates/fb/src/critique.rs".into(),
                     deleted: false,
+                    formatting_only: false,
                 },
                 Change {
                     path: "crates/fb/src/main.rs".into(),
                     deleted: true,
+                    formatting_only: false,
                 },
             ],
         );
@@ -635,5 +948,112 @@ mod binary_crate_roots {
         assert!(module_declarations_for("crates/x/src/lib.rs").is_empty());
         assert!(module_declarations_for("no-directory.rs").is_empty());
         assert!(module_declarations_for("").is_empty());
+    }
+
+    /// A task may declare SEVERAL files, and touching any of them is not a
+    /// departure. This is the case that was unrepresentable until 2026-09-19,
+    /// and its absence failed an arm that had done nothing wrong.
+    #[test]
+    fn a_task_may_declare_several_files() {
+        let declared = Declared {
+            targets: vec![
+                "crates/farmerbob-core/src/scope.rs".to_string(),
+                "crates/farmerbob-core/src/reap_exec.rs".to_string(),
+            ],
+        };
+        let sc = assess(
+            &declared,
+            &[
+                Change {
+                    path: "crates/farmerbob-core/src/scope.rs".to_string(),
+                    deleted: false,
+                    formatting_only: false,
+                },
+                Change {
+                    path: "crates/farmerbob-core/src/reap_exec.rs".to_string(),
+                    deleted: false,
+                    formatting_only: false,
+                },
+            ],
+        );
+        assert!(sc.target_changed);
+        assert!(is_clean(&sc), "both declared files are in scope: {sc:?}");
+    }
+
+    /// The gate still does its job: a file OUTSIDE the declared set is a
+    /// departure, however many files the set holds. Same input as the test
+    /// above with one path added -- the two answers must differ.
+    #[test]
+    fn a_file_outside_a_multi_file_declaration_is_still_a_departure() {
+        let declared = Declared {
+            targets: vec![
+                "crates/farmerbob-core/src/scope.rs".to_string(),
+                "crates/farmerbob-core/src/reap_exec.rs".to_string(),
+            ],
+        };
+        let sc = assess(
+            &declared,
+            &[
+                Change {
+                    path: "crates/farmerbob-core/src/scope.rs".to_string(),
+                    deleted: false,
+                    formatting_only: false,
+                },
+                Change {
+                    path: "crates/fb/src/pareto.rs".to_string(),
+                    deleted: false,
+                    formatting_only: false,
+                },
+            ],
+        );
+        assert!(!is_clean(&sc));
+        assert_eq!(sc.departures.len(), 1);
+    }
+
+    /// Each declared file earns its own module-declaration allowance. A task
+    /// creating three modules needs three `pub mod` lines, and granting only
+    /// the first file's would rebuild the no-legal-move trap.
+    #[test]
+    fn every_declared_file_earns_its_module_declaration() {
+        let declared = Declared {
+            targets: vec![
+                "crates/a/src/one.rs".to_string(),
+                "crates/b/src/two.rs".to_string(),
+            ],
+        };
+        let sc = assess(
+            &declared,
+            &[
+                Change {
+                    path: "crates/a/src/lib.rs".to_string(),
+                    deleted: false,
+                    formatting_only: false,
+                },
+                Change {
+                    path: "crates/b/src/lib.rs".to_string(),
+                    deleted: false,
+                    formatting_only: false,
+                },
+            ],
+        );
+        assert!(is_clean(&sc), "both lib.rs files are allowed: {sc:?}");
+        assert_eq!(sc.allowed.len(), 2);
+    }
+
+    /// An empty declaration declares nothing, so every change is a departure.
+    /// Not an error, and not a free pass.
+    #[test]
+    fn an_empty_declaration_permits_nothing() {
+        let declared = Declared { targets: vec![] };
+        let sc = assess(
+            &declared,
+            &[Change {
+                path: "crates/a/src/one.rs".to_string(),
+                deleted: false,
+                formatting_only: false,
+            }],
+        );
+        assert!(!sc.target_changed);
+        assert_eq!(sc.departures.len(), 1);
     }
 }

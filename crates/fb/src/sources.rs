@@ -710,7 +710,7 @@ expires_at = "2030-01-01T00:00:00Z"
             "parked_until = \"soon\"\n"
         );
         let r = reg(toml);
-        let e = r.eligible_at(&"bad-park".to_string(), Utc::now());
+        let e = r.eligible_at("bad-park", Utc::now());
         assert!(!e.is_ok());
         assert!(e.reason().unwrap_or_default().contains("bad-park") || !e.is_ok());
     }
