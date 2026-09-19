@@ -129,7 +129,7 @@ pub fn run(task: &str, krate: &str, suite_path: &Path) -> i32 {
     };
     let scratch = std::env::temp_dir().join(format!("fb-conform-{}", std::process::id()));
     let _ = fs::create_dir_all(&scratch);
-    println!("{:<24} {:<9} {}", "ARM", "RESULT", "FAILURES");
+    println!("{:<24} {:<9} FAILURES", "ARM", "RESULT");
     let mut dirs: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
     dirs.sort();
     for wt in dirs {
