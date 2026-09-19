@@ -53,6 +53,7 @@ pub mod price_update;
 pub mod pricing;
 pub mod prior;
 pub mod promote;
+pub mod prove_veto;
 pub mod proto;
 pub mod quota;
 pub mod reap_exec;
