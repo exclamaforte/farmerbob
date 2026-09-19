@@ -6,7 +6,6 @@
 //! so a candidate that fails it deviated from the spec rather than from a rival's taste.
 
 use std::fs;
-use std::path::Path;
 
 /// The spec as a verifier should see it: harness directives removed, and everything from
 /// the scoring rubric onwards dropped.
