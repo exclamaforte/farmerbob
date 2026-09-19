@@ -63,6 +63,7 @@ pub mod reap_exec;
 pub mod reap_plan;
 pub mod resource;
 pub mod resume;
+pub mod resume_guard;
 pub mod reviewer;
 pub mod roster;
 pub mod router;
