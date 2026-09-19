@@ -222,17 +222,19 @@ impl Trial {
             eprintln!("\n── {} ──────────────────────────────", stage.name());
             let ok = match stage {
                 Stage::Dispatch => self.dispatch(),
-                Stage::Score => self.sh("fb-score.sh", &[&self.task, &self.krate]),
+                // In-process, not a shell-out. Every one of these was a script; calling
+                // the command directly means a stage cannot fail because a wrapper moved.
+                Stage::Score => crate::score::run_cmd(&self.task, &self.krate, false) == 0,
                 Stage::Differential => self.differential(),
                 Stage::Crossx => self.crossx(),
                 Stage::Critique => {
-                    self.sh("fb-critique.sh", &[&self.task, &self.krate, &self.target])
+                    crate::critique::run_cmd(&self.task, &self.krate, &self.target) == 0
                 }
-                Stage::Promote => self.sh("fb-promote.sh", &[&self.task]),
-                Stage::Prove => self.sh(
-                    "fb-prove.sh",
-                    &[&self.task, &self.krate, &self.target, &self.prover],
-                ),
+                Stage::Promote => crate::promote::run_cmd(&self.task) == 0,
+                Stage::Prove => {
+                    let prover = crate::prove::default_prover(Some(self.prover.as_str()));
+                    crate::prove::run_cmd(&self.task, &self.krate, &self.target, &prover) == 0
+                }
                 Stage::Report => self.report(),
             };
             let _ = std::fs::OpenOptions::new()
