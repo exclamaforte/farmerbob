@@ -533,6 +533,11 @@ quota_bucket = "nex-agi"   # the upstream vendor is what rate-limits, not openro
 # timestamped either side of it.
 
 [source.agy-sonnet-46]
+parked_until = "2026-09-19T22:39:17Z"   # 2026-09-19: same 429 as agy-opus-46, minutes apart.
+# "Individual quota reached ... Resets in 1h54m3s." The quota is per ACCOUNT, not per model:
+# opus hit it at 2h0m10s remaining and sonnet reported 1h54m3s on the same countdown. The
+# separate-bucket assumption in these entries is wrong for the individual limit, whatever is
+# true of billing. Both agy arms are parked on one clock.
 status      = "verified"
 kind        = "cli"
 cmd         = "agy"
