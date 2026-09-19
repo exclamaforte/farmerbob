@@ -1,0 +1,21 @@
+scope-blame MERGED glm-53-flash (821964d), adjudicated by the orchestrator without a critique.
+
+The gate recorded TESTS-FAIL and the gate was wrong to blame the arm. Its implementation of the
+task was correct -- Departure::Kind {Semantic, FormattingOnly}, Change.formatting_only,
+semantic_departures() and is_semantically_clean() beside is_clean(), a deletion always Semantic.
+It failed only because two constructions of scope::Change live in reap_exec.rs:
+
+  error[E0063]: missing field `formatting_only` in initializer of `scope::Change`
+    --> crates/farmerbob-core/src/reap_exec.rs:955:13
+    --> crates/farmerbob-core/src/reap_exec.rs:959:13
+
+Same crate, different file. Fixing them was OutOfScope; leaving them was TESTS-FAIL. No legal
+move existed, so the verdict measured my spec's constraint rather than the arm.
+
+Merged with those two callers fixed, and the rule that created the trap removed in the same
+commit: scope::Declared.target: String became Declared.targets: Vec<String>. The one-file rule
+was never a decision -- it was inferred from an arm that changed 51/52/51 files, which was
+cargo fmt on a rustfmt-dirty repo, not wandering.
+
+No critique was run: the task is merged and its worktree reaped, so the field no longer exists
+to review. Recorded as a gap rather than a pass.
