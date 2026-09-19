@@ -1,0 +1,26 @@
+cost-honesty MERGED codex-luna (2c485d9). T1, seven beads.
+
+Four follow-up rounds, each handled by resuming the same arm in its own worktree:
+  1 cost::frontier could not express completion-rate dominance   critic-raised
+  2 54 deleted tests across four modules                         score-raised (tests_delta)
+  3 labelled_count took the first match, not the last            critic-raised
+  4 clean
+
+Final critique: "clean, robust, and correctly adheres to all seven clauses and boundaries."
+
+THE BOARD, which is what the task existed for:
+  before  or-nemotron-ultra  $0.0000  875,053 tokens  <= pareto
+  after   no arm on the frontier at all
+An arm was being crowned for being unmeasurable. Now nothing is crowned, because RunCost
+carries Billing and pareto cannot yet supply a real one. An empty frontier is the honest
+answer to "billing was never measured"; supplying it is the next work.
+
+CLOSED: b52, lzae, t7er.  STILL OPEN: xsa (pricing half), tb92, 5gh4 (the writer).
+
+TWO THINGS I DID THAT THE HARNESS SHOULD HAVE DONE:
+  - the pareto.rs migration was lzae. fb followups routed it to the backlog as its own task
+    and I did it by hand across ~20 call sites instead.
+  - Tokens gained a `combined` field. That contradicts a pinned clause in this task's own
+    spec ("exactly three fields") and belonged in a spec revision and a run, not in an
+    adjudicator's merge commit. The critic had predicted the need for it as a JUDGEMENT.
+Both are recorded here rather than in the ledger, so neither is read as arm work.
