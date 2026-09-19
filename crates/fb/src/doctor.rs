@@ -90,6 +90,7 @@ pub fn run(json: bool) -> i32 {
 /// Build the full report by running every check.
 fn run_all() -> Vec<Check> {
     let repo = crate::paths::repo();
+    let scanned = scan_crate_sources(&repo.join("crates"));
     vec![
         check_cgroup_v2(),
         check_delegated_controllers(),
@@ -101,14 +102,19 @@ fn run_all() -> Vec<Check> {
         check_rustfmt(&repo),
         check_launcher_coverage(&repo),
         check_spec_targets(&repo),
-        check_orphaned_modules(&repo),
+        decide_orphaned_modules(&orphan_sources(&scanned)),
+        decide_unreachable_modules(&scanned),
     ]
 }
 
 /// Check that every directly-listed Rust source file belongs to the crate's module tree.
+///
+/// `run_all` scans once and calls the decide functions directly with the shared scan, so
+/// this filesystem-in wrapper has only test callers and is compiled for them only.
+#[cfg(test)]
 fn check_orphaned_modules(repo: &Path) -> Check {
     let crates = scan_crate_sources(&repo.join("crates"));
-    decide_orphaned_modules(&crates)
+    decide_orphaned_modules(&orphan_sources(&crates))
 }
 
 /// Turn core's orphan decisions into the doctor report without scanning the filesystem.
@@ -142,12 +148,126 @@ fn decide_orphaned_modules(crates: &[CrateSources]) -> Check {
     )
 }
 
-/// Read the source facts needed by `farmerbob_core::orphan_check`.
+/// Turn a crate scan into the unreachable-modules report, without touching the filesystem.
+///
+/// A module of a BINARY crate (one with a `main.rs` and no `lib.rs`) is reachable when
+/// `main.rs` names it as `<stem>::`, or when a module itself reachable names it that way;
+/// reachability is closed transitively from `main.rs`. A self-reference (`foo.rs` naming
+/// `foo::`) cannot seed the closure, and a cycle of modules naming each other stays
+/// unreachable unless something already reachable names one of them. A crate with a
+/// `lib.rs` contributes nothing to the report: its `pub mod`s are reachable by definition
+/// of an external caller, and rather than guess which private modules a binary half also
+/// reaches, the whole crate is out of this check's claim. A crate with neither root is
+/// likewise skipped (unpinned by the specification). Roots themselves are never reported.
+///
+/// `Status` is `Warn` when anything is found -- unreachable code still compiles and its
+/// tests still run; it is work that is not wired, not a machine that cannot run farmerbob.
+/// Deliberately unlike the orphan check's `Fail`.
+fn decide_unreachable_modules(crates: &[ScannedCrate]) -> Check {
+    let mut unreachable = Vec::new();
+    for krate in crates {
+        let Some(main) = &krate.sources.main_rs else {
+            continue;
+        };
+        if krate.sources.lib_rs.is_some() {
+            continue;
+        }
+        let reachable = reachable_stems(main, &krate.bodies);
+        for (stem, _) in &krate.bodies {
+            if !reachable.iter().any(|r| r == stem) {
+                unreachable.push(format!("{}:{stem}", krate.sources.name));
+            }
+        }
+    }
+
+    if unreachable.is_empty() {
+        let message = if crates.is_empty() {
+            "no crates were examined".to_string()
+        } else {
+            format!(
+                "no unreachable modules found across {}",
+                count_noun(crates.len(), "crate")
+            )
+        };
+        return Check::new("unreachable modules", Status::Ok, message, None);
+    }
+
+    Check::new(
+        "unreachable modules",
+        Status::Warn,
+        format!("unreachable modules: {}", unreachable.join(", ")),
+        Some(format!(
+            "wire each into a live call path from main.rs, or delete it: {}",
+            unreachable.join(", ")
+        )),
+    )
+}
+
+/// The stems reachable from a binary crate's `main.rs`, by transitive closure over
+/// textual `<stem>::` mentions.
+///
+/// The scan is textual: a mention inside a comment or a string literal counts the same as
+/// one in live code. That over-reports reachability, which is the safe direction -- the
+/// check stays silent about modules it only thinks are used, rather than naming live code
+/// as dead.
+fn reachable_stems(main: &str, bodies: &[(String, String)]) -> Vec<String> {
+    let mut reachable: Vec<String> = Vec::new();
+    let mut stack: Vec<&(String, String)> = bodies
+        .iter()
+        .filter(|(stem, _)| names_as_path(main, stem))
+        .collect();
+    while let Some((stem, body)) = stack.pop() {
+        reachable.push(stem.clone());
+        for candidate in bodies {
+            if reachable.iter().any(|r| r == &candidate.0)
+                || stack.iter().any(|(s, _)| s == &candidate.0)
+            {
+                continue;
+            }
+            if names_as_path(body, &candidate.0) {
+                stack.push(candidate);
+            }
+        }
+    }
+    reachable
+}
+
+/// Whether `text` mentions `stem` as a path prefix (`stem::`), at a word boundary.
+fn names_as_path(text: &str, stem: &str) -> bool {
+    text.match_indices(stem).any(|(at, _)| {
+        let preceded = text[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        !preceded && text[at + stem.len()..].starts_with("::")
+    })
+}
+
+/// One crate's sources as scanned from disk: the facts `farmerbob_core::orphan_check`
+/// needs, plus the body text of every non-root module file, which the reachability check
+/// needs to follow `<stem>::` mentions.
+struct ScannedCrate {
+    /// Stems and root texts, in the shape core's orphan API takes.
+    sources: CrateSources,
+    /// `(stem, body)` for every readable non-root `.rs` file directly in `src/`.
+    bodies: Vec<(String, String)>,
+}
+
+/// The orphan-check view of a scan, with the module bodies stripped off.
+fn orphan_sources(scanned: &[ScannedCrate]) -> Vec<CrateSources> {
+    scanned.iter().map(|c| c.sources.clone()).collect()
+}
+
+/// Read the source facts needed by `farmerbob_core::orphan_check`, plus each module
+/// file's body for the reachability check -- one directory walk serving both.
 ///
 /// Only immediate children of `crates/` are crate candidates. A candidate without `src/`, a
 /// directory that cannot be read, a non-UTF-8 crate name, or an unreadable root is skipped because
-/// the core API has no representation for an unreadable source listing.
-fn scan_crate_sources(crates_dir: &Path) -> Vec<CrateSources> {
+/// the core API has no representation for an unreadable source listing. A module body that
+/// cannot be read is omitted from `bodies` only: its stem still stands for the orphan check,
+/// and it counts as reachable by nothing (the safe direction for orphans, the report-prone
+/// direction for reachability -- a declared-but-unreadable module merits a warning).
+fn scan_crate_sources(crates_dir: &Path) -> Vec<ScannedCrate> {
     let Ok(entries) = fs::read_dir(crates_dir) else {
         return Vec::new();
     };
@@ -176,14 +296,26 @@ fn scan_crate_sources(crates_dir: &Path) -> Vec<CrateSources> {
         let Some(main_rs) = root_source(&src_dir.join("main.rs")) else {
             continue;
         };
-        crates.push(CrateSources {
-            name: name.to_string(),
-            stems,
-            lib_rs,
-            main_rs,
+        let mut bodies = Vec::new();
+        for stem in &stems {
+            if stem == "main" || stem == "lib" {
+                continue;
+            }
+            if let Ok(body) = fs::read_to_string(src_dir.join(format!("{stem}.rs"))) {
+                bodies.push((stem.clone(), body));
+            }
+        }
+        crates.push(ScannedCrate {
+            sources: CrateSources {
+                name: name.to_string(),
+                stems,
+                lib_rs,
+                main_rs,
+            },
+            bodies,
         });
     }
-    crates.sort_by(|left, right| left.name.cmp(&right.name));
+    crates.sort_by(|left, right| left.sources.name.cmp(&right.sources.name));
     crates
 }
 
@@ -1786,6 +1918,195 @@ esac
         assert!(!check.message.is_empty());
         assert!(check.message.contains("no crates were examined"));
         assert_eq!(check.fix, None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- unreachable modules ----------------------------------------------------------
+
+    /// Build a scanned crate the way `scan_crate_sources` would, without the filesystem.
+    fn scanned_binary(name: &str, main: &str, modules: &[(&str, &str)]) -> ScannedCrate {
+        let mut stems: Vec<String> = modules.iter().map(|(s, _)| (*s).to_string()).collect();
+        stems.insert(0, "main".to_string());
+        ScannedCrate {
+            sources: CrateSources {
+                name: name.to_string(),
+                stems,
+                lib_rs: None,
+                main_rs: Some(main.to_string()),
+            },
+            bodies: modules
+                .iter()
+                .map(|(s, body)| ((*s).to_string(), (*body).to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn unreachable_transitive_reach_stays_ok() {
+        // main names `a::`, `a.rs` names `b::`: both reachable, nothing to report.
+        let krate = scanned_binary(
+            "fixture",
+            "fn main() { a::run(); }",
+            &[("a", "pub fn run() { b::go(); }"), ("b", "pub fn go() {}")],
+        );
+        let check = decide_unreachable_modules(&[krate]);
+        assert_eq!(check.name, "unreachable modules");
+        assert_eq!(check.status, Status::Ok);
+        assert!(!check.message.is_empty());
+        assert_eq!(check.fix, None);
+    }
+
+    #[test]
+    fn unreachable_module_named_by_nothing_is_warn_and_named() {
+        // Clause 2, plus clause 7 pinned against the orphan check's Fail: identical input
+        // goes through both decides, so the two severities are compared directly.
+        let krate = scanned_binary("fixture", "fn main() {}", &[("dead_mod", "")]);
+        let check = decide_unreachable_modules(std::slice::from_ref(&krate));
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.message.contains("dead_mod"));
+        assert!(check.fix.is_some());
+        let orphan = decide_orphaned_modules(&orphan_sources(&[krate]));
+        assert_eq!(orphan.status, Status::Fail);
+        assert_ne!(check.status, orphan.status);
+    }
+
+    #[test]
+    fn unreachable_self_naming_is_not_reachable() {
+        // foo.rs mentioning `foo::` must not keep itself alive.
+        let krate = scanned_binary(
+            "fixture",
+            "fn main() {}",
+            &[("foo", "fn touch() { foo::nothing(); }")],
+        );
+        let check = decide_unreachable_modules(&[krate]);
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.message.contains("foo"));
+    }
+
+    #[test]
+    fn unreachable_cycle_of_two_is_both_reported() {
+        // a names b, b names a, main names neither: reachable from itself, and from nothing.
+        let krate = scanned_binary(
+            "fixture",
+            "fn main() {}",
+            &[("a", "use super::b::go;"), ("b", "use super::a::go;")],
+        );
+        // Neither `a` nor `b` appears as a path prefix anywhere from main, so both die.
+        assert_eq!(
+            reachable_stems("fn main() {}", &krate.bodies),
+            Vec::<String>::new()
+        );
+        let check = decide_unreachable_modules(&[krate]);
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.message.contains("a"));
+        assert!(check.message.contains("b"));
+    }
+
+    #[test]
+    fn unreachable_cycle_joined_from_main_is_reachable() {
+        // Same cycle, but main names one member: transitive closure must flood both.
+        let reachable = reachable_stems(
+            "fn main() { a::go(); }",
+            &[
+                ("a".to_string(), "b::go();".to_string()),
+                ("b".to_string(), "a::go();".to_string()),
+            ],
+        );
+        assert!(reachable.contains(&"a".to_string()));
+        assert!(reachable.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn unreachable_library_pub_mod_is_never_reported() {
+        let krate = ScannedCrate {
+            sources: CrateSources {
+                name: "libcrate".to_string(),
+                stems: vec!["lib".to_string(), "public".to_string()],
+                lib_rs: Some("pub mod public;".to_string()),
+                main_rs: None,
+            },
+            bodies: vec![("public".to_string(), "pub fn unused() {}".to_string())],
+        };
+        let check = decide_unreachable_modules(&[krate]);
+        assert_eq!(check.status, Status::Ok);
+        assert!(!check.message.contains("public"));
+    }
+
+    #[test]
+    fn unreachable_roots_are_never_reported() {
+        // A binary crate with ONLY main.rs: nothing to report, Ok with a real message.
+        let krate = ScannedCrate {
+            sources: CrateSources {
+                name: "tiny".to_string(),
+                stems: vec!["main".to_string()],
+                lib_rs: None,
+                main_rs: Some("fn main() {}".to_string()),
+            },
+            bodies: Vec::new(),
+        };
+        let check = decide_unreachable_modules(&[krate]);
+        assert_eq!(check.status, Status::Ok);
+        assert!(!check.message.is_empty());
+    }
+
+    #[test]
+    fn unreachable_zero_crates_is_ok_not_empty() {
+        let check = decide_unreachable_modules(&[]);
+        assert_eq!(check.status, Status::Ok);
+        assert!(!check.message.is_empty());
+        assert_eq!(check.fix, None);
+    }
+
+    #[test]
+    fn unreachable_message_names_every_one_found() {
+        let krate = scanned_binary(
+            "fixture",
+            "fn main() { live::run(); }",
+            &[
+                ("live", "pub fn run() { helper::go(); }"),
+                ("helper", "pub fn go() {}"),
+                ("first_dead", ""),
+                ("second_dead", ""),
+            ],
+        );
+        let check = decide_unreachable_modules(&[krate]);
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.message.contains("first_dead"));
+        assert!(check.message.contains("second_dead"));
+        assert!(!check.message.contains("live"));
+        assert!(!check.message.contains("helper"));
+    }
+
+    #[test]
+    fn unreachable_word_boundary_and_path_marker_are_required() {
+        // `adead::` does not make `dead` reachable; `dead` without `::` does not either.
+        assert!(!names_as_path("adead::go()", "dead"));
+        assert!(!names_as_path("let dead = 1;", "dead"));
+        assert!(names_as_path("dead::go()", "dead"));
+        assert!(names_as_path("(dead::go)", "dead"));
+    }
+
+    #[test]
+    fn unreachable_scan_reuses_the_orphan_walk() {
+        // One scan feeds both checks: same fixture directory, same ScannedCrate list.
+        let dir = fixture_dir("unreachable-scan");
+        write_fixture(
+            &dir,
+            "crates/bin/src/main.rs",
+            "mod used;\nmod unused;\nfn main() { used::go(); }\n",
+        );
+        write_fixture(&dir, "crates/bin/src/used.rs", "pub fn go() {}\n");
+        write_fixture(&dir, "crates/bin/src/unused.rs", "pub fn never() {}\n");
+        let scanned = scan_crate_sources(&dir.join("crates"));
+        let orphan = decide_orphaned_modules(&orphan_sources(&scanned));
+        let reach = decide_unreachable_modules(&scanned);
+        assert_eq!(orphan.status, Status::Ok);
+        assert_eq!(reach.status, Status::Warn);
+        assert!(reach.message.contains("bin:unused"));
+        assert!(!reach.message.contains("bin:used"));
+        // A second scan of the same tree sees the same answer.
+        let recomputed = decide_unreachable_modules(&scan_crate_sources(&dir.join("crates")));
+        assert_eq!(recomputed.status, reach.status);
         let _ = fs::remove_dir_all(&dir);
     }
 }
