@@ -1,5 +1,6 @@
 mod adjudicate_cmd;
 mod archive_cmd;
+mod backfill_cmd;
 mod bench_cmd;
 mod bench_gather;
 mod cmd;
@@ -122,6 +123,8 @@ enum Command {
         #[arg(long)]
         allow_missing_critique: bool,
     },
+    /// Run the subjective tier over tasks that never got one.
+    Backfill { tasks: Vec<String> },
     /// Run one arm's test suite against another arm's implementation -- one crossx cell,
     /// by hand.
     Repro {
@@ -879,6 +882,7 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Backfill { tasks }) => backfill_cmd::run(&tasks),
         Some(Command::Repro {
             task,
             impl_arm,
