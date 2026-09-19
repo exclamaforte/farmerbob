@@ -60,6 +60,11 @@ pub enum Archived {
     NoOp,
     /// The worktree is not there.
     Gone,
+    /// git refused. NOT a no-op: an empty stdout from a FAILED command and an empty stdout
+    /// from a clean worktree are the same bytes and opposite facts, and this command
+    /// reported both as "nothing to archive" until a real worktree with 792 lines of work
+    /// came back as a no-op run.
+    Unreadable(String),
 }
 
 /// Archive one worktree's diff, including anything it created untracked.
@@ -85,8 +90,17 @@ pub fn archive_one(wt: &Path, out: &Path) -> Archived {
         .collect();
     args.extend(exclusions());
     let Ok(output) = Command::new("git").current_dir(wt).args(&args).output() else {
-        return Archived::Gone;
+        return Archived::Unreadable("cannot run git".to_string());
     };
+    if !output.status.success() {
+        return Archived::Unreadable(
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .next()
+                .unwrap_or("git refused")
+                .to_string(),
+        );
+    }
     let mut patch = output.stdout;
     // The handoff, appended. Concatenated patches remain a valid patch.
     if let Ok(h) = Command::new("git")
@@ -129,6 +143,7 @@ pub fn run(names: &[String]) -> i32 {
         names.iter().map(|n| wt_root.join(n)).collect()
     };
     let mut wrote = 0;
+    let mut rc = 0;
     for wt in targets {
         let name = wt
             .file_name()
@@ -142,10 +157,14 @@ pub fn run(names: &[String]) -> i32 {
             }
             Archived::NoOp => println!("  {name}: nothing to archive (no-op run)"),
             Archived::Gone => println!("  {name}: gone"),
+            Archived::Unreadable(why) => {
+                println!("  {name}: NOT archived -- {why}");
+                rc = 1;
+            }
         }
     }
     println!("archived from {wrote} worktree(s) -> {}", archive.display());
-    0
+    rc
 }
 
 #[cfg(test)]
@@ -217,6 +236,23 @@ mod tests {
         let patch = fs::read_to_string(&out).unwrap_or_default();
         assert!(patch.contains("handoff.md"), "{patch}");
         assert!(!patch.contains("other.md"), "{patch}");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A directory that is not a git repository is UNREADABLE, not a no-op. An empty
+    /// stdout from a failed command and an empty stdout from a clean worktree are the same
+    /// bytes and opposite facts; conflating them reported a worktree holding 792 lines of
+    /// work as "nothing to archive".
+    #[test]
+    fn a_directory_that_is_not_a_repo_is_unreadable_not_empty() {
+        let d = scratch("notrepo");
+        let wt = d.join("wt");
+        let _ = fs::create_dir_all(&wt);
+        let _ = fs::write(wt.join("a.rs"), "x\n");
+        assert!(matches!(
+            archive_one(&wt, &d.join("p.patch")),
+            Archived::Unreadable(_)
+        ));
         let _ = fs::remove_dir_all(&d);
     }
 
