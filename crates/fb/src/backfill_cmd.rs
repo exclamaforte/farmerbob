@@ -48,7 +48,14 @@ pub fn plan_for(spec: Option<&str>, has_claims: bool) -> Plan {
 pub fn run(tasks: &[String]) -> i32 {
     let repo = crate::paths::repo();
     let logs = crate::paths::logs();
-    for task in tasks {
+    // No tasks named means every task with a spec and no claims -- the script carried a
+    // hardcoded list of fifteen, which went stale the moment a sixteenth task existed.
+    let owned: Vec<String> = if tasks.is_empty() {
+        outstanding(&repo.join(".fb/prompts"), &logs)
+    } else {
+        tasks.to_vec()
+    };
+    for task in &owned {
         let spec_path = repo.join(".fb/prompts").join(format!("{task}.md"));
         let spec = fs::read_to_string(&spec_path).ok();
         let has_claims = logs
