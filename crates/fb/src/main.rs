@@ -2,6 +2,7 @@ mod adjudicate_cmd;
 mod cmd;
 mod critique;
 mod crossx;
+mod decl_cmd;
 mod defects;
 mod differential;
 mod doctor;
