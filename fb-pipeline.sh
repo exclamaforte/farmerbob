@@ -241,12 +241,30 @@ run_prove() {
   esac
 }
 
+# PROMOTE, same shape: 4 means no critiques were written, so there is nothing to promote.
+# The refusal to emit an empty claims file is CORRECT and unchanged -- downstream would read it
+# as "the critics found nothing", which is a different fact from "nobody was asked".
+run_promote() {
+  local artefact="$LOGS/$T.promoted.json" sig now
+  sig="$artefact.field"; now=$(field)
+  if have_artefact "$artefact" && [ "$now" = "$(cat "$sig" 2>/dev/null)" ]; then
+    echo "  promote: already done"; return 0
+  fi
+  echo "  promote: running"
+  ./target/debug/fb promote "$T" >> "$LOGS/$T.pipeline.log" 2>&1
+  case "$?" in
+    0) echo "  promote: ok"; printf '%s' "$now" > "$sig" ;;
+    4) echo "  promote: n/a, no critiques were written -- nothing to promote" ;;
+    *) echo "  promote: FAILED (see $LOGS/$T.pipeline.log)"; return 1 ;;
+  esac
+}
+
 # score is keyed on the CANDIDATES ON DISK; everything downstream on who PASSED.
 stage score    "$LOGS/$T.score.json"    wtfield bash ./fb-score.sh   "$T" "$CRATE"
 run_differential || FAILED_STAGES="$FAILED_STAGES differential"
 run_crossx || FAILED_STAGES="$FAILED_STAGES crossx"
 run_critique || FAILED_STAGES="$FAILED_STAGES critique"
-stage promote  "$LOGS/$T.promoted.json" field   bash ./fb-promote.sh "$T" "$CRATE" "$TARGET"
+run_promote || FAILED_STAGES="$FAILED_STAGES promote"
 run_prove || FAILED_STAGES="$FAILED_STAGES prove"
 
 # ESCALATE. A confirmed finding should sharpen the gate for every future candidate on this

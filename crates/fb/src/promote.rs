@@ -85,8 +85,10 @@ mod exit {
     /// Usage: the required positional parameter is missing.
     /// `set -u` turns `${1:?bead}` into exit 1, not 2.
     pub const USAGE: i32 = 1;
-    /// Would-block: no critiques were written, so there is nothing to promote.
-    pub const NO_CRITIQUES: i32 = 3;
+    /// Not applicable: no critiques were written, so there is nothing to promote.
+    /// Nothing went wrong and no claims file is emitted. Matches `fb crossx` and
+    /// `fb critique`, so one binary means one thing by one number.
+    pub const NO_CRITIQUES: i32 = 4;
 }
 
 /// Topic keywords, in the order the script scans them.
@@ -1179,10 +1181,24 @@ fn render_report(
 
 /// Turns critiques' CLAIMs into executed evidence. Returns the process exit code.
 ///
+/// Exit codes, exactly these three and no others:
+///
+/// * `0` — claims were classified and `<bead>.claims.json` was written. This
+///   includes "asked, and the critics found nothing": review files existed and
+///   yielded zero claims, and the artefact records that fact.
+/// * `1` — a genuine failure: a critique existed and could not be read or
+///   processed (usage and I/O errors also exit 1).
+/// * `4` — NOT APPLICABLE: no critiques were written, so there is nothing to
+///   promote. Nothing went wrong and no claims file is emitted — an empty
+///   artefact would read downstream as "the critics found nothing", which is a
+///   different fact from "nobody was asked", so the refusal to invent it stands.
+///   Matches `fb crossx` and `fb critique`, so one binary means one thing by one
+///   number.
+///
 /// Reads `$HOME/.local/share/farmerbob/logs/critiques/<bead>/*.on.*.md`, classifies
 /// each claim, writes `$HOME/.local/share/farmerbob/logs/<bead>.claims.json`, and
-/// prints the counts other scripts grep for. Refuses (exit 3) to write an empty
-/// artefact when no critiques were written; usage and I/O errors exit 1.
+/// prints the counts other scripts grep for. Refuses to write an empty artefact
+/// when no critiques were written, exiting 4 rather than a failure code.
 pub fn run_cmd(bead: &str) -> i32 {
     if bead.is_empty() {
         eprintln!("fb-promote: bead is required");
@@ -1307,7 +1323,9 @@ pub fn run_cmd(bead: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Mutex, MutexGuard, PoisonError};
 
     fn test_root(label: &str) -> PathBuf {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -2299,5 +2317,194 @@ mod tests {
         render_report(&[], &[], &tail, &mut buf);
         assert!(buf.contains("HEAD-ONLY k on s"));
         assert!(buf.ends_with("-> /o/x.claims.json\n"));
+    }
+
+    // ---- run_cmd's exit-code contract ----
+    //
+    // `run_cmd` reads its tree through `crate::paths`, which resolves from the
+    // process environment, so the in-process tests serialise on one mutex and
+    // point `FB_LOGS` at a fresh sandbox per test, restoring the previous value
+    // on drop. The message test runs the built binary in a child process
+    // instead: an in-process `println!` cannot be captured.
+
+    static RUN_CMD_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Points `FB_LOGS` at `root` for one test, holding [`RUN_CMD_LOCK`] so
+    /// parallel tests can neither observe nor race the change, and restoring
+    /// the previous environment on drop.
+    struct LogsSandbox {
+        _lock: MutexGuard<'static, ()>,
+        previous: Option<String>,
+    }
+
+    impl LogsSandbox {
+        fn at(root: &Path) -> Self {
+            let _lock = RUN_CMD_LOCK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let previous = std::env::var("FB_LOGS").ok();
+            // `set_var` is `unsafe` in edition 2024 because the environment is
+            // process-global; the lock above is what makes the window safe.
+            unsafe { std::env::set_var("FB_LOGS", root) };
+            LogsSandbox { _lock, previous }
+        }
+    }
+
+    impl Drop for LogsSandbox {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var("FB_LOGS", value) },
+                None => unsafe { std::env::remove_var("FB_LOGS") },
+            }
+        }
+    }
+
+    /// Writes one review file into a sandboxed `<root>/critiques/<bead>/` tree.
+    fn write_critique(root: &Path, bead: &str, name: &str, bytes: &[u8]) {
+        let dir = root.join("critiques").join(bead);
+        fs::create_dir_all(&dir).expect("create the critiques directory");
+        fs::write(dir.join(name), bytes).expect("write the critique file");
+    }
+
+    fn claims_path(root: &Path, bead: &str) -> PathBuf {
+        root.join(format!("{bead}.claims.json"))
+    }
+
+    /// Clause 1: NO critique files at all — 4, and no claims file. The file's
+    /// absence is pinned alongside the code: an empty artefact downstream reads
+    /// as "the critics found nothing", which is the confusion the refusal
+    /// exists to prevent.
+    #[test]
+    fn no_critique_files_exit_4_and_write_no_claims_file() {
+        let root = test_root("napplies-absent");
+        let _sandbox = LogsSandbox::at(&root);
+        assert_eq!(run_cmd("napplies-absent-bead"), 4);
+        assert!(!claims_path(&root, "napplies-absent-bead").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Clause 2, the other side of the boundary: review files exist and
+    /// contain NO claims — 0, and a claims file IS written recording zero
+    /// claims. "Nobody was asked" and "asked, and they found nothing" are
+    /// different facts and must not share an answer with each other or with a
+    /// failure.
+    #[test]
+    fn review_files_with_no_claims_exit_0_and_record_zero_claims() {
+        let root = test_root("napplies-zero-claims");
+        write_critique(
+            &root,
+            "nap-zero-claims",
+            "alpha.on.beta.md",
+            b"a review with no CLAIM blocks in it\n",
+        );
+        let _sandbox = LogsSandbox::at(&root);
+        assert_eq!(run_cmd("nap-zero-claims"), 0);
+        let body = fs::read_to_string(claims_path(&root, "nap-zero-claims"))
+            .expect("the claims file is written");
+        assert!(
+            body.contains("\"claims\": []"),
+            "must record zero claims, got: {body}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Clause 3: review files with claims are unaffected — still 0, still
+    /// writing the artefact, with the claims recorded in it.
+    #[test]
+    fn review_files_with_claims_still_exit_0_and_record_them() {
+        let root = test_root("napplies-with-claims");
+        write_critique(
+            &root,
+            "nap-with-claims",
+            "alpha.on.beta.md",
+            b"CLAIM: totals drift\n\
+              WHERE: crates/fb/src/promote.rs:10\n\
+              TRIGGER: run fb status\n\
+              EXPECT: totals include excluded arms\n\
+              ACTUAL: totals exclude them\n",
+        );
+        let _sandbox = LogsSandbox::at(&root);
+        assert_eq!(run_cmd("nap-with-claims"), 0);
+        let body = fs::read_to_string(claims_path(&root, "nap-with-claims"))
+            .expect("the claims file is written");
+        assert!(
+            body.contains("\"claims\": ["),
+            "must record the claims, got: {body}"
+        );
+        assert!(body.contains("alpha"), "the critic is named: {body}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Clause 4: a critique file that exists but cannot be READ is 1, not 4 —
+    /// the file is there, so something went wrong, and it must not share an
+    /// answer with clause 1. The bytes are not valid UTF-8, so the read fails
+    /// while the name still matches the review pattern.
+    #[test]
+    fn an_unreadable_critique_file_exits_1_not_4() {
+        let root = test_root("napplies-unreadable");
+        write_critique(
+            &root,
+            "nap-unreadable",
+            "alpha.on.beta.md",
+            &[0xff, 0xfe, 0x81],
+        );
+        let _sandbox = LogsSandbox::at(&root);
+        assert_eq!(run_cmd("nap-unreadable"), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The built binary, for exercising `run_cmd` through the real process
+    /// exit path. `cargo test` builds the unit-test harness but not
+    /// necessarily the runnable binary, so this looks where a `cargo build`
+    /// (the gate runs one) leaves it: in the same target tree as this test
+    /// binary, or in the workspace's default one.
+    fn built_binary() -> Option<PathBuf> {
+        let mut candidates = Vec::new();
+        if let Ok(exe) = std::env::current_exe() {
+            // <profile>/deps/fb-<hash> -> <profile>/fb.
+            if let Some(profile) = exe.parent().and_then(|deps| deps.parent()) {
+                candidates.push(profile.join("fb"));
+            }
+        }
+        if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+            candidates.push(
+                PathBuf::from(manifest)
+                    .join("../../target/debug")
+                    .join("fb"),
+            );
+        }
+        candidates.into_iter().find(|path| path.is_file())
+    }
+
+    /// Clause 5: the message printed with 4 says no critiques were written.
+    /// Asserted as "mentions critiques", case-insensitively, across both
+    /// streams — the wording itself is not pinned. Runs the built binary so
+    /// the child's output can be captured; the exit code doubles as a second
+    /// pin of clause 1's code through the real process exit path.
+    #[test]
+    fn the_exit_4_message_says_no_critiques_were_written() {
+        let Some(binary) = built_binary() else {
+            println!("not exercised: the fb binary has not been built; run `cargo build -p fb` first");
+            return;
+        };
+        let root = test_root("napplies-message");
+        let output = Command::new(binary)
+            .args(["promote", "nap-message-bead"])
+            .env("FB_LOGS", &root)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("run the fb binary");
+        assert_eq!(output.status.code(), Some(4));
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            said.to_lowercase().contains("critique"),
+            "the 4 message must mention critiques, got: {said}"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }

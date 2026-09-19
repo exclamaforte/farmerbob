@@ -1,0 +1,27 @@
+MERGED glm-53-flash
+Single arm, 211 lines, clippy 0.
+
+No critiques written -> exit 4 and no claims file. Critiques that exist with NO
+claims -> exit 0 and a claims file IS written. The refusal itself is unchanged and
+correct: an empty claims file reads downstream as "the critics found nothing",
+which is a different fact from "nobody was asked".
+
+ONE TEST FAILED AT MERGE, and it is worth recording because it is a test-design
+trap rather than a defect: the_exit_4_message_says_no_critiques_were_written shells
+out to target/debug/fb and asserts its exit code. On HEAD that binary was still
+the PRE-merge build, so the test failed until I rebuilt. It passed in the arm's
+worktree because the arm built before testing. A test that depends on build order
+passes or fails on something the spec never pinned; it is green now and it will
+misfire again for the next person who runs cargo test before cargo build.
+
+Completes farmerbob-9ef2 across all five stages. Measured, on a real one-arm task:
+
+  score:        ok
+  differential: n/a, this task declares no oracle
+  crossx:       n/a, fewer than two candidates -- no matrix to build
+  critique:     n/a, fewer than two candidates -- nobody to cross-review
+  promote:      n/a, no critiques were written -- nothing to promote
+  prove:        n/a, nothing was promoted -- no claims to execute
+  == doctor-orphan ready for adjudication          exit 0
+
+That is the first time a one-arm task has run the whole pipeline clean.
