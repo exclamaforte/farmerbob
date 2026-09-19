@@ -1,1 +1,2 @@
 score-delta MERGED codex-luna (requeue) -- 0 departures after the cargo fmt rubric line; 663->114 lines. Spec critic found the handoff.md contradiction and the unpinned JSON encoding.
+score-delta RE-RAN by mistake 2026-09-19 (resurrected wave148 after a git reset); already MERGED 003ccc7. Do not adjudicate the second run.

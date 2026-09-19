@@ -1,0 +1,1 @@
+fmt-gate MERGED glm-53-flash -- critic found Attributed::len() names a method the pinned API forbids; implementer (same arm, earlier run) took clause 4's definition and corrected the doc.

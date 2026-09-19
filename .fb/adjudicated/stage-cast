@@ -1,1 +1,2 @@
 stage-cast MERGED codex-luna -- spec critic found the unpinned duplicate-candidate boundary; implementer found it independently and resolved it the same way. 9 tests, clippy clean.
+stage-cast RE-RAN by mistake 2026-09-19 (resurrected wave147 after a git reset); already MERGED b8d117f. Do not adjudicate the second run.
