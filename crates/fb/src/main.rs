@@ -31,6 +31,7 @@ mod prices_gather;
 mod promote;
 mod prove;
 mod reap_cmd;
+mod repro_cmd;
 mod scope_cmd;
 mod score;
 mod select;
@@ -120,6 +121,13 @@ enum Command {
         /// Decide even when no critique exists. Off by default, deliberately.
         #[arg(long)]
         allow_missing_critique: bool,
+    },
+    /// Run one arm's test suite against another arm's implementation -- one crossx cell,
+    /// by hand.
+    Repro {
+        task: String,
+        impl_arm: String,
+        suite_arm: String,
     },
     /// Run a frozen conformance suite against every candidate of a task.
     Conform {
@@ -871,6 +879,11 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Repro {
+            task,
+            impl_arm,
+            suite_arm,
+        }) => repro_cmd::run(&task, &impl_arm, &suite_arm),
         Some(Command::Conform { task, suite, krate }) => {
             conform_cmd::run(&task, &krate, std::path::Path::new(&suite))
         }
