@@ -1,0 +1,9 @@
+MERGED glm-53-flash
+Single arm, 513 lines, clippy 0.
+
+Reads sources.toml and a catalogue into price_update::pending, so `fb prices` can
+stop reporting a clean bill from a command that never asked. Exit 4 for an
+unreadable source, 0 for a real all-clear, 1 for pending changes.
+
+Not yet wired: fb prices still passes an empty slice, so farmerbob-qvrs stays open
+until the subcommand calls this. Stated rather than left to be noticed.

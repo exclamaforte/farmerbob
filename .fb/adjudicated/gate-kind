@@ -1,0 +1,27 @@
+MERGED glm-53-flash
+Single arm, 320 lines, 7 tests, clippy 0.
+
+The branch the harness has never had. task_contract names three verification
+kinds -- DeterministicTests, Benchmark, ReviewerJudgement -- and nothing branched
+on it, so the only gate that existed was cargo.
+
+Probed all eight pairings rather than trusting the suite:
+
+  Tests kind  + Tests ev    Yes("cleared: 9 tests passed")
+  Tests kind  + Bench ev    Mismatched { declared: DeterministicTests, got: "a benchmark score" }
+  Tests kind  + Review ev   Mismatched
+  Bench kind  + Bench ev    Yes("cleared benchmark: speedup 2.5 over 30 trials")
+  Bench kind  + Tests ev    Mismatched { declared: Benchmark, got: "a build-and-test verdict" }
+  Review kind + Review ev   Yes("cleared: the reviewer approved")
+  Review kind + Tests ev    Mismatched
+  Tests kind  + NoTests     No("not cleared: no test executed, and the gate requires at least one")
+
+The last two lines are the task. Mismatched is a HARNESS fault -- we handed the
+wrong instrument's output to the wrong gate -- and must never be recorded against
+an arm. No is a candidate failure. An implementation returning No for everything
+it cannot clear passes every other clause and silently blames arms for our bugs.
+
+This is the blocker from farmerbob-p172. It does not finish KernelBench: a scorer
+that RUNS a benchmark and feeds task_contract::score still does not exist, and
+crossx is still 17 cargo references. But the verdict layer can now express a
+benchmark result at all, which it could not before.

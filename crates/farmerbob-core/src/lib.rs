@@ -39,6 +39,7 @@ pub mod experiment;
 pub mod field_shape;
 pub mod finding_fate;
 pub mod gate;
+pub mod gate_kind;
 pub mod grade;
 pub mod grading;
 pub mod ids;
