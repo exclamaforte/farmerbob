@@ -102,7 +102,7 @@ pub fn run(args: &[String]) -> i32 {
 }
 
 /// Gathers candidate agent processes from `/proc`.
-fn gather_procs(root: &str) -> Vec<Proc> {
+pub fn gather_procs(root: &str) -> Vec<Proc> {
     let mut procs = Vec::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return procs;

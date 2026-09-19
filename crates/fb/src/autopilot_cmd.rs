@@ -88,25 +88,22 @@ pub fn may_launch(
     Ok(())
 }
 
-/// The scope names systemd reports, reduced to task names.
-pub fn live_tasks_from(scopes: &str) -> Vec<String> {
-    let mut out: BTreeSet<String> = BTreeSet::new();
-    for line in scopes.lines() {
-        let Some(name) = line.split_whitespace().next() else {
-            continue;
-        };
-        let Some(rest) = name.strip_prefix("fb-") else {
-            continue;
-        };
-        let Some(stem) = rest.strip_suffix(".scope") else {
-            continue;
-        };
-        // fb-<task>--<arm>-<pid>.scope
-        if let Some((task, _)) = stem.split_once("--") {
-            out.insert(task.to_string());
-        }
-    }
-    out.into_iter().collect()
+/// The tasks with a live agent, from the worktrees those agents are working in.
+///
+/// `live_tasks_from` reads systemd's scope list, which is the measurement `live_cmd` exists
+/// to replace: a scope left in a FAILED state after a timeout lingers as a unit and reads as
+/// live indefinitely, and an agent launched without a scope reads as absent. There is a
+/// stale `fb-doctor-reach--oc-kimi-k3-122408.scope` in this user's session right now whose
+/// process died long ago.
+///
+/// A worktree is named `<task>--<arm>`, so the task falls straight out of it.
+pub fn live_tasks_in(worktrees: &BTreeSet<String>) -> Vec<String> {
+    worktrees
+        .iter()
+        .filter_map(|w| w.split_once("--").map(|(task, _)| task.to_string()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// A task that has been scored, whose deliverable is not merged, and whose claims are
@@ -124,19 +121,15 @@ fn run_once(repo: &Path, logs: &Path, max_waves: usize) -> bool {
     let queue = repo.join(".fb/queue");
     let dispatched = queue.join("dispatched");
     let _ = fs::create_dir_all(&dispatched);
-    let live_scopes = std::process::Command::new("systemctl")
-        .args([
-            "--user",
-            "list-units",
-            "--type=scope",
-            "--state=running",
-            "--no-legend",
-        ])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
-    let live_tasks = live_tasks_from(&live_scopes);
-    let live = live_scopes.lines().filter(|l| l.contains("fb-")).count();
+    // ONE MEASUREMENT, ONE IMPLEMENTATION. This counted running systemd scopes, which is
+    // the measurement `live_cmd` was written to replace -- a scope left FAILED after a
+    // timeout lingers and reads as live for ever, and an agent launched without a scope
+    // reads as absent. `fb live` inspects the worktrees under /proc instead, and the two
+    // counts sitting side by side is how this harness got its launcher table twice.
+    let root = crate::paths::worktrees().to_string_lossy().into_owned();
+    let busy = crate::live_cmd::worktrees_live(&crate::live_cmd::gather_procs(&root), &root);
+    let live_tasks = live_tasks_in(&busy);
+    let live = busy.len();
     let waves = std::process::Command::new("pgrep")
         .args(["-fc", "fb admit"])
         .output()
@@ -327,13 +320,32 @@ mod tests {
         assert!(may_launch(m, 0, 10, &["theirs".to_string()], &target).is_ok());
     }
 
-    /// Scope names reduce to task names. systemd reports fb-<task>--<arm>-<pid>.scope.
+    /// Worktree names reduce to task names, and two arms on one task are ONE live task:
+    /// the caller uses this to refuse a matrix that collides with work already running.
+    ///
+    /// This read systemd's scope list until 2026-09-19. That is the measurement `live_cmd`
+    /// exists to replace -- a scope left FAILED after a timeout lingers as a unit and reads
+    /// as live for ever, and this user's session is carrying exactly such a stale scope
+    /// right now, for a process that died long ago.
     #[test]
-    fn scope_names_reduce_to_tasks() {
-        let s = "fb-cost--codex_luna-123.scope loaded active running\n\
-                 fb-cost--glm-456.scope loaded active running\n\
-                 other.scope loaded active running\n";
-        assert_eq!(live_tasks_from(s), vec!["cost".to_string()]);
+    fn worktree_names_reduce_to_tasks() {
+        let wts: BTreeSet<String> = ["cost--codex-luna", "cost--glm-53", "other--arm"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            live_tasks_in(&wts),
+            vec!["cost".to_string(), "other".to_string()]
+        );
+    }
+
+    /// A directory that is not a `<task>--<arm>` worktree names no task, rather than naming
+    /// itself as one: a stray directory under the root must not make a task look busy and
+    /// block its matrix for ever.
+    #[test]
+    fn a_directory_that_is_not_a_worktree_names_no_task() {
+        let wts: BTreeSet<String> = ["scratch".to_string()].into_iter().collect();
+        assert!(live_tasks_in(&wts).is_empty());
     }
 
     /// A task needs the pipeline only when it was scored, is NOT merged, has no claims and
