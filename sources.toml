@@ -649,3 +649,84 @@ disabled_reason = """MEASURED 2026-09-19. HTTP 410:
     2026-09-09T09:00:00Z and is no longer available.
 
 Ten days before registration. Same handling as oc-deepseek-v4-pro."""
+
+# ---------------------------------------------------------------------------------------------
+# Added 2026-09-19, status "untested" rather than "verified", DELIBERATELY.
+#
+# I tried to PONG-test these and the data was worthless: five consecutive rc=124 timeouts across
+# TWO providers, which is not five slow models. My own earlier background PONG test was still
+# running -- `pgrep -cf opencode` showed five processes -- and ad-hoc `opencode run` invocations
+# share one SQLite database. That is farmerbob-p3r, the bug I fixed for the harness's dispatch,
+# critique and prove paths earlier the same day by giving each run its own XDG_DATA_HOME, and
+# then walked straight into from my own shell.
+#
+# So: no PONG figures recorded here, because the ones I have are measurements of my own
+# contention. These go out on REAL TASKS and are judged on what comes back. `untested` is a
+# dispatchable status; the first scored run is the evidence.
+
+[source.oc-cerebras-gptoss]
+status     = "untested"
+kind       = "opencode"
+launcher   = "opencode"
+model      = "cerebras/gpt-oss-120b"
+provider   = "cerebras"
+quota      = "free"
+quota_bucket = "cerebras-gptoss"
+notes      = "Owner: 1M tokens. Separate bucket from the qwen route, per the owner's '1m for each'. Cerebras is authed in opencode's auth.json."
+
+[source.oc-cerebras-qwen]
+status     = "untested"
+kind       = "opencode"
+launcher   = "opencode"
+model      = "cerebras/qwen-3.8-27b"
+provider   = "cerebras"
+quota      = "free"
+quota_bucket = "cerebras-qwen"
+notes      = "Owner: 1M tokens. Owner said 28B; the id opencode actually offers is qwen-3.8-27b and that is what is registered."
+
+[source.oc-glm-53]
+status     = "untested"
+kind       = "opencode"
+launcher   = "opencode"
+model      = "nvidia/z-ai/glm-5.3"
+provider   = "nvidia"
+quota      = "free"
+quota_bucket = "nvidia-build"
+
+[source.oc-glm-53-flash]
+status     = "untested"
+kind       = "opencode"
+launcher   = "opencode"
+model      = "nvidia/z-ai/glm-5.3-flash"
+provider   = "nvidia"
+quota      = "free"
+quota_bucket = "nvidia-build"
+
+[source.oc-nv-gptoss]
+status     = "untested"
+kind       = "opencode"
+launcher   = "opencode"
+model      = "nvidia/openai/gpt-oss-120b"
+provider   = "nvidia"
+quota      = "free"
+quota_bucket = "nvidia-build"
+notes      = "Same model family as oc-cerebras-gptoss on a different provider -- a free A/B on routing, if both turn out to work."
+
+[source.oc-muse-glimmer]
+status     = "untested"
+kind       = "opencode"
+launcher   = "opencode"
+model      = "nvidia/meta/muse-glimmer-30b"
+provider   = "nvidia"
+quota      = "free"
+quota_bucket = "nvidia-build"
+
+[source.oc-nemotron-3-ultra]
+status     = "untested"
+kind       = "opencode"
+launcher   = "opencode"
+model      = "nvidia/nvidia/nemotron-3-ultra-550b-a55b"
+provider   = "nvidia"
+quota      = "free"
+quota_bucket = "nvidia-build"
+notes      = "550B A55B. or-nemotron-ultra already runs a nemotron via OpenRouter and has merged work here; this is the same family on the free NVIDIA route."
