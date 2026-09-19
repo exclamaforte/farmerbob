@@ -350,17 +350,17 @@ struct Task<'a> {
     krate: &'a str,
     /// The declared deliverable, and whether the spec said `creates` (as opposed to
     /// `modifies`). The verb decides whether a destroyed worktree can be recovered from.
-    target: Option<&'a str>,
+    targets: &'a [String],
     creates: bool,
     base_clippy: i32,
     log_root: &'a Path,
 }
 
 fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
-    let (bead, krate, target, creates, base_clippy, log_root) = (
+    let (bead, krate, targets, creates, base_clippy, log_root) = (
         t.bead,
         t.krate,
-        t.target,
+        t.targets,
         t.creates,
         t.base_clippy,
         t.log_root,
@@ -437,7 +437,10 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
                 // Scope stays Missing regardless: the changed-file list cannot be recovered,
                 // and claiming an arm stayed in scope on the strength of not being able to
                 // look is the failure this whole file exists to avoid.  (bead farmerbob-13p)
-                let recovered = target
+                // The FIRST declared file: this recovery asks whether the deliverable
+                // survived a destroyed worktree, and one witness answers it.
+                let recovered = targets
+                    .first()
                     .filter(|_| creates)
                     .map(|t| wt.join(t))
                     .filter(|p| p.exists())
@@ -476,8 +479,12 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
     // from a partial answer: with the list Missing, scope is Missing with git's refusal
     // named. An arm whose deletions we could not read must not read as one who deleted
     // nothing.  (bead farmerbob-7i30)
-    let scope: Measurement<Scope> = match (changed_paths.as_ref(), deleted.value(), target) {
-        (Some(paths), Some(gone), Some(t)) => {
+    let scope: Measurement<Scope> = match (
+        changed_paths.as_ref(),
+        deleted.value(),
+        if targets.is_empty() { None } else { Some(()) },
+    ) {
+        (Some(paths), Some(gone), Some(())) => {
             let changes: Vec<Change> = paths
                 .iter()
                 .map(|p| Change {
@@ -486,7 +493,12 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
                     formatting_only: false,
                 })
                 .collect();
-            Measurement::observed(assess(&Declared::one(t), &changes))
+            Measurement::observed(assess(
+                &Declared {
+                    targets: targets.to_vec(),
+                },
+                &changes,
+            ))
         }
         (None, _, _) => Measurement::instrument_failed(
             "git cannot read this worktree, so which files changed is unknown",
@@ -669,23 +681,35 @@ pub const DEFAULT_CRATE: &str = "farmerbob-core";
 ///
 /// Accepts BOTH verbs. Seven readers in this harness each grepped for `fb:creates` alone and
 /// six of them did not know `fb:modifies` existed.  (bead farmerbob-9mh)
-fn declared_target(bead: &str) -> (Option<String>, bool) {
+/// Every file the spec declares, and whether the FIRST one is a `creates`.
+///
+/// This was a hand-rolled marker scanner -- the seventh reimplementation of the same reader
+/// in this repository (bead farmerbob-9mh), and it stopped at the first marker. A task
+/// declaring two files therefore had the second reported as a scope DEPARTURE: the harness
+/// failing an arm for doing exactly what its spec said, which is the trap scope-blame hit
+/// this morning one level down.
+///
+/// `target_decl::declared_all` is the one reader. The `creates` flag stays singular because
+/// its only consumer asks whether a destroyed worktree can be recovered from, and a task
+/// mixing verbs is not something that caller models.
+fn declared_targets(bead: &str) -> (Vec<String>, bool) {
     let Ok(spec) = fs::read_to_string(format!(".fb/prompts/{bead}.md")) else {
-        return (None, false);
+        return (Vec::new(), false);
     };
-    for line in spec.lines() {
-        let Some(rest) = line.trim().strip_prefix("<!-- fb:") else {
-            continue;
-        };
-        for (verb, creates) in [("creates ", true), ("modifies ", false)] {
-            if let Some(r) = rest.strip_prefix(verb)
-                && let Some(path) = r.split_whitespace().next()
-            {
-                return (Some(path.to_string()), creates);
-            }
+    match farmerbob_core::target_decl::declared_all(&spec) {
+        Ok(declarations) => {
+            let creates = matches!(
+                declarations.first(),
+                Some(farmerbob_core::target_decl::Declaration::Creates(_))
+            );
+            let paths = declarations
+                .iter()
+                .map(|d| farmerbob_core::target_decl::path(d).to_string())
+                .collect();
+            (paths, creates)
         }
+        Err(_) => (Vec::new(), false),
     }
-    (None, false)
 }
 
 pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
@@ -693,7 +717,8 @@ pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
     let log_root = crate::paths::logs();
     let out = log_root.join(format!("{bead}.score.json"));
 
-    let (target, creates) = declared_target(bead);
+    let (targets, creates) = declared_targets(bead);
+    let target: Option<&str> = targets.first().map(String::as_str);
 
     // DERIVE the crate from the declared deliverable rather than trusting a default.
     //
@@ -705,7 +730,7 @@ pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
     // crates/fb/src/critique.rs can only belong to the crate `fb`, so there is no need to
     // guess. An explicit --crate still overrides, for a target the path cannot classify.
     //   (bead farmerbob-jd2.12)
-    let krate = match (crate_of(target.as_deref()), krate) {
+    let krate = match (crate_of(target), krate) {
         (Some(derived), given) if given == DEFAULT_CRATE && derived != given => {
             if !json_only {
                 println!("crate: {derived} (derived from the deliverable, not the default)");
@@ -716,7 +741,7 @@ pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
     };
     let krate = krate.as_str();
     if !json_only {
-        match target.as_deref() {
+        match target {
             Some(t) => println!("declared deliverable: {t}"),
             None => println!("declared deliverable: NONE -- scope cannot be checked"),
         }
@@ -763,7 +788,7 @@ pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
         let task = Task {
             bead,
             krate,
-            target: target.as_deref(),
+            targets: &targets,
             creates,
             base_clippy,
             log_root: &log_root,
@@ -1171,10 +1196,11 @@ mod committed_work {
     }
 
     fn run_measure(wt: &Path, log_root: &Path) -> Record {
+        let targets = vec![TARGET.to_string()];
         let t = Task {
             bead: "committed-work-spec",
             krate: "demo",
-            target: Some(TARGET),
+            targets: &targets,
             creates: false,
             base_clippy: 0,
             log_root,
@@ -1513,10 +1539,11 @@ mod deleted_list {
     }
 
     fn run_measure(wt: &Path, log_root: &Path) -> Record {
+        let targets = vec![TARGET.to_string()];
         let t = Task {
             bead: "deleted-list-spec",
             krate: "demo",
-            target: Some(TARGET),
+            targets: &targets,
             creates: false,
             base_clippy: 0,
             log_root,
@@ -1748,10 +1775,11 @@ mod deleted_list {
         let tmp = scratch("refused-scope");
         let repo = new_repo(&tmp, "r");
         fs::remove_dir_all(repo.join(".git")).expect("prune the admin directory");
+        let targets = vec![TARGET.to_string()];
         let t = Task {
             bead: "deleted-list-spec",
             krate: "demo",
-            target: Some(TARGET),
+            targets: &targets,
             creates: true,
             base_clippy: 0,
             log_root: &tmp.join("logs"),
