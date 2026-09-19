@@ -1018,10 +1018,9 @@ mod tests {
             "exit 2 must print nothing on stdout"
         );
 
-        let ambiguous = TempSpec::new(
-            "c4_ambig",
-            "<!-- fb:creates a.rs -->\n<!-- fb:modifies b.rs -->\n",
-        );
+        // Two markers are two deliverables now; a REFUSED marker is what still cannot be
+        // placed and still returns 3.
+        let ambiguous = TempSpec::new("c4_ambig", "<!-- fb:deletes gone.rs -->\n");
         let (rc_ambig, stdout_ambig) =
             run_decl_from_args(&[ambiguous.path().to_str().unwrap()]).expect("run ambiguous");
         assert_eq!(rc_ambig, 3);

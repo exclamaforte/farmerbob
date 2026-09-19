@@ -45,6 +45,39 @@ pub enum NoDeclaration {
 ///
 /// Returns `Err(NoDeclaration)` if no declaration is found, if multiple declarations
 /// create ambiguity, or if a marker was refused by precondition validation.
+/// Every deliverable a spec declares, in the order written.
+///
+/// A task may declare several files. [`declared`] answers only for the single-deliverable
+/// case and reports two markers as [`NoDeclaration::Ambiguous`], which was correct while a
+/// task could declare exactly one file and is not any more: `scope::Declared` has held a
+/// SET since 2026-09-19.
+///
+/// A spec with two markers is two deliverables here, not an error. `Ambiguous` survives in
+/// `declared` for callers that genuinely need one path and must refuse rather than pick.
+///
+/// Returns `Err(NoDeclaration::Absent)` when nothing is declared, and propagates a refused
+/// marker unchanged -- a malformed declaration is still malformed however many there are.
+pub fn declared_all(spec: &str) -> Result<Vec<Declaration>, NoDeclaration> {
+    let rejections = precondition::rejections(spec);
+    if let Some((line, rejected)) = rejections.first() {
+        return Err(NoDeclaration::Refused {
+            line: *line as usize,
+            reason: reason_for(*rejected),
+        });
+    }
+    let decls = precondition::declarations(spec);
+    if decls.is_empty() {
+        return Err(NoDeclaration::Absent);
+    }
+    Ok(decls
+        .iter()
+        .map(|d| match d.requirement {
+            Requirement::Absent => Declaration::Creates(d.path.clone()),
+            Requirement::Present => Declaration::Modifies(d.path.clone()),
+        })
+        .collect())
+}
+
 pub fn declared(spec: &str) -> Result<Declaration, NoDeclaration> {
     let rejections = precondition::rejections(spec);
     if let Some((line, rejected)) = rejections.first() {

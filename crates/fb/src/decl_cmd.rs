@@ -48,21 +48,33 @@ pub fn run(spec_path: &Path, format: Format, out: &mut dyn Write) -> i32 {
         Ok(spec) => spec,
         Err(_) => return 4,
     };
-    let declaration = match target_decl::declared(&spec) {
-        Ok(declaration) => declaration,
+    // declared_all, not declared: a task may declare several files, and `declared` reports
+    // that as Ambiguous. It returned 3 and printed NOTHING for the first two-marker spec
+    // written, and `fb_target` turned that into an empty string with exit 0 -- a silent
+    // failure that would have dispatched a task whose target nothing could resolve.
+    let declarations = match target_decl::declared_all(&spec) {
+        Ok(declarations) => declarations,
         Err(NoDeclaration::Absent) => return 2,
         Err(NoDeclaration::Ambiguous(_)) | Err(NoDeclaration::Refused { .. }) => return 3,
     };
-    let verb = match &declaration {
-        Declaration::Creates(_) => "creates",
-        Declaration::Modifies(_) => "modifies",
-    };
-    let path = target_decl::path(&declaration);
-    let line = match format {
-        Format::Line => format!("{verb} {path}"),
-        Format::PathOnly => path.to_string(),
-        Format::VerbOnly => verb.to_string(),
-    };
+    // One line per declaration, in the order written. A single-deliverable spec still
+    // prints exactly one line, so every existing caller reads what it always did.
+    let line = declarations
+        .iter()
+        .map(|declaration| {
+            let verb = match declaration {
+                Declaration::Creates(_) => "creates",
+                Declaration::Modifies(_) => "modifies",
+            };
+            let path = target_decl::path(declaration);
+            match format {
+                Format::Line => format!("{verb} {path}"),
+                Format::PathOnly => path.to_string(),
+                Format::VerbOnly => verb.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     // Every non-zero return above happens before anything is written, so the
     // caller sees either one line and 0, or nothing and non-zero. A failed
     // write (a closed pipe, say) is the caller's condition to observe, not a
@@ -106,8 +118,10 @@ mod tests {
     /// The exit code the pinned contract assigns to what `declared` reports:
     /// `Ok` is 0, `Absent` is 2, `Ambiguous` or `Refused` is 3. Clause 10's
     /// oracle, so the agreement is asserted without re-asserting the parse.
+    // declared_all, because that is what `run` calls now. Agreement with `declared` would
+    // reassert the one-file contract this command no longer has.
     fn code_of(contents: &str) -> i32 {
-        match target_decl::declared(contents) {
+        match target_decl::declared_all(contents) {
             Ok(_) => 0,
             Err(target_decl::NoDeclaration::Absent) => 2,
             Err(_) => 3,
@@ -167,14 +181,21 @@ mod tests {
     /// Clause 7: this differs from `clause_1_one_marker_line_format` only in
     /// the number of markers.
     #[test]
+    /// Two markers are two deliverables, in the order written, and each keeps its own verb.
+    /// This asserted 3-and-print-nothing while a task could declare exactly one file. It
+    /// cannot any more, and the silent empty it produced would have dispatched a task whose
+    /// target nothing could resolve.
     fn clause_6_two_markers_outside_fences() {
         let spec = TempSpec::new(
             "clause6",
             "<!-- fb:creates crates/a/b.rs -->\n<!-- fb:modifies crates/c/d.rs -->\n",
         );
         let mut out = Vec::new();
-        assert_eq!(run(spec.path(), Format::Line, &mut out), 3);
-        assert!(out.is_empty());
+        assert_eq!(run(spec.path(), Format::Line, &mut out), 0);
+        assert_eq!(
+            String::from_utf8_lossy(&out).trim(),
+            "creates crates/a/b.rs\nmodifies crates/c/d.rs"
+        );
     }
 
     /// Clause 8: the same call shape must give different codes for a missing
@@ -201,10 +222,9 @@ mod tests {
     #[test]
     fn clause_9_every_non_zero_code_writes_nothing() {
         let none = TempSpec::new("clause9_none", "no marker\n");
-        let ambiguous = TempSpec::new(
-            "clause9_two",
-            "<!-- fb:creates a.rs -->\n<!-- fb:modifies b.rs -->\n",
-        );
+        // A REFUSED marker is the remaining 3: two markers are now two deliverables, so a
+        // malformed one is what is left that cannot be placed.
+        let ambiguous = TempSpec::new("clause9_two", "<!-- fb:deletes gone.rs -->\n");
         let missing =
             std::env::temp_dir().join(format!("fb_decl_cmd_{}_clause9.md", std::process::id()));
 
@@ -244,7 +264,15 @@ mod tests {
             if code == 0 {
                 let text = std::str::from_utf8(&out).unwrap();
                 assert!(text.ends_with('\n'), "input {i}: one trailing newline");
-                assert_eq!(text.lines().count(), 1, "input {i}: exactly one line");
+                // One line PER DECLARATION. A task may declare several files, so a fixed
+                // count of one would reassert the contract this command no longer has.
+                assert_eq!(
+                    text.lines().count(),
+                    target_decl::declared_all(contents)
+                        .map(|d| d.len())
+                        .unwrap_or(0),
+                    "input {i}: one line per declaration"
+                );
             } else {
                 assert!(out.is_empty(), "input {i}: exit {code} writes nothing");
             }
@@ -268,14 +296,17 @@ mod tests {
     }
 
     #[test]
-    fn boundary_three_markers_return_3_like_two() {
+    fn three_markers_are_three_deliverables() {
         let spec = TempSpec::new(
             "boundary_three",
             "<!-- fb:creates a.rs -->\n<!-- fb:modifies b.rs -->\n<!-- fb:creates c.rs -->\n",
         );
         let mut out = Vec::new();
-        assert_eq!(run(spec.path(), Format::Line, &mut out), 3);
-        assert!(out.is_empty());
+        assert_eq!(run(spec.path(), Format::Line, &mut out), 0);
+        assert_eq!(
+            String::from_utf8_lossy(&out).trim(),
+            "creates a.rs\nmodifies b.rs\ncreates c.rs"
+        );
     }
 
     /// Confirmed against `target_decl`: a marker with no path is silence

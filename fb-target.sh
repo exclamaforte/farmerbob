@@ -59,16 +59,31 @@ fb_declaration() {
   fb_declaration_in "$s"
 }
 
+# One path per declared deliverable, one per line.
+#
+# `fb decl` prints one "<verb> <path>" line per declaration, and a task may declare several
+# files since 2026-09-19. Stripping the verb with ${d#* } on the WHOLE multi-line string
+# removes it from the first line only, so a two-file spec printed
+#
+#     crates/fb/src/score.rs
+#     modifies crates/fb/src/scope_cmd.rs
+#
+# -- a path and a non-path, with exit 0. Strip per line.
 fb_target() {
   local d; d=$(fb_declaration "${1:?task}") || return 1
   [ -n "$d" ] || return 0
-  printf '%s\n' "${d#* }"
+  printf '%s\n' "$d" | while IFS= read -r line; do
+    [ -n "$line" ] && printf '%s\n' "${line#* }"
+  done
 }
 
+# The verb of the FIRST declaration. Callers that branch on creates/modifies want one answer;
+# a task declaring both verbs is not something any of them model yet, and guessing would be
+# worse than the single answer they already assume.
 fb_target_verb() {
   local d; d=$(fb_declaration "${1:?task}") || return 1
   [ -n "$d" ] || return 0
-  printf '%s\n' "${d%% *}"
+  printf '%s\n' "${d%%$'\n'*}" | { read -r line; printf '%s\n' "${line%% *}"; }
 }
 
 # Why the target could not be read. The two causes need different fixes and reporting them
