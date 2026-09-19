@@ -2157,8 +2157,33 @@ struct TempDir {
 }
 
 impl TempDir {
+    /// DISK-BACKED, not `std::env::temp_dir()`.
+    ///
+    /// `/tmp` on this machine is a 16G **tmpfs**, so every byte a cell's `target/` writes is
+    /// held in RAM. crossx builds N^2 of them. A four-arm field on `farmerbob-core` filled it
+    /// and the matrix died with
+    ///
+    ///     failed to write .../target/debug/incremental/... : Disk quota exceeded (os error 122)
+    ///
+    /// recorded, correctly, as an instrument fault -- "the matrix was lost to the harness, not
+    /// to any candidate". It also explains four pipeline kills attributed to low memory: the
+    /// build artefacts WERE the memory.
+    ///
+    /// The scratch now lives beside the worktrees on disk, where there is 696G, and honours an
+    /// explicitly set `TMPDIR` for anyone who wants the old behaviour. Falling back to
+    /// `temp_dir()` when the state directory cannot be created keeps this from being a new way
+    /// for crossx to fail outright.
     fn new() -> std::io::Result<Self> {
-        let base = std::env::temp_dir();
+        let base = match std::env::var_os("TMPDIR") {
+            Some(t) => PathBuf::from(t),
+            None => {
+                let scratch = crate::paths::state().join("scratch");
+                match std::fs::create_dir_all(&scratch) {
+                    Ok(()) => scratch,
+                    Err(_) => std::env::temp_dir(),
+                }
+            }
+        };
         let unique = format!("fb-crossx-{}-{}", std::process::id(), unique_counter());
         let path = base.join(unique);
         std::fs::create_dir_all(&path)?;
