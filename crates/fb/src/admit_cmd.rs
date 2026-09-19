@@ -7,7 +7,7 @@
 use farmerbob_core::measurement::Measurement;
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One row of the matrix: a task, its crate, and the arms to run it on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,9 +200,9 @@ pub fn run(matrix: &Path) -> i32 {
         }
     };
     println!("queued {} runs", queue.len());
-    // Dispatch itself is still fb-dispatch.sh until that port lands; the admission half --
-    // slots, headroom and the per-provider cap -- is this command.
-    let dispatch = repo.join("fb-dispatch.sh");
+    // Dispatch is `fb dispatch`, spawned as a child so several can run at once under the
+    // slot and provider caps.
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("fb"));
     let mut children: Vec<(String, std::process::Child)> = Vec::new();
     for run in &queue {
         let provider = provider_of(&registry, &run.arm);
@@ -227,8 +227,8 @@ pub fn run(matrix: &Path) -> i32 {
             children.len()
         );
         let spec = format!(".fb/prompts/{}.md", run.task);
-        match std::process::Command::new(&dispatch)
-            .args([&run.arm, &run.task, &spec, &run.krate])
+        match std::process::Command::new(&exe)
+            .args(["dispatch", &run.arm, &run.task, &spec, &run.krate])
             .current_dir(&repo)
             .env("FB_MEM_MAX", format!("{hard_mb}M"))
             .spawn()

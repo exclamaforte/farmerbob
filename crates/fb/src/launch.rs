@@ -140,12 +140,36 @@ pub fn model_for(arm: &str) -> String {
 /// `Stdio::null()` on both streams and wrote a zero-byte log beside the prompt, so a critic
 /// that crashed on startup and one that ran and chose to write nothing were byte-identical.
 /// Three runs could not be diagnosed at all before that was fixed.
+/// Resource limits for a confined run. `None` runs unconfined, which is what a critic got
+/// until this port -- no scope, no memory cap, no timeout (bead farmerbob-vi7).
+pub struct Scope<'a> {
+    /// The systemd unit name. Must be unique per run.
+    pub unit: &'a str,
+    /// Hard memory cap, e.g. "3G".
+    pub memory_max: String,
+    /// Seconds before systemd terminates the whole scope -- which reaches the agent inside
+    /// bwrap and everything it spawned, where a `timeout` wrapper would not.
+    pub runtime_max_s: u64,
+}
+
 pub fn launch(
     arm: &str,
     prompt: &str,
     wd: &Path,
     continue_session: bool,
     env: &[(&str, PathBuf)],
+) -> Measurement<String> {
+    launch_in(arm, prompt, wd, continue_session, env, None)
+}
+
+/// Launch, optionally inside a systemd scope.
+pub fn launch_in(
+    arm: &str,
+    prompt: &str,
+    wd: &Path,
+    continue_session: bool,
+    env: &[(&str, PathBuf)],
+    scope: Option<Scope<'_>>,
 ) -> Measurement<String> {
     let model = model_for(arm);
     let argv = match argv_for(arm, &model, wd, prompt, continue_session) {
@@ -158,7 +182,27 @@ pub fn launch(
     };
     // ifm-* arms authenticate from a secrets file the launcher reads itself; every other
     // family authenticates from a credential the isolated environment must carry.
-    let mut cmd = Command::new(isolated());
+    let mut cmd = match &scope {
+        Some(s) => {
+            let mut c = Command::new("systemd-run");
+            c.args([
+                "--user",
+                "--scope",
+                "--quiet",
+                &format!("--unit={}", s.unit),
+                "-p",
+                &format!("MemoryMax={}", s.memory_max),
+                "-p",
+                &format!("RuntimeMaxSec={}", s.runtime_max_s),
+                "-p",
+                "TasksMax=2048",
+                "--",
+            ]);
+            c.arg(isolated());
+            c
+        }
+        None => Command::new(isolated()),
+    };
     cmd.arg(wd).args(&argv).current_dir(wd);
     for (k, v) in env {
         cmd.env(k, v);

@@ -13,6 +13,7 @@ mod crossx;
 mod decl_cmd;
 mod defects;
 mod differential;
+mod dispatch_cmd;
 mod doctor;
 mod eligible;
 mod escalate;
@@ -125,6 +126,14 @@ enum Command {
         /// Decide even when no critique exists. Off by default, deliberately.
         #[arg(long)]
         allow_missing_critique: bool,
+    },
+    /// Run one arm on one task, confined.
+    Dispatch {
+        arm: String,
+        task: String,
+        prompt: String,
+        #[arg(default_value = "farmerbob-core")]
+        krate: String,
     },
     /// Claim a queued matrix and run it, detached by default.
     Wave {
@@ -903,6 +912,12 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Dispatch {
+            arm,
+            task,
+            prompt,
+            krate,
+        }) => dispatch_cmd::run(&arm, &task, std::path::Path::new(&prompt), &krate),
         Some(Command::Wave { matrix, foreground }) => {
             wave_cmd::run(std::path::Path::new(&matrix), !foreground)
         }
