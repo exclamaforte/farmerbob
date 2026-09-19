@@ -34,17 +34,23 @@ fb_spec() { echo "/home/gabe/Documents/farmerbob/.fb/prompts/$1.md"; }
 # declaration; every spec about the marker format contains several.
 #
 # Takes a FILE, so the same rule can be applied to a prompt that is not in .fb/prompts.
+FB_BIN="${FB_BIN:-/home/gabe/Documents/farmerbob/target/debug/fb}"
+
 fb_declaration_in() {
-  awk '
-    /^[[:space:]]*```/ { fence = 1 - fence; next }
-    fence { next }
-    match($0, /<!-- fb:(creates|modifies) [^ ]+ -->/) {
-      seg = substr($0, RSTART, RLENGTH)
-      split(seg, a, " ")
-      sub(/^fb:/, "", a[2])
-      print a[2], a[3]
-      exit
-    }' "${1:?file}" 2>/dev/null
+  local f="${1:?file}"
+  # `fb decl` is THE reader: crates/fb/src/decl_cmd.rs over
+  # farmerbob_core::target_decl over farmerbob_core::precondition. Exit 0 means one
+  # declaration; 2, 3 and 4 mean none, ambiguous and unreadable, and all three print
+  # nothing, which is what every caller here already treats as "no target".
+  if [ -x "$FB_BIN" ]; then
+    "$FB_BIN" decl "$f" 2>/dev/null
+    return 0
+  fi
+  # The binary is not built. Say so rather than silently answering with a worse
+  # parser: a fallback that disagrees with the real reader is how this marker came
+  # to have three readers in the first place.
+  echo "fb-target: $FB_BIN is not built; cannot read a declaration" >&2
+  return 1
 }
 
 fb_declaration() {
