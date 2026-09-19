@@ -55,12 +55,13 @@ pub fn assess(r: &Raw) -> Line {
 /// candidate's line, so an operator can see which candidates were fine.
 ///
 /// The field code is 0 when the field is rankable -- at least two code-0
-/// candidates, which is what [`verify_plan::rankable`] measures -- and
-/// non-zero otherwise: the worst code in the field, floored at 1, so an empty
-/// field or a lone measurable candidate is refused rather than silently
-/// scoring 0. (The spec's doc formula, "worst of the field, or 0 when
-/// rankable", contradicts its clause 9 at exactly that candidate; clause 9
-/// and `rankable` win.)
+/// candidates, which is what [`verify_plan::rankable`] measures -- and every
+/// line is measurable. It is 4, NOT APPLICABLE, when fewer than two
+/// candidates are measurable and every line is still measurable: an empty
+/// field or a lone measurable one is refused without meaning failed. Any
+/// other field takes the worst code in it -- 1 failed, 2 no-op, 3 cut --
+/// because a line that says what happened is the more specific fact; that
+/// includes rankable fields carrying a failed, no-op or cut line.
 pub fn assess_field(raws: &[Raw]) -> (Vec<Line>, i32) {
     let mut lines = Vec::with_capacity(raws.len());
     let mut fates = Vec::with_capacity(raws.len());
@@ -72,10 +73,14 @@ pub fn assess_field(raws: &[Raw]) -> (Vec<Line>, i32) {
 
     let tally = verify_plan::field(&fates);
     let worst = lines.iter().map(|line| line.code).max().unwrap_or(0);
-    let code = if verify_plan::rankable(&tally) {
+    let code = if worst > 0 {
+        worst
+    } else if verify_plan::rankable(&tally) {
         0
     } else {
-        worst.max(1)
+        // Every line is measurable and there are fewer than two of them:
+        // nothing failed, and one candidate is not a comparison.
+        4
     };
     (lines, code)
 }
@@ -280,6 +285,78 @@ mod tests {
     }
 
     #[test]
+    fn one_measurable_field_is_not_applicable_its_duplicate_is_rankable() {
+        // Clauses 1 and 2 from ONE Raw: alone the field is NOT APPLICABLE,
+        // duplicated it is rankable -- they differ only in count. Clause 7
+        // rides along: the lone line is still returned, naming its arm.
+        let r = raw("alpha", true, Some(true), PASSING, false);
+        let (lines, code) = assess_field(std::slice::from_ref(&r));
+        assert_eq!(code, 4);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].code, 0);
+        assert!(lines[0].text.contains("alpha"));
+
+        let (_, code) = assess_field(&[r.clone(), r]);
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn a_failed_line_outranks_unrankability() {
+        // Clause 5: one measurable plus one failed -- the failed code, not 4.
+        // Something genuinely went wrong, and that outranks unrankability.
+        let raws = [
+            raw("alpha", true, Some(true), PASSING, false),
+            raw("beta", true, Some(false), FAILING, false),
+        ];
+        let (lines, code) = assess_field(&raws);
+        assert_eq!(code, 1);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].code, 0);
+        assert_eq!(lines[1].code, 1);
+    }
+
+    #[test]
+    fn a_cut_line_outranks_rankability() {
+        // Clause 6: two measurable plus one cut -- the cut code.
+        let raws = [
+            raw("alpha", true, Some(true), PASSING, false),
+            raw("beta", true, Some(true), PASSING, false),
+            raw("gamma", true, Some(true), PASSING, true),
+        ];
+        let (lines, code) = assess_field(&raws);
+        assert_eq!(code, 3);
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn a_no_op_line_outranks_not_applicable() {
+        // Boundary: one measurable, one no-op -- the no-op code, not 4. A
+        // no-op is a statement about an arm; unrankability is not.
+        let raws = [
+            raw("alpha", true, Some(true), PASSING, false),
+            raw("beta", false, None, "", false),
+        ];
+        let (lines, code) = assess_field(&raws);
+        assert_eq!(code, 2);
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn an_all_cut_field_is_the_cut_code_not_not_applicable() {
+        // Boundary: three lines, none measurable, all cut -- the cut code,
+        // not 4. Every line says something happened; unrankability is the
+        // less specific fact.
+        let raws = [
+            raw("alpha", true, Some(true), PASSING, true),
+            raw("beta", true, Some(false), FAILING, true),
+            raw("gamma", false, None, "", true),
+        ];
+        let (lines, code) = assess_field(&raws);
+        assert_eq!(code, 3);
+        assert!(lines.iter().all(|l| l.code == 3));
+    }
+
+    #[test]
     fn rankability_is_two_measurable_candidates() {
         // Clause 9: one measurable is refused, two are rankable, and a field
         // that looks like two -- one measurable plus one cut -- is still one.
@@ -334,10 +411,11 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_field_is_empty_and_not_rankable() {
-        // Boundary at zero, pinned together: no lines, non-zero code.
+    fn an_empty_field_is_not_applicable_with_no_lines() {
+        // Clause 4: zero lines return 4 -- an empty field is not a failed
+        // field -- and the line vector is empty.
         let (lines, code) = assess_field(&[]);
         assert!(lines.is_empty());
-        assert_ne!(code, 0);
+        assert_eq!(code, 4);
     }
 }

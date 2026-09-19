@@ -1,0 +1,26 @@
+MERGED glm-53-flash
+Single arm, 89 lines, 5 tests, clippy 0.
+
+RECORDED NO-TESTS BY THE GATE, AND THAT WAS WRONG. The arm wrote five tests named
+for the spec's clauses. Its final cargo run had ONE failing test -- a test that
+passes 8 of 8 on re-run, 5 at HEAD and 3 in this worktree -- so no "test result:
+ok" line appeared and the dispatch-time counter recorded 0. Filed as a separate
+P1: an absent line is Missing, not zero, and one failing test is TESTS-FAIL, not
+NO-TESTS.
+
+Probed all six field shapes:
+
+  one measurable            code=4  lines=1     not applicable, line still shown
+  two measurable            code=0  lines=2
+  zero lines                code=4  lines=0
+  one measurable + failed   code=1  lines=2     a real failure outranks it
+  one measurable + no-op    code=2  lines=2
+  all cut                   code=3  lines=2     not 4
+
+Measured after merge:
+
+  fb verify sem-port      rc=4  "codex-luna: measurable, 547 tests passed"
+  fb verify launcher-agy  rc=2  "glm-53-flash: no-op, the arm wrote no deliverable"
+
+so a one-arm field no longer reports as failed, and a genuine no-op still does.
+Closes farmerbob-qo7l.

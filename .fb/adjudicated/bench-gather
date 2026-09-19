@@ -1,0 +1,9 @@
+MERGED gemini-38-flash
+Single arm, 456 lines, clippy 0.
+
+Reads a task directory's manifest.json into the TaskManifest run_bench needs, runs
+it, and renders the Outcome. The benchmark chain now has every layer:
+bench_gather -> run_bench -> trial_plan / bench_read -> task_contract::score ->
+gate_kind.
+
+Still no `fb bench` subcommand, so farmerbob-p172 stays open.
