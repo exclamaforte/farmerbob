@@ -1,0 +1,28 @@
+MERGED glm-53-flash
+3/3 PASS. Decided by a critique, not the metrics: glm-53-flash, reviewing
+codex-luna's 103-line suite, found that all three of its tests call measure_base
+directly and none executes measure() -- "Reintroduce the bug at the call sites --
+revert the three base.as_deref() hunks to literal "HEAD" -- and the suite stays
+green while committed work scores zero again." Clauses 1-3 and 5 and both named
+boundaries had no test at all. That is the historic defect at the place it
+actually lived (farmerbob-qv6u: the scorer was blind to committed work, and
+twelve candidates that wrote working implementations were recorded as no-ops).
+
+gemini-38-flash, reviewing glm-53-flash, confirmed the converse: its suite drives
+measure() end-to-end over multi-crate fixtures and "correctly pairs clauses 1 and
+2 by advancing master past the fork point, proving that diffing against
+measure_base attributes only the arm's own work rather than rival merged commits
+on master."
+
+codex-luna, reviewing gemini-38-flash, found no behavioural difference.
+
+Merged glm-53-flash. Verified at HEAD: measure_base gates on rev-parse --git-dir
+so a refusal is the only route to None, falls back to "HEAD" when there is no
+common ancestor, and the base is threaded through numstat, name-only and
+--diff-filter=D alike. The merged suite drives measure() across clean-tree,
+uncommitted, committed, both-counted-once, unreadable-is-Missing-never-zero, and
+a committed change in and out of scope.
+
+Recorded late: this landed in an earlier session and no .fb/adjudicated record
+was written, so the board demanded adjudication of a task already adjudicated --
+the same shape as farmerbob-13p, one layer up.

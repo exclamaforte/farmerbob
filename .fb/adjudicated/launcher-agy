@@ -1,0 +1,19 @@
+MERGED or-nemotron-ultra
+2/3 PASS. Decided by a critique, not the metrics: the two passing arms were within
+three lines of each other and the crossx matrix showed no off-diagonal failure at
+all. glm-53-flash found by reading that or-ling-30-flash's suite panics unless the
+absence is exactly Absent::NothingToMeasure, while the spec pins only
+Measurement::Missing plus what the reason must SAY. A conforming rival returning
+InstrumentFailed with a naming reason fails that suite, forfeiting the
+cross-examination signal on clauses 4 and 5 -- the clauses that carry the task.
+The matrix could not see it: both arms happened to choose the same variant.
+
+or-nemotron-ultra matches every reason-bearing variant and extracts the string,
+which is what the spec actually pins.
+
+CONVERGENT FINDING, 2 of 2 critics, filed as farmerbob-lzae: the change reaches no
+production code. fb/src/pareto.rs::launcher_for keeps a private duplicate of the
+mapping that still returns Unknown for agy and opencode, and sum_run_logs
+short-circuits Unknown before tokens_from_log is called. That is the spec's fault
+-- it declared cost.rs and forbade touching any other file, so no arm could have
+wired it without failing the scope gate.
