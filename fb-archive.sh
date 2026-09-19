@@ -17,9 +17,15 @@
 #
 #   fb-archive.sh [worktree-name ...]     default: every worktree on disk
 set -uo pipefail
-REPO=/home/gabe/Documents/farmerbob
-WT_ROOT="$HOME/.local/share/farmerbob/worktrees"
-ARCHIVE="$HOME/.local/share/farmerbob/archive"
+# Derived, not hardcoded. Twenty-five scripts in this harness write the literal
+# /home/gabe/Documents/farmerbob, which is why farmerbob can only be pointed at itself
+# (bead: target-repo). This one does not add to that count: FB_REPO wins, otherwise the
+# git repository this script lives in.
+REPO="${FB_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && git rev-parse --show-toplevel)}"
+[ -n "$REPO" ] || { echo "fb-archive: cannot locate the repository; set FB_REPO" >&2; exit 1; }
+FB_HOME="${FB_HOME:-$HOME/.local/share/farmerbob}"
+WT_ROOT="${FB_WT_ROOT:-$FB_HOME/worktrees}"
+ARCHIVE="${FB_ARCHIVE:-$FB_HOME/archive}"
 mkdir -p "$ARCHIVE"
 
 archive_one() {
