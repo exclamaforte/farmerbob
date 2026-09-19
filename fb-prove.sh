@@ -36,6 +36,20 @@ SLOTS=${FB_SLOTS:-5}
 OUT="$LOGS/$BEAD.proved.json"
 mkdir -p "$LOGS/proofs/$BEAD"
 
+# NO CLAIMS FILE IS NOT APPLICABLE, NOT A CRASH.
+#
+# Every python3 heredoc below opens $BEAD.claims.json directly. When promote wrote none --
+# which is the normal state for a one-arm task, where nobody could cross-review -- this script
+# printed an unhandled FileNotFoundError traceback and carried on to print "0 implementations
+# have claims against them", so the failure looked like a result.
+#
+# Exit 4, matching fb crossx, fb critique and fb promote: nothing went wrong and there is
+# nothing to prove.  (bead farmerbob-9ef2)
+if [ ! -s "$LOGS/$BEAD.claims.json" ]; then
+  echo "prove: n/a, no claims file -- nothing was promoted, so there is nothing to prove"
+  exit 4
+fi
+
 # group testable claims by the implementation they are about
 mapfile -t SUBJECTS < <(python3 -c "
 import json,sys

@@ -223,13 +223,31 @@ run_critique() {
   esac
 }
 
+# PROVE, same shape: 4 means there is no claims file, so nothing was promoted and there is
+# nothing to prove. It used to print an unhandled Python traceback and then a confident
+# "0 implementations have claims against them", which read as a result.
+run_prove() {
+  local artefact="$LOGS/$T.proved.json" sig now
+  sig="$artefact.field"; now=$(field)
+  if have_artefact "$artefact" && [ "$now" = "$(cat "$sig" 2>/dev/null)" ]; then
+    echo "  prove: already done"; return 0
+  fi
+  echo "  prove: running"
+  bash ./fb-prove.sh "$T" "$CRATE" "$TARGET" >> "$LOGS/$T.pipeline.log" 2>&1
+  case "$?" in
+    0) echo "  prove: ok"; printf '%s' "$now" > "$sig" ;;
+    4) echo "  prove: n/a, nothing was promoted -- no claims to execute" ;;
+    *) echo "  prove: FAILED (see $LOGS/$T.pipeline.log)"; return 1 ;;
+  esac
+}
+
 # score is keyed on the CANDIDATES ON DISK; everything downstream on who PASSED.
 stage score    "$LOGS/$T.score.json"    wtfield bash ./fb-score.sh   "$T" "$CRATE"
 run_differential || FAILED_STAGES="$FAILED_STAGES differential"
 run_crossx || FAILED_STAGES="$FAILED_STAGES crossx"
 run_critique || FAILED_STAGES="$FAILED_STAGES critique"
 stage promote  "$LOGS/$T.promoted.json" field   bash ./fb-promote.sh "$T" "$CRATE" "$TARGET"
-stage prove    "$LOGS/$T.proved.json"   field   bash ./fb-prove.sh   "$T" "$CRATE" "$TARGET"
+run_prove || FAILED_STAGES="$FAILED_STAGES prove"
 
 # ESCALATE. A confirmed finding should sharpen the gate for every future candidate on this
 # task, not settle one adjudication and vanish. fb-prove already wrote the test and ran it
