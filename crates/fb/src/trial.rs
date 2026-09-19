@@ -113,6 +113,29 @@ impl Trial {
         }
     }
 
+    /// `fb crossx` answers with FOUR codes and, like differential, two of them
+    /// are not failures: `4` means FEWER THAN TWO CANDIDATES, which under
+    /// one-arm-per-task is the expected state and not a fault in anything. It
+    /// used to return `1` for that and for a usage error alike, so a trial of a
+    /// single-arm task halted here and four of its eight stages were
+    /// unreachable.  (bead farmerbob-9ef2)
+    fn crossx(&self) -> bool {
+        eprintln!("  $ fb crossx {} {} {}", self.task, self.krate, self.target);
+        let code = Command::new(format!("{REPO}/target/debug/fb"))
+            .args(["crossx", &self.task, "--crate", &self.krate, &self.target])
+            .current_dir(REPO)
+            .status()
+            .ok()
+            .and_then(|s| s.code());
+        match code {
+            Some(0) => { eprintln!("  matrix complete"); true }
+            Some(4) => { eprintln!("  n/a, fewer than two candidates -- no matrix to build"); true }
+            Some(3) => { eprintln!("  VOID: the diagonal invariant failed; scores deliberately not written"); false }
+            Some(1) => { eprintln!("  usage error"); false }
+            other => { eprintln!("  unexpected exit {other:?}"); false }
+        }
+    }
+
     fn dispatch(&self) -> bool {
         // one matrix line; fb-admit applies memory slots and the per-vendor concurrency cap
         let matrix = format!("{REPO}/.fb/trial-{}.tsv", self.task);
@@ -171,9 +194,7 @@ impl Trial {
                 Stage::Dispatch => self.dispatch(),
                 Stage::Score => self.sh("fb-score.sh", &[&self.task, &self.krate]),
                 Stage::Differential => self.differential(),
-                Stage::Crossx => {
-                    self.sh("fb-crossx.sh", &[&self.task, &self.krate, &self.target])
-                }
+                Stage::Crossx => self.crossx(),
                 Stage::Critique => {
                     self.sh("fb-critique.sh", &[&self.task, &self.krate, &self.target])
                 }

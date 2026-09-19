@@ -1,0 +1,20 @@
+MERGED glm-53-flash
+Single arm, 124 lines, 5 tests, clippy 0.
+
+fb crossx returns 4 for "fewer than two candidates" -- not applicable -- where it
+returned 1 for that and for a usage error alike. Every clause pinned, including
+the discriminating one: 4 and 1 must DIFFER, tested in one case that produces
+both, because an implementation reusing 1 passes the zero- and one-candidate
+clauses whenever they only assert non-zero. Two candidates do not take the
+not-applicable path.
+
+Wired at merge, by me: fb trial and fb-pipeline.sh both treat 4 as N/A and
+continue. Both had the invocation wrong first -- the CLI is
+`fb crossx <TASK> --crate <C> <TARGET>`, not three positionals -- which showed up
+as a usage error, and I only caught it because the pipeline still said FAILED.
+Verified after: `fb crossx` alone exits 4, and the pipeline prints
+"crossx: n/a, fewer than two candidates -- no matrix to build" and carries on.
+
+farmerbob-9ef2 stays OPEN: critique, promote and prove have the same shape --
+fb-critique.sh exits 1 on "need >= 2 to cross-review" -- so a one-arm pipeline
+still halts three stages later. That is the remainder.

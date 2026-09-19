@@ -179,10 +179,35 @@ stage() { # stage <name> <artefact> <keyfn> <command...>
   run_stage "$@" || FAILED_STAGES="$FAILED_STAGES $1"
 }
 
+# CROSSX, whose codes are four and two of which are not failures.
+#
+# 4 means FEWER THAN TWO CANDIDATES. Under one-arm-per-task that is the expected state, not a
+# fault: there is no matrix to build and nothing went wrong. It used to return 1 for that and
+# for a usage error alike, so every single-arm task's pipeline halted here and the three stages
+# after it never ran.  (bead farmerbob-9ef2)
+#
+# 3 is the diagonal invariant failing, which IS a failure: a suite that cannot run against the
+# code it shipped with is a grafting fault, and scores are deliberately not written.
+run_crossx() {
+  local artefact="$LOGS/$T.crossx.json" sig now
+  sig="$artefact.field"; now=$(field)
+  if [ -s "$artefact" ] && [ "$now" = "$(cat "$sig" 2>/dev/null)" ]; then
+    echo "  crossx: already done"; return 0
+  fi
+  echo "  crossx: running"
+  ./target/debug/fb crossx "$T" --crate "$CRATE" "$TARGET" >> "$LOGS/$T.pipeline.log" 2>&1
+  case "$?" in
+    0) echo "  crossx: ok"; printf '%s' "$now" > "$sig" ;;
+    4) echo "  crossx: n/a, fewer than two candidates -- no matrix to build" ;;
+    3) echo "  crossx: VOID -- the diagonal invariant failed, scores deliberately not written"; return 1 ;;
+    *) echo "  crossx: FAILED (see $LOGS/$T.pipeline.log)"; return 1 ;;
+  esac
+}
+
 # score is keyed on the CANDIDATES ON DISK; everything downstream on who PASSED.
 stage score    "$LOGS/$T.score.json"    wtfield bash ./fb-score.sh   "$T" "$CRATE"
 run_differential || FAILED_STAGES="$FAILED_STAGES differential"
-stage crossx   "$LOGS/$T.crossx.json"   field   bash ./fb-crossx.sh  "$T" "$CRATE" "$TARGET"
+run_crossx || FAILED_STAGES="$FAILED_STAGES crossx"
 stage critique "$LOGS/critiques/$T"     field   bash ./fb-critique.sh "$T" "$CRATE" "$TARGET"
 stage promote  "$LOGS/$T.promoted.json" field   bash ./fb-promote.sh "$T" "$CRATE" "$TARGET"
 stage prove    "$LOGS/$T.proved.json"   field   bash ./fb-prove.sh   "$T" "$CRATE" "$TARGET"

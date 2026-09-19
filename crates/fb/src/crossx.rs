@@ -52,11 +52,17 @@ fn logs_dir() -> PathBuf {
 /// Public entry point, mirroring the script's positional parameters in order:
 /// `bead` (`$1`), `krate` (`$2`, default `farmerbob-core`), `file` (`$3`).
 ///
-/// Returns the process exit code exactly as the script does: `0` on a complete,
-/// fully-passing matrix written to `<logs>/<bead>.crossx.json`; `1` on a usage
-/// error (fewer than two candidates); `3` when the diagonal invariant fails, in
-/// which case scores are deliberately NOT written because a broken transplant
-/// must say so rather than emit a confident null.
+/// Returns exactly one of four exit codes, the contract every caller branches on:
+/// - `0` — a complete, fully-passing matrix, written to `<logs>/<bead>.crossx.json`.
+/// - `1` — the run itself failed: an error was met while carrying out the
+///   examination (an unreadable candidate file, a failed spawn, an unwritable
+///   artefact path), and nothing was written. Argument shape alone cannot
+///   produce this: a bead that names no task is not an error but a field with
+///   zero candidates, and returns `4`.
+/// - `3` — the diagonal invariant failed. Scores are deliberately NOT written,
+///   because a broken transplant must say so rather than emit a confident null.
+/// - `4` — NOT APPLICABLE: fewer than two candidates, so no matrix can be
+///   built. Nothing went wrong and nothing was written.
 pub fn run_cmd(bead: &str, krate: &str, file: &str) -> i32 {
     match run(bead, krate, file) {
         Ok(code) => code,
@@ -94,8 +100,13 @@ fn run(bead: &str, krate: &str, file: &str) -> Result<i32> {
     // Printed before the <2 check, exactly like the script.
     println!("candidates: {}", arms.join(" "));
     if arms.len() < 2 {
+        // A one-member field cannot form a matrix. That is the field's expected
+        // state under one-arm-per-task, not a failure, and the code is distinct
+        // from the `1` an internal error returns so a caller can tell "cannot
+        // apply" from "went wrong". fb-crossx.sh and fb-pipeline.sh still treat
+        // 4 as a failure until they are updated; that is expected and left.
         println!("need >=2");
-        return Ok(1);
+        return Ok(4);
     }
 
     let srcdir = format!("crates/{krate}/src");
@@ -3947,5 +3958,112 @@ mod crossx_cells_tests {
                 other => panic!("path {} expected NoCompile, got {:?}", idx + 1, other),
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // The not-applicable path: fewer than two candidates is 4, not 1.
+    // -----------------------------------------------------------------------
+
+    /// A uniquely named fixture bead whose candidate arm worktrees are created
+    /// in the same root [`crate::paths::worktrees`] resolves for `run`, so the
+    /// assertions exercise [`run_cmd`] itself rather than a re-implementation
+    /// of its discovery. Every `<bead>--arm` directory is removed on drop, so
+    /// a failing assertion cannot leak a fixture into the real worktrees.
+    struct ScratchBead {
+        bead: String,
+        root: PathBuf,
+    }
+
+    impl ScratchBead {
+        fn new(tag: &str) -> Self {
+            let root = crate::paths::worktrees();
+            let bead = format!("fb-cx-na-{tag}-{}", std::process::id());
+            Self { bead, root }
+        }
+
+        /// One empty candidate arm worktree for this bead.
+        fn arm(&self, name: &str) -> PathBuf {
+            let dir = self.root.join(format!("{}--{name}", self.bead));
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        /// The artefact a fully-passing matrix would have written.
+        fn artefact(&self) -> PathBuf {
+            crate::paths::logs().join(format!("{}.crossx.json", self.bead))
+        }
+    }
+
+    impl Drop for ScratchBead {
+        fn drop(&mut self) {
+            let prefix = format!("{}--", self.bead);
+            if let Ok(entries) = std::fs::read_dir(&self.root) {
+                for entry in entries.flatten() {
+                    if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                        let _ = std::fs::remove_dir_all(entry.path());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Clause 1 and clause 5: a task with ZERO candidates returns 4, and the
+    /// artefact is absent — pinned as a file check, not only as a code check.
+    #[test]
+    fn zero_candidates_returns_not_applicable_and_writes_nothing() {
+        let field = ScratchBead::new("zero");
+        let artefact = field.artefact();
+        let _ = std::fs::remove_file(&artefact);
+        assert_eq!(run_cmd(&field.bead, "fb", "crates/fb/src/crossx.rs"), 4);
+        assert!(!artefact.exists(), "a 4 return must not write an artefact");
+    }
+
+    /// Clause 2: ONE candidate returns 4 too — the same answer for the same
+    /// reason — and the field stays visible to the operator. The `candidates:`
+    /// line is printed unchanged, byte for byte, before the short-field check;
+    /// what is asserted here is the code the short field returns.
+    #[test]
+    fn one_candidate_returns_not_applicable_and_writes_nothing() {
+        let field = ScratchBead::new("one");
+        field.arm("lone-arm");
+        let artefact = field.artefact();
+        let _ = std::fs::remove_file(&artefact);
+        assert_eq!(run_cmd(&field.bead, "fb", "crates/fb/src/crossx.rs"), 4);
+        assert!(!artefact.exists(), "a 4 return must not write an artefact");
+    }
+
+    /// Clause 4 in one test that produces both codes: the short field returns
+    /// 4, while a run that actually fails returns 1 — here a candidate suite
+    /// that exists but cannot be read (invalid UTF-8), which errors the run
+    /// before any matrix work. An implementation reusing 1 for the
+    /// not-applicable case fails the first half of this.
+    #[test]
+    fn not_applicable_and_internal_error_are_different_codes() {
+        let short = ScratchBead::new("short");
+        short.arm("only");
+        assert_eq!(run_cmd(&short.bead, "fb", "crates/fb/src/crossx.rs"), 4);
+
+        let broken = ScratchBead::new("broken");
+        let alpha = broken.arm("alpha");
+        std::fs::create_dir_all(alpha.join("crates/fb/src")).unwrap();
+        std::fs::write(alpha.join("crates/fb/src/crossx.rs"), [0xff, 0xfe]).unwrap();
+        broken.arm("beta");
+        assert_eq!(run_cmd(&broken.bead, "fb", "crates/fb/src/crossx.rs"), 1);
+    }
+
+    /// Clause 3 and the boundary at N=2: the smallest applicable field is
+    /// unaffected. Two empty arms cannot pass the diagonal — every cell is
+    /// nocompile and the matrix VOIDs, exactly as before this task — so the
+    /// pin is that 2 does NOT take the 4 path, and that a VOID writes no
+    /// scores either.
+    #[test]
+    fn two_candidates_do_not_take_the_not_applicable_path() {
+        let field = ScratchBead::new("two");
+        field.arm("alpha");
+        field.arm("beta");
+        let artefact = field.artefact();
+        let _ = std::fs::remove_file(&artefact);
+        assert_eq!(run_cmd(&field.bead, "fb", "crates/fb/src/crossx.rs"), 3);
+        assert!(!artefact.exists(), "a VOID writes no scores");
     }
 }
