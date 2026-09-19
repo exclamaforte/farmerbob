@@ -1,0 +1,16 @@
+MERGED glm-53-flash
+Single arm, 14 tests, clippy 0. The task `fb trial` carried on its first
+end-to-end run.
+
+Every clause and every boundary has a test named for it, including the three that
+carry it: declares() is whole-token so `mod foobar;` does not declare `foo` (this
+crate has run_timing beside run_state_view and compare_cmd beside compare_gather,
+so a contains() implementation would have been wrong on real input); a `mod foo;`
+inside a fenced doc-comment block is not a declaration; and lib and main are never
+orphans, which keeps the check from firing on every crate.
+
+No regex, as required.
+
+It has no caller yet -- wiring it into `fb doctor` is the next task, and until then
+farmerbob-0m34 stays open. Scanned the workspace by hand at merge: zero orphans,
+which is what a compiling workspace must mean.

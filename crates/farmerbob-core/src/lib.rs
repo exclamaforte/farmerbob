@@ -49,6 +49,7 @@ pub mod limit_signal;
 pub mod liveness;
 pub mod measurement;
 pub mod mutate;
+pub mod orphan_check;
 pub mod outcome;
 pub mod park_decision;
 pub mod precondition;
