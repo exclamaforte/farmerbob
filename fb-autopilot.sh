@@ -50,16 +50,21 @@ HARD_MB=${FB_HARD_MB:-1536}
 #
 #   FB_MEM_GB=1.5          admission was charging 2G a slot against a measured p95 of 1.26G,
 #                          so a 14G machine granted 5 slots where it holds 8.
-#   FB_SKIP_SPECCHECK=1    fb-admit runs the spec critique for every matrix line SERIALLY and
-#                          blocking, six to thirteen minutes each, before dispatching anything.
-#                          At one arm per task and eight tasks that is over an hour of ramp.
+#   FB_SKIP_SPECCHECK      was forced to 1 here, because fb-admit ran the spec critique for
+#                          every matrix line SERIALLY: six to thirteen minutes each, over an
+#                          hour of ramp for an eight-task wave. That bought ramp time and
+#                          silently cost BOTH the spec critique and session reuse, since
+#                          fb-dispatch sets CONT=yes only when a findings file exists.
+#                          fb-admit now runs them concurrently and waits, so the stage is
+#                          affordable and the default is back to 0. Override to 1 for a wave
+#                          where the specs have already been critiqued.
 #
 # Hand-launching with the right flags while the daemon sat idle with the wrong ones is not a
 # daemon that does not work. It is a daemon that was never told what the job had become.
 #
 # Both are exported so `fb-wave.sh` -> `fb-admit.sh` inherit them, and both stay overridable.
 export FB_MEM_GB="${FB_MEM_GB:-1.5}"
-export FB_SKIP_SPECCHECK="${FB_SKIP_SPECCHECK:-1}"
+export FB_SKIP_SPECCHECK="${FB_SKIP_SPECCHECK:-0}"
 
 # How many arms the machine can hold right now. Same question fb-admit.sh asks, same binary,
 # so the two cannot disagree about the size of the box. Echoes nothing when it cannot be
@@ -83,24 +88,37 @@ live_tasks() {
 }
 
 # True when the wave in $1 declares a deliverable a live task is already writing.
+# Checks EVERY row, not just the first. Same defect as wave_arms had: a seven-row manifest
+# under one-arm-per-task had six of its targets unchecked, so the guard that exists because
+# park-decision and park-scope both wrote quota.rs was covering one seventh of the wave.
 collides() {
-  local tsv="$1" task want t other
-  task=$(awk -F'\t' 'NR==1{print $1}' "$tsv")
-  want=$(fb_target "$task" 2>/dev/null) || return 1
-  [ -n "$want" ] || return 1
-  while read -r t; do
-    [ -n "$t" ] || continue
-    other=$(fb_target "$t" 2>/dev/null) || continue
-    if [ "$other" = "$want" ]; then
-      say "HOLDING $(basename "$tsv"): $task targets $want, which live task $t is writing"
-      return 0
-    fi
-  done < <(live_tasks)
+  local tsv="$1" task want t other live
+  live=$(live_tasks)
+  [ -n "$live" ] || return 1
+  while IFS=$'\t' read -r task _ _; do
+    [ -n "${task:-}" ] || continue
+    want=$(fb_target "$task" 2>/dev/null) || continue
+    [ -n "$want" ] || continue
+    while read -r t; do
+      [ -n "$t" ] || continue
+      other=$(fb_target "$t" 2>/dev/null) || continue
+      if [ "$other" = "$want" ]; then
+        say "HOLDING $(basename "$tsv"): $task targets $want, which live task $t is writing"
+        return 0
+      fi
+    done <<< "$live"
+  done < "$tsv"
   return 1
 }
 
-# Arms in a queued wave: the third column, comma separated.
-wave_arms() { awk -F'\t' 'NR==1{n=split($3,a,","); print n}' "$1"; }
+# Arms in a queued wave: the third column, comma separated, summed over EVERY row.
+#
+# This read NR==1 only. That was right when a wave was one task with several arms; under
+# one-arm-per-task it reported 1 for a seven-row manifest, and the admission gate below --
+# the only consumer -- would then launch all seven whenever ONE slot was free. It fit by
+# luck on wave104 because the machine was idle. The gate cannot fail loudly; it just
+# permits.  (bead farmerbob-jfm1)
+wave_arms() { awk -F'\t' 'NF && $1 != "" { n += split($3, a, ",") } END { print n+0 }' "$1"; }
 BEAT="$HOME/.local/share/farmerbob/logs/autopilot.heartbeat"
 beat() { printf '%s pid=%s %s\n' "$(date -Is)" "$$" "$*" > "$BEAT"; }
 say "autopilot up (pid $$)"; beat "starting"

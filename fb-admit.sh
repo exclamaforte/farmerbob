@@ -106,6 +106,18 @@ SPECCHECK_TIMEOUT=${FB_SPECCHECK_TIMEOUT:-1800}
 if [ "${FB_SKIP_SPECCHECK:-}" = 1 ]; then
   echo "speccheck: SKIPPED by FB_SKIP_SPECCHECK=1 -- no spec critique for this wave"
 else
+  # CONCURRENTLY, one job per manifest row.
+  #
+  # This loop was serial. At six to thirteen minutes a task it made a seven-task wave cost
+  # forty-five to ninety minutes of ramp with the machine idle, which is why it was being
+  # skipped with FB_SKIP_SPECCHECK=1 -- and skipping it silently turned off session reuse
+  # too, since fb-dispatch sets CONT=yes only when a findings file exists. The stage was
+  # disabled to buy time, and disabling it cost both features at once.
+  #
+  # Each row's critique is independent, so they run together. The wave still WAITS for all
+  # of them: the arms must read the spec before they implement it, which is the whole point.
+  speccheck_pids=()
+  speccheck_tasks=()
   while IFS=$'\t' read -r task crate arms; do
     [ -z "${task:-}" ] && continue
     if ls "$LOGS/speccheck/$task"/*.findings.md >/dev/null 2>&1; then
@@ -113,12 +125,23 @@ else
       continue
     fi
     echo "speccheck $task: running before dispatch"
-    if timeout "$SPECCHECK_TIMEOUT" ./fb-speccheck.sh "$task" "$crate" "$arms"; then
-      :
-    else
-      echo "speccheck $task: DID NOT COMPLETE (rc=$?) -- dispatching WITHOUT a spec critique, and without session reuse" >&2
-    fi
+    timeout "$SPECCHECK_TIMEOUT" ./fb-speccheck.sh "$task" "$crate" "$arms" \
+      > "$LOGS/speccheck.$task.log" 2>&1 &
+    speccheck_pids+=("$!")
+    speccheck_tasks+=("$task")
   done < "$M"
+
+  # Wait for every one, and report each by name. A stage that fails silently is
+  # indistinguishable from a stage that ran and found nothing, which is the bug that let
+  # this one sit unwired for four tasks.
+  for i in "${!speccheck_pids[@]}"; do
+    if wait "${speccheck_pids[$i]}"; then
+      echo "speccheck ${speccheck_tasks[$i]}: done"
+    else
+      echo "speccheck ${speccheck_tasks[$i]}: DID NOT COMPLETE (rc=$?) -- dispatching WITHOUT a spec critique, and without session reuse" >&2
+    fi
+    sed 's/^/  /' "$LOGS/speccheck.${speccheck_tasks[$i]}.log" 2>/dev/null
+  done
 fi
 
 running=0
