@@ -21,10 +21,10 @@ use std::fs;
 use std::path::Path;
 
 use farmerbob_core::cost::{
-    ArmCost, Launcher, RunCost, aggregate, frontier, tokens_from_log, totals,
+    self as cost, ArmCost, Launcher, RunCost, aggregate, frontier, tokens_from_log, totals,
 };
 use farmerbob_core::measurement::Measurement;
-use farmerbob_core::pricing::canonical_model;
+use farmerbob_core::pricing::{Billing, canonical_model};
 
 /// One run's measured spend, read from that run's own isolated opencode store.
 ///
@@ -89,8 +89,19 @@ fn load_runs(base: &Path) -> Result<Vec<RunCost>, String> {
                 // Only an arm_result says anything about the arm. Infrastructure faults,
                 // quota refusals and orchestrator kills are excluded from the posterior.
                 counts_for_arm: outcome == "arm_result",
-                usd: m.map(|(u, _)| u),
-                tokens: m.map(|(_, t)| t),
+                // `billing` is what stops a metered arm with no price reading as free. The
+                // registry is the only thing that knows, and this reader does not have it
+                // here, so Unknown -- which is refused by `fully_measured` rather than being
+                // silently treated as a real zero.  (bead farmerbob-b52)
+                billing: Billing::Unknown,
+                usd: match m {
+                    Some((u, _)) => Measurement::observed(u),
+                    None => Measurement::not_attempted(),
+                },
+                tokens: match m {
+                    Some((_, t)) => Measurement::observed(t),
+                    None => Measurement::not_attempted(),
+                },
                 arm,
                 task,
             })
@@ -178,7 +189,7 @@ fn unpriced(runs: &[RunCost]) -> BTreeMap<String, (u32, u32)> {
     for r in runs.iter().filter(|r| r.counts_for_arm) {
         let e = seen.entry(r.arm.clone()).or_insert((0, 0));
         e.1 += 1;
-        if r.usd.is_some() {
+        if r.usd.is_observed() {
             e.0 += 1;
         }
     }
@@ -237,14 +248,18 @@ impl Registry {
 
 /// Which launcher wrote an arm's logs, from the registry's `cmd`.
 ///
-/// A known subset: `codex` is [`Launcher::Codex`] and `zcode` is [`Launcher::Zcode`]; every
-/// other command, and every arm the registry does not name, is [`Launcher::Unknown`], which
-/// yields [`Measurement::Missing`] downstream rather than a guess.
+/// The launcher behind an arm, from `farmerbob_core::cost::launcher_from_name`.
+///
+/// This was a PRIVATE duplicate of that table, knowing only `codex` and a `Zcode` variant
+/// that no longer exists. Because production called this copy and not the shared one, the
+/// Agy launcher added specifically to give agy arms a token count was unreachable and
+/// changed nothing. Three critics found it independently -- two on launcher-agy, one on
+/// cost-honesty -- which is evidence about the codebase rather than about any arm.
+///   (bead farmerbob-lzae)
 pub fn launcher_for(arm: &str, registry: &Registry) -> Launcher {
     match registry.cmd.get(arm).map(String::as_str) {
-        Some("codex") => Launcher::Codex,
-        Some("zcode") => Launcher::Zcode,
-        _ => Launcher::Unknown,
+        Some(cmd) => cost::launcher_from_name(cmd),
+        None => cost::launcher_from_name(arm),
     }
 }
 
@@ -327,9 +342,25 @@ fn sum_run_logs(logs_dir: &Path, arm: &str, launcher: Launcher) -> Measurement<u
         let Ok(body) = fs::read_to_string(log) else {
             continue;
         };
-        if let Measurement::Observed(count) = tokens_from_log(launcher, &body) {
+        // tokens_from_log now reports three dimensions; the curve wants what was billed as
+        // prompt plus completion. A Missing dimension contributes nothing and does not
+        // suppress the other -- they answer different questions.
+        let t = tokens_from_log(launcher, &body);
+        // Dimensions when the launcher reports them, otherwise the single figure it does
+        // report. Never both: `combined` is not a total of the three and adding it would
+        // double count.
+        let summed: u64 = if t.input.is_observed() || t.output.is_observed() {
+            t.input
+                .value()
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(t.output.value().copied().unwrap_or(0))
+        } else {
+            t.combined.value().copied().unwrap_or(0)
+        };
+        if t.input.is_observed() || t.output.is_observed() || t.combined.is_observed() {
             reported += 1;
-            total = total.saturating_add(count);
+            total = total.saturating_add(summed);
         }
     }
     if reported == 0 {
@@ -372,7 +403,7 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
     // arm with no dollar figure off a cost curve.
     let recovered: BTreeMap<String, Measurement<u64>> = arms
         .iter()
-        .filter(|a| a.tokens.is_none())
+        .filter(|a| !a.tokens.is_observed())
         .map(|a| {
             (
                 a.arm.clone(),
@@ -405,7 +436,7 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
     let excluded_spend: f64 = runs
         .iter()
         .filter(|r| !r.counts_for_arm)
-        .filter_map(|r| r.usd)
+        .filter_map(|r| r.usd.value().copied())
         .sum();
 
     if json_only {
@@ -418,10 +449,10 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
                     "canonical": canonical_model(&a.arm),
                     "runs": a.runs,
                     "completed": a.completed,
-                    "completion_rate": a.completion_rate(),
-                    "usd": a.usd,
-                    "usd_per_completion": a.usd_per_completion(),
-                    "tokens": a.tokens,
+                    "completion_rate": a.completion_rate().value().copied(),
+                    "usd": a.usd.value(),
+                    "usd_per_completion": a.usd_per_completion().value().copied(),
+                    "tokens": a.tokens.value(),
                     // Recovered from the launcher's own logs where the store measured
                     // nothing; null means no run of this arm reported a count, which is
                     // not zero. Kept beside `tokens` rather than folded into it: the two
@@ -437,7 +468,7 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "arms": rows, "frontier": front,
-                "measured_spend": spend, "completed": completed, "counted_runs": counted,
+                "measured_spend": spend.value().copied(), "completed": completed, "counted_runs": counted,
             }))
             .unwrap_or_else(|_| "{}".into())
         );
@@ -452,8 +483,10 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
     let mut sorted = arms.clone();
     sorted.sort_by(|a, b| {
         b.completion_rate()
+            .value()
+            .copied()
             .unwrap_or(0.0)
-            .partial_cmp(&a.completion_rate().unwrap_or(0.0))
+            .partial_cmp(&a.completion_rate().value().copied().unwrap_or(0.0))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.arm.cmp(&b.arm))
     });
@@ -463,19 +496,19 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
         }
         let (p, n) = priced.get(&a.arm).copied().unwrap_or((0, 0));
         // Never print a dollar figure for an arm nothing measured. "$0.0000" is a claim.
-        let usd = a
-            .usd
-            .map(|v| format!("{v:.4}"))
-            .unwrap_or_else(|| "n/a".into());
+        let usd = match a.usd.value() {
+            Some(v) => format!("{v:.4}"),
+            None => "n/a".into(),
+        };
         // usd_per_completion now returns None itself when any counted run was unmeasured.
-        let per = a
-            .usd_per_completion()
-            .map(|v| format!("{v:.4}"))
-            .unwrap_or_else(|| "n/a".into());
-        let rate = a
-            .completion_rate()
-            .map(|r| format!("{:.0}%", r * 100.0))
-            .unwrap_or_else(|| "n/a".into());
+        let per = match a.usd_per_completion().value() {
+            Some(v) => format!("{v:.4}"),
+            None => "n/a".into(),
+        };
+        let rate = match a.completion_rate().value() {
+            Some(r) => format!("{:.0}%", r * 100.0),
+            None => "n/a".into(),
+        };
         let unp = if n > p {
             format!("{}/{}", n - p, n)
         } else {
@@ -484,11 +517,15 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
         // The store figure when there is one; otherwise the recovery from the launcher's own
         // logs. `n/a` here covers both "no store measured this" and "no log reported a
         // count" -- Missing, never 0: zero tokens is a claim, absence is absence.
-        let tokens = a
+        let tokens = match a
             .tokens
+            .value()
+            .copied()
             .or_else(|| recovered.get(&a.arm).and_then(|m| m.value().copied()))
-            .map(|t| t.to_string())
-            .unwrap_or_else(|| "n/a".into());
+        {
+            Some(t) => t.to_string(),
+            None => "n/a".into(),
+        };
         let mark = if front.contains(&a.arm) {
             "  <= pareto"
         } else {
@@ -520,7 +557,7 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
         );
         println!("  It is coarser than the per-run figures above and is summed separately.");
     }
-    match spend {
+    match spend.value().copied() {
         Some(s) => {
             println!(
                 "  {counted} counted runs, {completed} completed, ${:.4} attributable spend \
@@ -594,14 +631,20 @@ mod recovered_token_tests {
     fn the_known_cmds_map_to_the_known_launchers() {
         let registry = fixture_registry("cmds");
         assert_eq!(launcher_for("codex-arm", &registry), Launcher::Codex);
-        assert_eq!(launcher_for("zcode-arm", &registry), Launcher::Zcode);
+        // `zcode` was a variant of the PRIVATE table this file used to keep. The shared
+        // table in cost.rs does not know it, and Unknown is the honest answer for a launcher
+        // nothing models -- a guess here misattributes an arm's whole bill.
+        assert_eq!(launcher_for("zcode-arm", &registry), Launcher::Unknown);
     }
 
-    // Everything else -- other CLIs, launcher-only routes, absent arms -- is Unknown.
+    // A cmd the SHARED table models is now recognised; everything genuinely unmodelled is
+    // still Unknown. `claude` asserted Unknown here only because the private table this file
+    // used to keep had never heard of it -- the test encoded that table's ignorance, which is
+    // the bug, not the contract.
     #[test]
     fn every_other_cmd_and_arm_is_unknown() {
         let registry = fixture_registry("unknowns");
-        assert_eq!(launcher_for("claude-arm", &registry), Launcher::Unknown);
+        assert_eq!(launcher_for("claude-arm", &registry), Launcher::Claude);
         assert_eq!(
             launcher_for("ori-opencode-arm", &registry),
             Launcher::Unknown
@@ -869,8 +912,9 @@ mod recovered_token_tests {
         let runs = [RunCost {
             arm: "codex-luna".into(),
             task: "t".into(),
-            usd: None,
-            tokens: Some(53_557),
+            billing: Billing::Unknown,
+            usd: Measurement::not_attempted(),
+            tokens: Measurement::observed(53_557),
             completed: true,
             counts_for_arm: true,
         }];
@@ -891,8 +935,15 @@ mod recovered_token_tests {
                 arm: name.into(),
                 runs: 2,
                 completed: 2,
-                usd,
-                tokens,
+                // A priced arm is Metered, not Free: `fully_measured` accepts a zero only
+                // from a billing whose zero is real, and Free would make an unpriced arm
+                // look measured -- the exact substitution this task removed.
+                billing: usd.map_or(Billing::Unknown, |_| Billing::Metered {
+                    input_per_mtok: 1.0,
+                    output_per_mtok: 1.0,
+                }),
+                usd: usd.map_or(Measurement::not_attempted(), Measurement::observed),
+                tokens: tokens.map_or(Measurement::not_attempted(), Measurement::observed),
                 unmeasured_runs: 0,
             }
         }
@@ -904,7 +955,7 @@ mod recovered_token_tests {
         let stripped: Vec<ArmCost> = arms
             .iter()
             .map(|a| ArmCost {
-                tokens: None,
+                tokens: Measurement::not_attempted(),
                 ..a.clone()
             })
             .collect();

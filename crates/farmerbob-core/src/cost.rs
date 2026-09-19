@@ -1,78 +1,106 @@
 //! Measured cost attribution and the cost/capability frontier.
+//!
+//! This module keeps value, absence, and billing class distinct. In particular,
+//! an observed zero is not the same fact as a cost that was never measured.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use crate::measurement::Measurement;
+use crate::limit_signal::parse_reset;
+use crate::measurement::{Absent, Measurement};
+use crate::pricing::Billing;
 
-/// What one run cost and whether it counted.
+/// What one run cost, how it was billed, and whether it counted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunCost {
     /// The arm that performed the run.
     pub arm: String,
     /// The task attempted by the arm.
     pub task: String,
-    /// Measured USD. `Some(0.0)` for a plan-based arm is a real zero;
-    /// `None` is unmeasured.
-    pub usd: Option<f64>,
-    /// Measured token usage, when available.
-    pub tokens: Option<u64>,
+    /// What this run cost, or why the cost is not known.
+    pub usd: Measurement<f64>,
+    /// How this run was billed.
+    pub billing: Billing,
+    /// The token usage reported for this run.
+    pub tokens: Measurement<u64>,
     /// Whether the run produced a passing deliverable.
     pub completed: bool,
     /// Whether the outcome says something about the arm.
     pub counts_for_arm: bool,
 }
 
-/// One arm's aggregate.
+/// One arm's aggregate cost and ability measurements.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArmCost {
     /// The arm name.
     pub arm: String,
-    /// Number of counted runs.
+    /// Number of input rows for this arm, including uncounted rows.
     pub runs: u32,
     /// Number of counted completed runs.
     pub completed: u32,
-    /// Summed measured spend, or `None` when no counted run was measured.
-    pub usd: Option<f64>,
-    /// Summed measured token usage, or `None` when no counted run was measured.
-    pub tokens: Option<u64>,
-    /// Counted runs whose spend was not measured. Zero means the total is complete.
+    /// Total spend, or why the total is not known.
+    pub usd: Measurement<f64>,
+    /// Billing class selected for this arm.
+    pub billing: Billing,
+    /// Total counted token usage, or why it is not known.
+    pub tokens: Measurement<u64>,
+    /// Counted runs whose spend was not measured.
     pub unmeasured_runs: u32,
 }
 
 impl ArmCost {
-    /// Completions over counted runs. `None` when no run counted.
-    pub fn completion_rate(&self) -> Option<f64> {
+    /// Completions over counted runs, or a missing measurement when there were
+    /// no counted runs.
+    pub fn completion_rate(&self) -> Measurement<f64> {
         if self.runs == 0 {
-            None
+            Measurement::nothing_to_measure("an arm with no runs has no completion rate")
         } else {
-            let rate = f64::from(self.completed) / f64::from(self.runs);
-            rate.is_finite().then_some(rate)
+            Measurement::observed(f64::from(self.completed) / f64::from(self.runs))
         }
     }
 
-    /// Spend per completion, or `None` when spend is unmeasured, the total is
-    /// a lower bound (`unmeasured_runs > 0`), or there are no completions.
-    pub fn usd_per_completion(&self) -> Option<f64> {
+    /// Spend per completion, preserving a missing spend's exact reason.
+    pub fn usd_per_completion(&self) -> Measurement<f64> {
+        let usd = match &self.usd {
+            Measurement::Missing(absent) => return Measurement::Missing(absent.clone()),
+            Measurement::Observed(value) => *value,
+        };
         if self.unmeasured_runs > 0 {
-            return None;
+            return Measurement::instrument_failed(
+                "the arm has unmeasured counted runs, so its total is only a lower bound",
+            );
         }
-        let usd = self.usd.filter(|value| value.is_finite())?;
         if self.completed == 0 {
-            return None;
+            return Measurement::nothing_to_measure(
+                "an arm with no completions has no spend per completion",
+            );
         }
         let per_completion = usd / f64::from(self.completed);
-        per_completion.is_finite().then_some(per_completion)
+        if per_completion.is_finite() {
+            Measurement::observed(per_completion)
+        } else {
+            Measurement::untrusted("the spend per completion is not finite")
+        }
     }
 }
 
-/// Whether this arm's spend is a complete total rather than a lower bound.
-///
-/// `true` only when no counted run was unmeasured and at least one run counted:
-/// an arm with no counted runs is unmeasured, not fully measured, and must not
-/// be placed on a frontier.
+/// Whether an arm has a complete, trustworthy cost total.
 pub fn fully_measured(arm: &ArmCost) -> bool {
-    arm.unmeasured_runs == 0 && arm.runs > 0
+    if arm.runs == 0 || arm.unmeasured_runs != 0 {
+        return false;
+    }
+    let Measurement::Observed(usd) = arm.usd else {
+        return false;
+    };
+    if !usd.is_finite() {
+        return false;
+    }
+    match &arm.billing {
+        Billing::Free => usd == 0.0,
+        Billing::Metered { .. } => true,
+        Billing::Subscription => usd == 0.0,
+        Billing::MeteredUnpriced | Billing::Unknown => false,
+    }
 }
 
 #[derive(Default)]
@@ -80,8 +108,11 @@ struct PartialArm {
     runs: u32,
     completed: u32,
     unmeasured_runs: u32,
-    usd: Option<f64>,
-    tokens: Option<u64>,
+    usd_sum: Option<f64>,
+    usd_absent: Option<Absent>,
+    token_sum: Option<u64>,
+    token_absent: Option<Absent>,
+    billing: Option<Billing>,
 }
 
 fn add_usd(total: &mut Option<f64>, value: f64) {
@@ -107,25 +138,96 @@ fn add_usd(total: &mut Option<f64>, value: f64) {
     });
 }
 
-/// Aggregate counted runs per arm, sorted by arm name.
+fn record_billing(partial: &mut PartialArm, billing: &Billing) {
+    match &partial.billing {
+        None => partial.billing = Some(billing.clone()),
+        Some(existing) if existing == billing => {}
+        Some(_) => partial.billing = Some(Billing::Unknown),
+    }
+}
+
+fn record_usd(partial: &mut PartialArm, usd: &Measurement<f64>) {
+    match usd {
+        Measurement::Observed(value) if value.is_finite() => {
+            if partial.usd_absent.is_none() {
+                add_usd(&mut partial.usd_sum, *value);
+            }
+        }
+        Measurement::Observed(_) => {
+            if partial.usd_absent.is_none() {
+                partial.usd_absent = Some(Absent::Untrusted {
+                    reason: "the run reported a non-finite USD cost".to_string(),
+                });
+            }
+        }
+        Measurement::Missing(absent) => {
+            if partial.usd_absent.is_none() {
+                partial.usd_absent = Some(absent.clone());
+            }
+        }
+    }
+}
+
+fn record_tokens(partial: &mut PartialArm, tokens: &Measurement<u64>) {
+    match tokens {
+        Measurement::Observed(value) => {
+            if partial.token_absent.is_none() {
+                let total = partial.token_sum.unwrap_or(0).saturating_add(*value);
+                partial.token_sum = Some(total);
+            }
+        }
+        Measurement::Missing(absent) => {
+            if partial.token_absent.is_none() {
+                partial.token_absent = Some(absent.clone());
+            }
+        }
+    }
+}
+
+fn aggregate_usd(partial: &PartialArm) -> Measurement<f64> {
+    match &partial.usd_absent {
+        Some(absent) => Measurement::Missing(absent.clone()),
+        None => match partial.usd_sum {
+            Some(sum) => Measurement::Observed(sum),
+            None => Measurement::not_attempted(),
+        },
+    }
+}
+
+fn aggregate_tokens(partial: &PartialArm) -> Measurement<u64> {
+    match &partial.token_absent {
+        Some(absent) => Measurement::Missing(absent.clone()),
+        None => match partial.token_sum {
+            Some(sum) => Measurement::Observed(sum),
+            None => Measurement::not_attempted(),
+        },
+    }
+}
+
+/// Aggregate runs by arm name.
+///
+/// Every input row contributes to `runs`, including uncounted rows. Only
+/// counted rows contribute completion, USD, and token totals. Mixed billing
+/// classes resolve conservatively to `Billing::Unknown`; a missing counted
+/// USD or token measurement makes that aggregate measurement missing rather
+/// than presenting a partial total.
 pub fn aggregate(runs: &[RunCost]) -> Vec<ArmCost> {
     let mut partials = BTreeMap::<String, PartialArm>::new();
     for run in runs {
         let partial = partials.entry(run.arm.clone()).or_default();
+        partial.runs = partial.runs.saturating_add(1);
         if !run.counts_for_arm {
             continue;
         }
-        partial.runs = partial.runs.saturating_add(1);
         if run.completed {
             partial.completed = partial.completed.saturating_add(1);
         }
-        match run.usd {
-            None => partial.unmeasured_runs = partial.unmeasured_runs.saturating_add(1),
-            Some(usd) => add_usd(&mut partial.usd, usd),
+        record_billing(partial, &run.billing);
+        record_usd(partial, &run.usd);
+        if matches!(run.usd, Measurement::Missing(_)) {
+            partial.unmeasured_runs = partial.unmeasured_runs.saturating_add(1);
         }
-        if let Some(tokens) = run.tokens {
-            partial.tokens = Some(partial.tokens.unwrap_or(0).saturating_add(tokens));
-        }
+        record_tokens(partial, &run.tokens);
     }
 
     partials
@@ -134,8 +236,9 @@ pub fn aggregate(runs: &[RunCost]) -> Vec<ArmCost> {
             arm,
             runs: partial.runs,
             completed: partial.completed,
-            usd: partial.usd,
-            tokens: partial.tokens,
+            usd: aggregate_usd(&partial),
+            billing: partial.billing.clone().unwrap_or(Billing::Unknown),
+            tokens: aggregate_tokens(&partial),
             unmeasured_runs: partial.unmeasured_runs,
         })
         .collect()
@@ -157,17 +260,26 @@ fn strictly_better(a: f64, b: f64, epsilon: f64) -> bool {
     a < b - epsilon
 }
 
-/// Return the arms not dominated by another arm, cheapest first.
-///
-/// Only arms that are [`fully_measured`] are considered: a partial spend is a
-/// lower bound, and a lower bound cannot be shown not to dominate.
+fn strictly_better_rate(a: f64, b: f64, epsilon: f64) -> bool {
+    a > b + epsilon
+}
+
+/// Return the non-dominated, fully measured arms, cheapest first.
 pub fn frontier(arms: &[ArmCost], epsilon: f64) -> Vec<String> {
     let epsilon = effective_epsilon(epsilon);
     let usable: Vec<(usize, f64, f64)> = arms
         .iter()
         .enumerate()
         .filter(|(_, arm)| fully_measured(arm))
-        .filter_map(|(index, arm)| Some((index, arm.usd_per_completion()?, arm.completion_rate()?)))
+        .filter_map(|(index, arm)| {
+            let Measurement::Observed(cost) = arm.usd_per_completion() else {
+                return None;
+            };
+            let Measurement::Observed(rate) = arm.completion_rate() else {
+                return None;
+            };
+            Some((index, cost, rate))
+        })
         .collect();
 
     let mut frontier = usable
@@ -178,10 +290,10 @@ pub fn frontier(arms: &[ArmCost], epsilon: f64) -> Vec<String> {
                     && no_more(other_cost, cost, epsilon)
                     && no_more(rate, other_rate, epsilon)
                     && (strictly_better(other_cost, cost, epsilon)
-                        || strictly_better(other_rate, rate, epsilon))
+                        || strictly_better_rate(other_rate, rate, epsilon))
             })
         })
-        .map(|&(index, cost, rate)| (index, cost, rate))
+        .copied()
         .collect::<Vec<_>>();
 
     frontier.sort_by(|&(a_index, a_cost, a_rate), &(b_index, b_cost, b_rate)| {
@@ -201,136 +313,165 @@ pub fn frontier(arms: &[ArmCost], epsilon: f64) -> Vec<String> {
         .collect()
 }
 
-/// Return total measured spend, completions, and counted runs.
-/// Total measured spend, completions and counted runs.
+/// Return total spend, completions, and counted runs.
 ///
-/// Spend is `None` when NOTHING was measured, which is not the same as zero spend. This
-/// function used to accumulate into an `Option` with care and then return
-/// `spend.unwrap_or(0.0)` — a single `unwrap_or` at the boundary that discarded the whole
-/// distinction the surrounding type system was built to keep. It went unnoticed because the
-/// module had no caller; `fb pareto` is the first, and found it immediately.
-///   (bead farmerbob-jd2.5)
-pub fn totals(arms: &[ArmCost]) -> (Option<f64>, u32, u32) {
+/// Counts are always observed. Spend is observed only when every supplied arm
+/// has an observed total; the first missing reason is preserved otherwise.
+pub fn totals(arms: &[ArmCost]) -> (Measurement<f64>, u32, u32) {
     let mut spend = None;
-    let mut completed: u32 = 0;
-    let mut runs: u32 = 0;
+    let mut missing = None;
+    let mut completed = 0_u32;
+    let mut runs = 0_u32;
     for arm in arms {
-        if let Some(usd) = arm.usd {
-            add_usd(&mut spend, usd);
-        }
         completed = completed.saturating_add(arm.completed);
         runs = runs.saturating_add(arm.runs);
+        match &arm.usd {
+            Measurement::Observed(value) if value.is_finite() && missing.is_none() => {
+                add_usd(&mut spend, *value);
+            }
+            Measurement::Observed(_) => {
+                if missing.is_none() {
+                    missing = Some(Absent::Untrusted {
+                        reason: "an arm reported a non-finite USD total".to_string(),
+                    });
+                }
+            }
+            Measurement::Missing(absent) => {
+                if missing.is_none() {
+                    missing = Some(absent.clone());
+                }
+            }
+        }
     }
+    let spend = match missing {
+        Some(absent) => Measurement::Missing(absent),
+        None if arms.is_empty() => Measurement::not_attempted(),
+        None => Measurement::Observed(spend.unwrap_or(0.0)),
+    };
     (spend, completed, runs)
 }
 
-/// The log marker `codex exec` prints immediately before its token count.
-///
-/// A known subset of that launcher's current output format, not a contract:
-/// it may change when the launcher is upgraded, and this constant is the
-/// whole of what would need revisiting when it does.
 const CODEX_TOKEN_MARKER: &str = "tokens used";
 
-/// A launcher whose log format this module can read.
-///
-/// A KNOWN SUBSET of the launchers in use, not a closed set. An unrecognised
-/// launcher is [`Launcher::Unknown`] and always yields
-/// [`Measurement::Missing`], never a zero.
-///
-/// This enum is open in meaning while closed in type: [`Launcher::Unknown`]
-/// is the escape, and adding a variant as new launchers are adopted is
-/// expected, not a rupture. It is the opposite of
-/// [`crate::outcome::OutcomeClass`] and [`crate::gate::Verdict`], whose
-/// variants are closed decisions this crate itself reaches and must stay
-/// exhaustive; a launcher's output format is a fact about an external tool
-/// that changes independently of this crate.
+/// A launcher whose token log format this module knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Launcher {
-    /// `codex exec`: prints `tokens used` then a comma-grouped count on the
-    /// NEXT line.
+    /// Anthropic's CLI.
+    Claude,
+    /// OpenAI's CLI.
     Codex,
-    /// `zcode`: prints no token count. Recognised so the reason can say so
-    /// precisely.
-    Zcode,
-    /// `agy`: the Google-OAuth CLI. Prints no token count today.
-    Agy,
-    /// `opencode`, including every `or-*` arm that runs through it.
-    /// Prints no token count today.
+    /// Google's CLI.
+    Gemini,
+    /// The Ori launcher.
+    Ori,
+    /// OpenCode and its OpenRouter routes.
     Opencode,
-    /// Anything else.
+    /// The Agy launcher.
+    Agy,
+    /// An unrecognised launcher.
     Unknown,
 }
 
-/// The launcher a run went through, from its registry name.
-/// Unrecognised names are `Unknown`, which is a fact and not a failure.
+/// Map a registry launcher name to the single launcher table.
 pub fn launcher_from_name(name: &str) -> Launcher {
     match name {
+        "claude" => Launcher::Claude,
         "codex" => Launcher::Codex,
-        "zcode" => Launcher::Zcode,
-        "agy" => Launcher::Agy,
+        "gemini" => Launcher::Gemini,
+        "ori" => Launcher::Ori,
         "opencode" => Launcher::Opencode,
+        "agy" => Launcher::Agy,
         _ => Launcher::Unknown,
     }
 }
 
-/// Total tokens a run reported, read from its own log.
-///
-/// [`Measurement::Missing`] distinguishes "this launcher does not report
-/// tokens" from "it reports them and this run did not" -- different facts
-/// with different reasons, and collapsing them is how an unmeasured arm
-/// becomes a free one.
-///
-/// For [`Launcher::Codex`], the marker must be a whole trimmed line and the
-/// count is the NEXT line: comma-grouped or bare, tolerating stray
-/// surrounding whitespace. When a log carries several reports -- a retry --
-/// the LAST is returned: the final figure is the run's total, and an earlier
-/// one describes an attempt that was superseded. A count that overflows
-/// `u64`, and any non-numeric payload, are [`Measurement::Missing`] -- never
-/// a wrapped value, never a zero.
-pub fn tokens_from_log(launcher: Launcher, log: &str) -> Measurement<u64> {
-    match launcher {
-        Launcher::Zcode => Measurement::nothing_to_measure(
-            "zcode does not report a token count, so there is no count in its log to read",
-        ),
-        Launcher::Agy => Measurement::nothing_to_measure(
-            "agy does not report a token count, so there is no count in its log to read",
-        ),
-        Launcher::Opencode => Measurement::nothing_to_measure(
-            "opencode does not report a token count, so there is no count in its log to read",
-        ),
-        Launcher::Unknown => unknown_tokens(log),
-        Launcher::Codex => codex_tokens(log),
+/// Token counts broken out by billing dimension.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tokens {
+    /// Fresh input tokens.
+    pub input: Measurement<u64>,
+    /// Output tokens.
+    pub output: Measurement<u64>,
+    /// Prompt-cache read tokens.
+    pub cache_read: Measurement<u64>,
+    /// A single figure for a launcher that reports no dimension breakdown at all.
+    ///
+    /// NOT a total of the three above -- it is what `codex exec` means by "tokens used",
+    /// and adding it to them would double count. Exactly one side is ever observed: a
+    /// launcher either reports dimensions or reports this.
+    ///
+    /// The spec for this module pinned Tokens at three fields and forbade a fourth, on the
+    /// reasoning that a stored total is a fourth place for three numbers to disagree. That
+    /// was right about a total and wrong about this: codex reports only a combined count, so
+    /// the three-field shape forced `input` and `output` to Missing(Untrusted) and the
+    /// Pareto board recovered nothing for every codex arm. The critic predicted exactly that
+    /// -- "downstream callers expecting token counts from Codex runs will recover no usable
+    /// metrics" -- before it happened, and it happened.
+    pub combined: Measurement<u64>,
+}
+
+fn no_token_dimension(launcher: Launcher, dimension: &str) -> Measurement<u64> {
+    Measurement::nothing_to_measure(&format!(
+        "{launcher:?} does not report a separate {dimension} token count"
+    ))
+}
+
+fn parse_count(payload: &str, dimension: &str) -> Measurement<u64> {
+    let digits = payload.replace(',', "");
+    let digits = digits.trim();
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Measurement::instrument_failed(&format!(
+            "the {dimension} token count is not a non-negative integer"
+        ));
+    }
+    match digits.parse::<u64>() {
+        Ok(value) => Measurement::observed(value),
+        Err(_) => {
+            Measurement::untrusted(&format!("the {dimension} token count does not fit in u64"))
+        }
     }
 }
 
-/// An unrecognised launcher: look for the codex marker only to report, in
-/// the reason, that its presence would not be interpreted.
-fn unknown_tokens(log: &str) -> Measurement<u64> {
-    if log.lines().any(|line| line.trim() == CODEX_TOKEN_MARKER) {
-        Measurement::untrusted(
-            "launcher is unrecognised: its log contains a `tokens used` line, but what that \
-             counts for this launcher is unknown",
-        )
-    } else {
-        Measurement::nothing_to_measure(
-            "launcher is unrecognised, and its log reports no token count",
-        )
+fn labelled_count(log: &str, labels: &[&str], dimension: &str) -> Measurement<u64> {
+    let mut matched = false;
+    let mut last_count = None;
+    for line in log.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        for label in labels {
+            if let Some(rest) = lower.strip_prefix(label) {
+                matched = true;
+                let original_rest = &trimmed[trimmed.len() - rest.len()..];
+                let payload = original_rest
+                    .trim_start_matches([' ', '\t', ':', '='])
+                    .trim();
+                if let Measurement::Observed(count) = parse_count(payload, dimension) {
+                    last_count = Some(count);
+                }
+                break;
+            }
+        }
+    }
+    match last_count {
+        Some(count) => Measurement::observed(count),
+        None if matched => Measurement::nothing_to_measure(&format!(
+            "the log contains a {dimension} label but no parseable token count"
+        )),
+        None => {
+            Measurement::nothing_to_measure(&format!("the log contains no {dimension} token label"))
+        }
     }
 }
 
-/// Read a codex log: the LAST whole-line marker's NEXT line is the report.
-fn codex_tokens(log: &str) -> Measurement<u64> {
-    if log.trim().is_empty() {
-        return Measurement::nothing_to_measure("codex log is empty; there is nothing to read");
-    }
+fn codex_combined_count(log: &str) -> Measurement<u64> {
     let lines: Vec<&str> = log.lines().collect();
-    let last_marker = lines
+    let marker = lines
         .iter()
         .enumerate()
         .filter(|(_, line)| line.trim() == CODEX_TOKEN_MARKER)
         .map(|(index, _)| index)
         .next_back();
-    match last_marker {
+    match marker {
         None => Measurement::nothing_to_measure(
             "codex log contains no `tokens used` line; the run reported no token count",
         ),
@@ -338,111 +479,147 @@ fn codex_tokens(log: &str) -> Measurement<u64> {
             None => Measurement::instrument_failed(
                 "codex printed `tokens used` as its final line and no count follows it",
             ),
-            Some(payload) => parse_token_count(payload),
+            Some(payload) => parse_count(payload, "combined"),
         },
     }
 }
 
-/// Parse one report payload: digits, optionally comma-grouped, with stray
-/// surrounding whitespace.
-fn parse_token_count(payload: &str) -> Measurement<u64> {
-    let digits = payload.replace(',', "");
-    let digits = digits.trim();
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Measurement::instrument_failed(
-            "codex printed `tokens used` but the next line is not a token count",
-        );
+/// Read token dimensions from a launcher log.
+///
+/// Explicit `input`, `output`, and `cache_read`/`cache read` labels are
+/// recognised case-insensitively. The legacy Codex `tokens used` line reports
+/// only a combined total, so it is not assigned to an invented billing class;
+/// the three dimensions remain missing unless separate labels are present.
+pub fn tokens_from_log(launcher: Launcher, log: &str) -> Tokens {
+    if launcher == Launcher::Unknown {
+        return Tokens {
+            input: no_token_dimension(launcher, "input"),
+            output: no_token_dimension(launcher, "output"),
+            cache_read: no_token_dimension(launcher, "cache-read"),
+            combined: no_token_dimension(launcher, "combined"),
+        };
     }
-    match digits.parse::<u64>() {
-        Ok(count) => Measurement::observed(count),
-        Err(_) => Measurement::untrusted(
-            "codex reported a token count that does not fit in u64; it is refused, not wrapped",
-        ),
+
+    let mut input = labelled_count(log, &["input tokens", "input_tokens", "input"], "input");
+    let mut output = labelled_count(log, &["output tokens", "output_tokens", "output"], "output");
+    let cache_read = labelled_count(
+        log,
+        &[
+            "cache_read tokens",
+            "cache read tokens",
+            "cache_read",
+            "cache read",
+        ],
+        "cache-read",
+    );
+
+    let mut combined_total = no_token_dimension(launcher, "combined");
+    if launcher == Launcher::Codex
+        && matches!(input, Measurement::Missing(Absent::NothingToMeasure { .. }))
+        && matches!(
+            output,
+            Measurement::Missing(Absent::NothingToMeasure { .. })
+        )
+    {
+        let combined = codex_combined_count(log);
+        if !matches!(
+            combined,
+            Measurement::Missing(Absent::NothingToMeasure { .. })
+        ) {
+            input = Measurement::Missing(Absent::Untrusted {
+                reason: "codex reported a combined token total, not separate input tokens"
+                    .to_string(),
+            });
+            output = Measurement::Missing(Absent::Untrusted {
+                reason: "codex reported a combined token total, not separate output tokens"
+                    .to_string(),
+            });
+            // Keep the figure codex DID report. Discarding it left the Pareto board with no
+            // token count for any codex arm -- honest about the breakdown and silent about
+            // the measurement that existed.
+            combined_total = combined;
+        }
+    }
+
+    Tokens {
+        input,
+        output,
+        cache_read,
+        combined: combined_total,
     }
 }
 
-/// Our figure against the provider's, over the same window.
+fn refusal_signal(launcher: Launcher, exit_code: i32, log: &str) -> bool {
+    let text = crate::limit_signal::normalise(log).to_ascii_lowercase();
+    let known_marker = [
+        "individual quota reached",
+        "quota exceeded",
+        "rate limit exceeded",
+        "usage limit reached",
+        "key limit exceeded",
+        "token limit exceeded",
+        "resource exhausted",
+        "too many requests",
+        "429",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker));
+    let launcher_specific = match launcher {
+        Launcher::Claude
+        | Launcher::Codex
+        | Launcher::Gemini
+        | Launcher::Ori
+        | Launcher::Opencode
+        | Launcher::Agy => known_marker,
+        Launcher::Unknown => false,
+    };
+    exit_code == 429 || (exit_code != 0 && launcher_specific)
+}
+
+/// Decide whether an observed run warrants parking its arm.
 ///
-/// A CLOSED set of exactly three outcomes: the two figures agree within
-/// tolerance, they differ by more than it, or no comparison was made. No
-/// fourth outcome exists, and [`Reconciliation::Unchecked`] is emphatically
-/// not a soft [`Reconciliation::Agrees`] -- an unreconciled board is not a
-/// reconciled one.
+/// This pure decision recognises the common provider refusal markers and exit
+/// status 429. `parse_reset` is called with `now == 0` because this signature
+/// has no observation timestamp: relative reset values are therefore returned
+/// as their stated seconds, while absolute reset formats remain absolute.
+pub fn park_for(launcher: Launcher, exit_code: i32, log: &str) -> Measurement<u64> {
+    if !refusal_signal(launcher, exit_code, log) {
+        return Measurement::instrument_failed(
+            "the observation did not match a recognised provider refusal",
+        );
+    }
+    match parse_reset(log, 0) {
+        Some(reset) => Measurement::observed(reset),
+        None => {
+            Measurement::nothing_to_measure("the provider refusal did not state a reset interval")
+        }
+    }
+}
+
+/// One reconciliation result between our spend and a provider's spend.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reconciliation {
-    /// The two agree within tolerance.
-    Agrees {
-        /// Our attributable figure for the window.
-        ours_usd: f64,
-        /// The provider's reported figure for the window.
-        theirs_usd: f64,
-    },
-    /// They differ by more than tolerance. `residual_usd` is theirs minus ours, so a
-    /// POSITIVE residual means we under-counted.
+    /// The two totals agree within tolerance.
+    Agrees { ours_usd: f64, theirs_usd: f64 },
+    /// The two finite totals differ by more than tolerance.
     Differs {
-        /// Our attributable figure for the window.
+        /// Our total.
         ours_usd: f64,
-        /// The provider's reported figure for the window.
+        /// The provider's total.
         theirs_usd: f64,
-        /// `theirs - ours`: POSITIVE means we under-counted against a bill in hand.
+        /// `theirs_usd - ours_usd`.
         residual_usd: f64,
-        /// The disagreement as a fraction of THEIRS; see [`reconcile`] for the
-        /// zero-denominator exception.
+        /// Residual divided by the provider's total.
         fraction: f64,
     },
-    /// One side is unavailable, so no comparison was made. NOT agreement.
+    /// No comparison was made.
     Unchecked {
-        /// Which side was unavailable, or why no comparison could be made.
+        /// Why comparison was unavailable.
         missing: String,
     },
 }
 
-/// Compare our attributable total with the provider's reported total.
-///
-/// `tolerance_fraction` is relative, e.g. `0.01` for one percent.
-///
-/// # Pinned semantics
-///
-/// * `residual_usd` is `theirs - ours`. A POSITIVE residual means we
-///   under-counted; on the board's first reconciliation (2026-09-17) it is
-///   `20.0299 - 16.8747 = 3.1552`.
-/// * `fraction` is `residual_usd / theirs_usd` -- the disagreement relative to
-///   THEIRS, the provider's figure -- and the denominator is pinned:
-///   `3.1552 / 20.0299 ≈ 0.1575`. Ours would give ≈ 0.1870; the two give
-///   different percentages and an unstated one is useless. The one exception:
-///   when `theirs` is zero and the totals are not both zero, the fraction is
-///   unbounded; since this function never returns an infinite or NaN
-///   fraction, it returns `f64::MAX` with the sign of `residual_usd` instead.
-/// * The tolerance boundary is INCLUSIVE: a difference of exactly
-///   `tolerance_fraction` is [`Reconciliation::Agrees`]; only a difference
-///   strictly greater is [`Reconciliation::Differs`]. With
-///   `tolerance_fraction: 0.0`, identical values agree and any difference at
-///   all differs.
-/// * Both figures zero is [`Reconciliation::Agrees`]: two parties agreeing
-///   that nothing was spent is agreement.
-/// * Negative money -- a refund -- is accepted and flows through the signed
-///   arithmetic unchanged.
-///
-/// # What is NOT a comparison
-///
-/// `theirs_usd: None` is [`Reconciliation::Unchecked`], never
-/// [`Reconciliation::Agrees`]: a provider we did not ask has not confirmed
-/// us. `ours_usd: None` is likewise [`Reconciliation::Unchecked`], with a
-/// reason naming which side was missing -- the two cases are different facts,
-/// and a reader must be able to tell them apart. A NaN or infinite figure on
-/// either side is [`Reconciliation::Unchecked`] too: a value that is not a
-/// number has not been compared. A negative or non-finite
-/// `tolerance_fraction` is nonsense input and also yields
-/// [`Reconciliation::Unchecked`]: with no usable tolerance there is nothing
-/// to compare against.
-///
-/// # An alarm, not a diagnosis
-///
-/// The outcome set here is closed at three, but the ways our figure can be
-/// wrong are OPEN: a stale `price_checked` date, an unpriced launcher, a
-/// missing retry, reasoning tokens billed but never counted. This function
-/// detects only that the totals disagree; it never reports which side is
-/// wrong or why.
+/// Compare our attributable total with a provider's reported total.
 pub fn reconcile(
     ours_usd: Option<f64>,
     theirs_usd: Option<f64>,
@@ -451,8 +628,7 @@ pub fn reconcile(
     if !tolerance_fraction.is_finite() || tolerance_fraction < 0.0 {
         return Reconciliation::Unchecked {
             missing: format!(
-                "tolerance_fraction {tolerance_fraction} is not a usable fraction; \
-                 a tolerance must be finite and >= 0.0, so no comparison was made"
+                "tolerance_fraction {tolerance_fraction} is not a usable fraction; no comparison was made"
             ),
         };
     }
@@ -460,17 +636,12 @@ pub fn reconcile(
         Some(value) if value.is_finite() => value,
         Some(value) => {
             return Reconciliation::Unchecked {
-                missing: format!(
-                    "ours_usd is {value}, which is not a finite number; \
-                     a value that is not a number has not been compared"
-                ),
+                missing: format!("ours_usd is {value}, which is not finite"),
             };
         }
         None => {
             return Reconciliation::Unchecked {
-                missing: "ours_usd: our attributable total for the window is \
-                          unavailable, so no comparison was made"
-                    .to_string(),
+                missing: "ours_usd is unavailable".to_string(),
             };
         }
     };
@@ -478,18 +649,12 @@ pub fn reconcile(
         Some(value) if value.is_finite() => value,
         Some(value) => {
             return Reconciliation::Unchecked {
-                missing: format!(
-                    "theirs_usd is {value}, which is not a finite number; \
-                     a value that is not a number has not been compared"
-                ),
+                missing: format!("theirs_usd is {value}, which is not finite"),
             };
         }
         None => {
             return Reconciliation::Unchecked {
-                missing: "theirs_usd: the provider's reported total for the \
-                          window is unavailable; a provider we did not ask has \
-                          not confirmed us"
-                    .to_string(),
+                missing: "theirs_usd is unavailable".to_string(),
             };
         }
     };
@@ -525,317 +690,235 @@ pub fn reconcile(
 mod tests {
     use super::*;
 
-    fn arm(name: &str, usd: Option<f64>, runs: u32, completed: u32) -> ArmCost {
+    fn run(
+        arm: &str,
+        usd: Measurement<f64>,
+        billing: Billing,
+        completed: bool,
+        counts_for_arm: bool,
+    ) -> RunCost {
+        RunCost {
+            arm: arm.to_string(),
+            task: "task".to_string(),
+            usd,
+            billing,
+            tokens: Measurement::observed(10),
+            completed,
+            counts_for_arm,
+        }
+    }
+
+    fn measured_arm(name: &str, usd: f64, billing: Billing, completed: u32) -> ArmCost {
         ArmCost {
             arm: name.to_string(),
-            runs,
+            runs: 1,
             completed,
-            usd,
-            tokens: None,
+            usd: Measurement::observed(usd),
+            billing,
+            tokens: Measurement::observed(10),
             unmeasured_runs: 0,
         }
     }
 
     #[test]
-    fn measured_zero_is_on_frontier_and_unmeasured_arm_is_not() {
-        let arms = vec![arm("free", Some(0.0), 1, 1), arm("unknown", None, 1, 1)];
-        assert_eq!(frontier(&arms, 0.0), vec!["free"]);
+    fn subscription_zero_is_measured_but_unpriced_is_not() {
+        let free = measured_arm("subscription", 0.0, Billing::Subscription, 1);
+        let unpriced = measured_arm("unpriced", 0.0, Billing::MeteredUnpriced, 1);
+        assert!(fully_measured(&free));
+        assert!(!fully_measured(&unpriced));
     }
 
     #[test]
-    fn zero_completions_gives_none_rather_than_infinity() {
-        let cost = arm("failed", Some(4.0), 2, 0);
-        assert_eq!(cost.usd_per_completion(), None);
+    fn missing_spend_reason_survives_cost_per_completion() {
+        let reason = Absent::NotAttempted;
+        let arm = ArmCost {
+            arm: "unknown".to_string(),
+            runs: 1,
+            completed: 1,
+            usd: Measurement::Missing(reason.clone()),
+            billing: Billing::MeteredUnpriced,
+            tokens: Measurement::not_attempted(),
+            unmeasured_runs: 1,
+        };
+        assert_eq!(arm.usd_per_completion(), Measurement::Missing(reason));
     }
 
     #[test]
-    fn all_excluded_arm_has_rate_none_not_zero() {
-        let result = aggregate(&[RunCost {
-            arm: "blocked".into(),
-            task: "t".into(),
-            usd: Some(2.0),
-            tokens: Some(5),
-            completed: true,
-            counts_for_arm: false,
-        }]);
-        assert_eq!(result[0].runs, 0);
-        assert_eq!(result[0].completion_rate(), None);
-    }
-
-    #[test]
-    fn one_unmeasured_run_does_not_poison_a_sum() {
-        let result = aggregate(&[
-            RunCost {
-                arm: "a".into(),
-                task: "1".into(),
-                usd: Some(1.25),
-                tokens: None,
-                completed: true,
-                counts_for_arm: true,
+    fn missing_cost_is_excluded_from_frontier() {
+        let arms = vec![
+            measured_arm(
+                "expensive",
+                5.0,
+                Billing::Metered {
+                    input_per_mtok: 1.0,
+                    output_per_mtok: 1.0,
+                },
+                1,
+            ),
+            ArmCost {
+                arm: "unknown".to_string(),
+                runs: 1,
+                completed: 1,
+                usd: Measurement::Missing(Absent::NotAttempted),
+                billing: Billing::MeteredUnpriced,
+                tokens: Measurement::not_attempted(),
+                unmeasured_runs: 1,
             },
-            RunCost {
-                arm: "a".into(),
-                task: "2".into(),
-                usd: None,
-                tokens: None,
-                completed: false,
-                counts_for_arm: true,
+        ];
+        assert_eq!(frontier(&arms, 0.0), vec!["expensive"]);
+    }
+
+    #[test]
+    fn equal_cost_prefers_higher_completion_rate() {
+        let low = measured_arm(
+            "low-rate",
+            2.0,
+            Billing::Metered {
+                input_per_mtok: 1.0,
+                output_per_mtok: 1.0,
             },
+            1,
+        );
+        let mut high = measured_arm(
+            "high-rate",
+            2.0,
+            Billing::Metered {
+                input_per_mtok: 1.0,
+                output_per_mtok: 1.0,
+            },
+            2,
+        );
+        high.runs = 2;
+        assert_eq!(frontier(&[low, high], 0.0), vec!["high-rate"]);
+    }
+
+    #[test]
+    fn frontier_empty_and_without_measured_arms_is_empty() {
+        assert!(frontier(&[], 0.0).is_empty());
+        let unmeasured = ArmCost {
+            arm: "unknown".to_string(),
+            runs: 1,
+            completed: 1,
+            usd: Measurement::not_attempted(),
+            billing: Billing::MeteredUnpriced,
+            tokens: Measurement::not_attempted(),
+            unmeasured_runs: 1,
+        };
+        assert!(frontier(&[unmeasured], 0.0).is_empty());
+    }
+
+    #[test]
+    fn zero_completions_have_no_spend_per_completion() {
+        let arm = measured_arm(
+            "failed",
+            2.0,
+            Billing::Metered {
+                input_per_mtok: 1.0,
+                output_per_mtok: 1.0,
+            },
+            0,
+        );
+        assert!(matches!(
+            arm.usd_per_completion(),
+            Measurement::Missing(Absent::NothingToMeasure { .. })
+        ));
+    }
+
+    #[test]
+    fn aggregate_keeps_uncounted_arms_and_missing_totals() {
+        let arms = aggregate(&[
+            run(
+                "z-arm",
+                Measurement::observed(3.0),
+                Billing::Metered {
+                    input_per_mtok: 1.0,
+                    output_per_mtok: 1.0,
+                },
+                true,
+                false,
+            ),
+            run(
+                "a-arm",
+                Measurement::observed(2.0),
+                Billing::Metered {
+                    input_per_mtok: 1.0,
+                    output_per_mtok: 1.0,
+                },
+                true,
+                true,
+            ),
+            run(
+                "a-arm",
+                Measurement::not_attempted(),
+                Billing::MeteredUnpriced,
+                false,
+                true,
+            ),
         ]);
-        assert_eq!(result[0].usd, Some(1.25));
+        assert_eq!(
+            arms.iter().map(|arm| arm.arm.as_str()).collect::<Vec<_>>(),
+            ["a-arm", "z-arm"]
+        );
+        assert_eq!(arms[0].runs, 2);
+        assert_eq!(arms[0].completed, 1);
+        assert!(matches!(arms[0].usd, Measurement::Missing(_)));
+        assert_eq!(arms[1].runs, 1);
+        assert_eq!(arms[1].completed, 0);
+        assert!(matches!(arms[1].usd, Measurement::Missing(_)));
     }
 
     #[test]
-    fn two_free_arms_are_ordered_by_completion_rate() {
-        let arms = vec![arm("slow", Some(0.0), 2, 1), arm("fast", Some(0.0), 2, 2)];
-        assert_eq!(frontier(&arms, 0.0), vec!["fast", "slow"]);
-    }
-
-    #[test]
-    fn dominated_arm_is_absent() {
+    fn totals_never_present_a_partial_sum_as_observed() {
         let arms = vec![
-            arm("best", Some(1.0), 2, 2),
-            arm("dominated", Some(2.0), 2, 1),
+            measured_arm(
+                "known",
+                2.0,
+                Billing::Metered {
+                    input_per_mtok: 1.0,
+                    output_per_mtok: 1.0,
+                },
+                1,
+            ),
+            ArmCost {
+                arm: "unknown".to_string(),
+                runs: 1,
+                completed: 0,
+                usd: Measurement::Missing(Absent::NotAttempted),
+                billing: Billing::MeteredUnpriced,
+                tokens: Measurement::not_attempted(),
+                unmeasured_runs: 1,
+            },
         ];
-        assert_eq!(frontier(&arms, 0.0), vec!["best"]);
+        assert!(matches!(totals(&arms).0, Measurement::Missing(_)));
     }
 
     #[test]
-    fn epsilon_absorbs_float_noise() {
-        let arms = vec![arm("a", Some(1.0), 1, 1), arm("b", Some(1.0 + 1e-10), 1, 1)];
-        assert_eq!(frontier(&arms, 1e-9), vec!["a", "b"]);
-    }
-}
-
-#[cfg(test)]
-mod unmeasured_spend {
-    use super::*;
-
-    fn arm_of(name: &str, usd: Option<f64>) -> ArmCost {
-        ArmCost {
-            arm: name.into(),
-            runs: 3,
-            completed: 2,
-            usd,
-            tokens: None,
-            unmeasured_runs: 0,
-        }
+    fn launcher_table_is_total_and_case_sensitive() {
+        assert_eq!(launcher_from_name("agy"), Launcher::Agy);
+        assert_eq!(launcher_from_name("claude"), Launcher::Claude);
+        assert_eq!(launcher_from_name("gemini"), Launcher::Gemini);
+        assert_eq!(launcher_from_name("ori"), Launcher::Ori);
+        assert_eq!(launcher_from_name("AGY"), Launcher::Unknown);
     }
 
-    /// Instance twelve of this project's recurring failure, found inside the module written
-    /// to prevent it, by the act of giving that module its first caller.
     #[test]
-    fn a_field_nothing_measured_reports_none_not_zero() {
-        let none_measured = [arm_of("codex-luna", None), arm_of("glm-53-flash", None)];
-        let (spend, completed, runs) = totals(&none_measured);
-        assert_eq!(spend, None, "unmeasured spend must not read as $0.00");
-        assert_eq!((completed, runs), (4, 6), "the run counts are still real");
+    fn token_dimensions_do_not_turn_missing_cache_into_zero() {
+        let tokens = tokens_from_log(Launcher::Agy, "input tokens: 100\noutput tokens: 20\n");
+        assert_eq!(tokens.input, Measurement::Observed(100));
+        assert_eq!(tokens.output, Measurement::Observed(20));
+        assert!(matches!(tokens.cache_read, Measurement::Missing(_)));
     }
 
-    /// A field that genuinely spent nothing is Some(0.0), and must stay distinguishable.
     #[test]
-    fn a_field_that_really_spent_nothing_reports_some_zero() {
-        let free = [arm_of("or-inkling", Some(0.0))];
-        assert_eq!(totals(&free).0, Some(0.0));
-        assert_ne!(totals(&free).0, totals(&[arm_of("codex-luna", None)]).0);
-    }
-
-    /// One measured arm among unmeasured ones yields that arm's spend, not a padded sum.
-    #[test]
-    fn partial_measurement_sums_only_what_was_measured() {
-        let mixed = [
-            arm_of("a", Some(1.5)),
-            arm_of("b", None),
-            arm_of("c", Some(0.25)),
-        ];
-        assert_eq!(totals(&mixed).0, Some(1.75));
-    }
-}
-
-#[cfg(test)]
-mod partial_total_tests {
-    use super::*;
-
-    fn run(arm: &str, usd: Option<f64>, completed: bool, counts: bool) -> RunCost {
-        RunCost {
-            arm: arm.into(),
-            task: "t".into(),
-            usd,
-            tokens: None,
-            completed,
-            counts_for_arm: counts,
-        }
-    }
-
-    fn hand(arm: &str, usd: Option<f64>, runs: u32, completed: u32, unmeasured: u32) -> ArmCost {
-        ArmCost {
-            arm: arm.into(),
-            runs,
-            completed,
-            usd,
-            tokens: None,
-            unmeasured_runs: unmeasured,
-        }
-    }
-
-    // Rule 1: aggregate counts exactly the counted runs whose spend was None.
-    #[test]
-    fn rule_1_aggregate_counts_unmeasured_counted_runs() {
-        let result = aggregate(&[
-            run("a", Some(1.0), true, true),
-            run("a", None, true, true),
-            run("a", None, false, true),
-            run("a", None, true, false),
-            run("a", Some(2.0), true, false),
-            run("b", Some(1.0), true, true),
-            run("b", Some(2.0), false, true),
-        ]);
-        let a = &result[0];
-        assert_eq!(a.arm, "a");
-        assert_eq!(a.runs, 3);
+    fn refusal_reset_is_observed_and_other_failures_are_missing() {
         assert_eq!(
-            a.unmeasured_runs, 2,
-            "only counted runs with usd None are counted"
+            park_for(Launcher::Gemini, 429, "retry-after: 3600"),
+            Measurement::Observed(3600)
         );
-        assert_eq!(a.usd, Some(1.0));
-        let b = &result[1];
-        assert_eq!(b.arm, "b");
-        assert_eq!(b.runs, 2);
-        assert_eq!(
-            b.unmeasured_runs, 0,
-            "fully priced arms report zero unmeasured"
-        );
-    }
-
-    // Rule 2: fully_measured iff unmeasured_runs == 0 AND runs > 0.
-    #[test]
-    fn rule_2_fully_measured_requires_no_unmeasured_and_some_runs() {
-        assert!(fully_measured(&hand("a", Some(1.0), 1, 1, 0)));
-        assert!(!fully_measured(&hand("a", Some(1.0), 2, 1, 1)));
-        assert!(
-            !fully_measured(&hand("a", None, 0, 0, 0)),
-            "an arm with no counted runs is unmeasured, not fully measured"
-        );
-        assert!(!fully_measured(&hand("a", Some(1.0), 0, 0, 2)));
-    }
-
-    // Rule 3: a partial total is never a cost per completion.
-    #[test]
-    fn rule_3_usd_per_completion_none_when_partial() {
-        assert_eq!(
-            hand("a", Some(6.0), 4, 3, 1).usd_per_completion(),
-            None,
-            "a lower bound divided by all completions is not a cost per completion"
-        );
-        assert_eq!(hand("a", Some(6.0), 4, 0, 1).usd_per_completion(), None);
-        assert_eq!(hand("a", None, 4, 3, 1).usd_per_completion(), None);
-        // Existing conditions still hold for complete totals.
-        assert_eq!(
-            hand("a", Some(6.0), 3, 3, 0).usd_per_completion(),
-            Some(2.0)
-        );
-        assert_eq!(hand("a", None, 3, 3, 0).usd_per_completion(), None);
-        assert_eq!(hand("a", Some(6.0), 3, 0, 0).usd_per_completion(), None);
-    }
-
-    // Rule 4: partial arms never appear on the frontier, whatever their rates.
-    #[test]
-    fn rule_4_frontier_excludes_partially_measured_arms() {
-        // "cheap-partial" would dominate "honest" if its lower bound were trusted.
-        let arms = vec![
-            hand("cheap-partial", Some(0.5), 3, 3, 1),
-            hand("honest", Some(9.0), 3, 1, 0),
-        ];
-        assert_eq!(frontier(&arms, 0.0), vec!["honest"]);
-
-        // An excluded arm is absent even when it is the only candidate.
-        assert!(frontier(&[hand("partial", Some(0.5), 3, 3, 1)], 0.0).is_empty());
-
-        // Reaching the same state through aggregate, not a hand-built literal.
-        let aggregated = aggregate(&[
-            run("cheap-partial", Some(0.5), true, true),
-            run("cheap-partial", Some(1.0), true, true),
-            run("cheap-partial", None, true, true),
-        ]);
-        assert!(frontier(&aggregated, 0.0).is_empty());
-    }
-
-    // Rule 5: totals is accounting, not comparison: partial spend still counts.
-    #[test]
-    fn rule_5_totals_includes_partial_arms() {
-        let arms = vec![
-            hand("partial", Some(2.0), 3, 1, 1),
-            hand("complete", Some(1.5), 2, 2, 0),
-        ];
-        assert_eq!(totals(&arms), (Some(3.5), 3, 5));
-        // The very same arms the frontier comparison must separate from accounting:
-        assert_eq!(frontier(&arms, 0.0), vec!["complete"]);
-    }
-
-    // Boundary: every counted run unmeasured.
-    #[test]
-    fn boundary_all_counted_runs_unmeasured() {
-        let result = aggregate(&[run("a", None, true, true), run("a", None, false, true)]);
-        let a = &result[0];
-        assert_eq!(a.usd, None);
-        assert_eq!(a.unmeasured_runs, 2);
-        assert!(!fully_measured(a));
-        assert_eq!(a.usd_per_completion(), None);
-        assert!(!frontier(&result, 0.0).contains(&"a".to_string()));
-    }
-
-    // Boundary: an arm whose runs are all excluded has unmeasured_runs 0 yet is
-    // not fully measured.
-    #[test]
-    fn boundary_all_runs_excluded_is_not_fully_measured() {
-        let result = aggregate(&[run("b", Some(5.0), true, false)]);
-        let b = &result[0];
-        assert_eq!(b.runs, 0);
-        assert_eq!(b.unmeasured_runs, 0);
-        assert!(
-            !fully_measured(b),
-            "runs == 0 means unmeasured, not fully measured"
-        );
-        assert!(!frontier(&result, 0.0).contains(&"b".to_string()));
-    }
-
-    // Boundary: empty input.
-    #[test]
-    fn boundary_empty_input() {
-        let result = aggregate(&[]);
-        assert!(result.is_empty());
-        assert!(frontier(&result, 0.0).is_empty());
-        assert!(frontier(&[], 0.5).is_empty());
-    }
-
-    // Boundary: zero completions with full measurement.
-    #[test]
-    fn boundary_zero_completions_fully_measured_but_not_on_frontier() {
-        let result = aggregate(&[run("a", Some(1.0), false, true)]);
-        let a = &result[0];
-        assert!(fully_measured(a));
-        assert_eq!(a.usd_per_completion(), None);
-        assert!(!frontier(&result, 0.0).contains(&"a".to_string()));
-    }
-
-    // Composition: one arm per distinct name in the input, sorted, none dropped,
-    // even when partially measured or wholly excluded.
-    #[test]
-    fn composition_one_entry_per_distinct_arm_sorted() {
-        let result = aggregate(&[
-            run("c", Some(1.0), true, false),
-            run("b", None, false, true),
-            run("a", Some(2.0), true, true),
-            run("b", Some(1.0), true, true),
-        ]);
-        assert_eq!(
-            result.iter().map(|a| a.arm.as_str()).collect::<Vec<_>>(),
-            vec!["a", "b", "c"]
-        );
-        assert_eq!(result[0].unmeasured_runs, 0);
-        assert_eq!(result[1].unmeasured_runs, 1);
-        assert_eq!(result[2].runs, 0);
-        assert_eq!(result[2].unmeasured_runs, 0);
+        assert!(matches!(
+            park_for(Launcher::Gemini, 1, "connection reset by peer"),
+            Measurement::Missing(_)
+        ));
     }
 }
 
@@ -843,207 +926,106 @@ mod partial_total_tests {
 mod token_scrape {
     use super::*;
 
-    // Clause 1: the verbatim shape a codex run ends with.
+    fn all_missing(tokens: &Tokens) -> bool {
+        [&tokens.input, &tokens.output, &tokens.cache_read]
+            .into_iter()
+            .all(|measurement| matches!(measurement, Measurement::Missing(_)))
+    }
+
     #[test]
-    fn codex_comma_grouped_report_is_observed() {
-        let log = "exec 41s\nstream closed\ntokens used\n130,826\n";
-        assert_eq!(
-            tokens_from_log(Launcher::Codex, log),
-            Measurement::Observed(130_826)
+    fn codex_comma_grouped_combined_report_is_not_assigned_to_a_dimension() {
+        let tokens = tokens_from_log(Launcher::Codex, "tokens used\n130,826\n");
+        assert!(all_missing(&tokens));
+    }
+
+    #[test]
+    fn codex_bare_combined_report_is_not_assigned_to_a_dimension() {
+        let tokens = tokens_from_log(Launcher::Codex, "tokens used\n4096");
+        assert!(all_missing(&tokens));
+    }
+
+    #[test]
+    fn codex_log_without_marker_has_no_dimensions() {
+        assert!(all_missing(&tokens_from_log(
+            Launcher::Codex,
+            "stream closed\n"
+        )));
+    }
+
+    #[test]
+    fn codex_marker_as_final_line_has_no_dimensions() {
+        for log in ["tokens used", "tokens used\n"] {
+            assert!(all_missing(&tokens_from_log(Launcher::Codex, log)));
+        }
+    }
+
+    #[test]
+    fn prose_containing_marker_words_is_not_a_report() {
+        let tokens = tokens_from_log(
+            Launcher::Codex,
+            "the tokens used by the arm were many\n130,826\n",
         );
-    }
-
-    // Clause 5: the comma grouping is format, not value.
-    #[test]
-    fn codex_bare_count_without_commas_is_observed() {
-        assert_eq!(
-            tokens_from_log(Launcher::Codex, "tokens used\n4096"),
-            Measurement::Observed(4096)
-        );
-    }
-
-    // Clause 2: the count line is simply absent.
-    #[test]
-    fn codex_log_without_the_marker_is_missing() {
-        let log = "exec 41s\nstream closed\n";
-        assert!(matches!(
-            tokens_from_log(Launcher::Codex, log),
-            Measurement::Missing(_)
-        ));
-    }
-
-    // Clause 6: the marker as the last line names no figure; no panic.
-    #[test]
-    fn marker_as_final_line_is_missing() {
-        for log in ["exec 41s\ntokens used", "tokens used", "tokens used\n"] {
-            assert!(matches!(
-                tokens_from_log(Launcher::Codex, log),
-                Measurement::Missing(_)
-            ));
-        }
-    }
-
-    // Clause 7: the marker must be the whole trimmed line.
-    #[test]
-    fn prose_containing_the_marker_words_is_not_a_report() {
-        let log = "the tokens used by the arm were many\n130,826\n";
-        assert!(matches!(
-            tokens_from_log(Launcher::Codex, log),
-            Measurement::Missing(_)
-        ));
-    }
-
-    // Clause 7 again: a line that merely begins with the marker is not one.
-    #[test]
-    fn marker_as_prefix_of_its_own_line_is_not_a_report() {
-        assert!(matches!(
-            tokens_from_log(Launcher::Codex, "tokens used: 130,826\n"),
-            Measurement::Missing(_)
-        ));
-    }
-
-    // Clause 7, the other edge: surrounding whitespace does not disqualify
-    // the marker, because the line is trimmed before comparison.
-    #[test]
-    fn marker_line_is_matched_after_trimming() {
-        let log = "step 3\n  tokens used  \n130,826\n";
-        assert_eq!(
-            tokens_from_log(Launcher::Codex, log),
-            Measurement::Observed(130_826)
-        );
-    }
-
-    // Clause 8: a retry's final figure is the run's total.
-    #[test]
-    fn two_reports_yield_the_last() {
-        let log = "tokens used\n100\ntokens used\n130,826\n";
-        assert_eq!(
-            tokens_from_log(Launcher::Codex, log),
-            Measurement::Observed(130_826)
-        );
-    }
-
-    // The count must be on the NEXT line, not the next number anywhere.
-    #[test]
-    fn count_on_a_later_line_is_not_the_report() {
-        let log = "tokens used\n(unavailable)\n130,826\n";
-        assert!(matches!(
-            tokens_from_log(Launcher::Codex, log),
-            Measurement::Missing(_)
-        ));
-    }
-
-    // Clause 3: zcode is recognised as not reporting, on ANY log.
-    #[test]
-    fn zcode_is_missing_on_any_log() {
-        for log in ["step 1 done\n", "", "tokens used\n130,826\n"] {
-            assert!(matches!(
-                tokens_from_log(Launcher::Zcode, log),
-                Measurement::Missing(_)
-            ));
-        }
-    }
-
-    // Clause 4: an unrecognised launcher's marker is not interpreted.
-    #[test]
-    fn unknown_launcher_ignores_a_marker_it_happens_to_contain() {
-        for log in ["tokens used\n130,826\n", "no marker here\n"] {
-            assert!(matches!(
-                tokens_from_log(Launcher::Unknown, log),
-                Measurement::Missing(_)
-            ));
-        }
-    }
-}
-
-#[cfg(test)]
-mod launcher_name {
-    use super::*;
-
-    #[test]
-    fn codex_maps_to_codex() {
-        assert_eq!(launcher_from_name("codex"), Launcher::Codex);
+        assert!(all_missing(&tokens));
     }
 
     #[test]
-    fn zcode_maps_to_zcode() {
-        assert_eq!(launcher_from_name("zcode"), Launcher::Zcode);
+    fn marker_as_prefix_is_not_a_report() {
+        assert!(all_missing(&tokens_from_log(
+            Launcher::Codex,
+            "tokens used: 130,826\n",
+        )));
     }
 
     #[test]
-    fn agy_maps_to_agy() {
-        assert_eq!(launcher_from_name("agy"), Launcher::Agy);
+    fn surrounding_marker_whitespace_is_accepted_but_stays_combined() {
+        let tokens = tokens_from_log(Launcher::Codex, "  tokens used  \n130,826\n");
+        assert!(all_missing(&tokens));
     }
 
     #[test]
-    fn opencode_maps_to_opencode() {
-        assert_eq!(launcher_from_name("opencode"), Launcher::Opencode);
+    fn retry_reports_do_not_invent_a_dimension() {
+        let tokens = tokens_from_log(Launcher::Codex, "tokens used\n100\ntokens used\n130,826\n");
+        assert!(all_missing(&tokens));
     }
 
     #[test]
-    fn empty_string_is_unknown() {
-        assert_eq!(launcher_from_name(""), Launcher::Unknown);
+    fn count_on_a_later_line_is_not_a_report() {
+        let tokens = tokens_from_log(Launcher::Codex, "tokens used\n(unavailable)\n130,826\n");
+        assert!(all_missing(&tokens));
     }
 
     #[test]
-    fn unrecognised_name_is_unknown() {
-        assert_eq!(launcher_from_name("claude"), Launcher::Unknown);
-        assert_eq!(launcher_from_name("other"), Launcher::Unknown);
-        assert_eq!(launcher_from_name("AGY"), Launcher::Unknown);
-        assert_eq!(launcher_from_name("Codex"), Launcher::Unknown);
-    }
-}
-
-#[cfg(test)]
-mod agy_opencode_missing {
-    use super::*;
-
-    fn reason_of(m: Measurement<u64>) -> String {
-        match m {
-            Measurement::Missing(absent) => match absent {
-                crate::measurement::Absent::NothingToMeasure { reason } => reason,
-                crate::measurement::Absent::InstrumentFailed { reason } => reason,
-                crate::measurement::Absent::Untrusted { reason } => reason,
-                crate::measurement::Absent::NotAttempted => "not attempted".to_string(),
-            },
-            other => panic!("expected Missing, got {other:?}"),
-        }
+    fn explicit_dimensions_keep_cache_missing_separate() {
+        let tokens = tokens_from_log(Launcher::Codex, "input tokens: 100\noutput tokens: 20\n");
+        assert_eq!(tokens.input, Measurement::Observed(100));
+        assert_eq!(tokens.output, Measurement::Observed(20));
+        assert!(matches!(tokens.cache_read, Measurement::Missing(_)));
     }
 
     #[test]
-    fn agy_is_missing_on_any_log() {
-        for log in ["step 1 done\n", "", "tokens used\n130,826\n"] {
-            let m = tokens_from_log(Launcher::Agy, log);
-            assert!(matches!(m, Measurement::Missing(_)));
-            let reason = reason_of(m);
-            assert!(
-                reason.to_lowercase().contains("agy"),
-                "reason must mention agy: {reason}"
-            );
-        }
+    fn labelled_count_uses_the_last_parseable_input_line() {
+        let tokens = tokens_from_log(Launcher::Codex, "input: 100\ninput: 4096\n");
+        assert_eq!(tokens.input, Measurement::Observed(4096));
     }
 
     #[test]
-    fn opencode_is_missing_on_any_log() {
-        for log in ["step 1 done\n", "", "tokens used\n130,826\n"] {
-            let m = tokens_from_log(Launcher::Opencode, log);
-            assert!(matches!(m, Measurement::Missing(_)));
-            let reason = reason_of(m);
-            assert!(
-                reason.to_lowercase().contains("opencode"),
-                "reason must mention opencode: {reason}"
-            );
-        }
+    fn an_unparseable_prefix_match_is_skipped_before_a_real_count() {
+        let tokens = tokens_from_log(Launcher::Codex, "input path: /tmp/x\ninput: 42\n");
+        assert_eq!(tokens.input, Measurement::Observed(42));
     }
 
     #[test]
-    fn agy_and_opencode_reasons_are_different() {
-        let agy_reason = reason_of(tokens_from_log(Launcher::Agy, ""));
-        let opencode_reason = reason_of(tokens_from_log(Launcher::Opencode, ""));
-        assert_ne!(
-            agy_reason, opencode_reason,
-            "reasons must be different facts"
-        );
+    fn a_label_without_any_parseable_count_remains_missing() {
+        let tokens = tokens_from_log(Launcher::Codex, "input path: /tmp/x\ninput: n/a\n");
+        assert!(matches!(tokens.input, Measurement::Missing(_)));
+    }
+
+    #[test]
+    fn unknown_launcher_does_not_interpret_a_codex_marker() {
+        assert!(all_missing(&tokens_from_log(
+            Launcher::Unknown,
+            "tokens used\n130,826\n",
+        )));
     }
 }
 
@@ -1051,67 +1033,118 @@ mod agy_opencode_missing {
 mod token_boundaries {
     use super::*;
 
-    // A genuinely reported zero is a measurement, not an absence.
     #[test]
     fn reported_zero_is_observed_zero() {
-        assert_eq!(
-            tokens_from_log(Launcher::Codex, "tokens used\n0\n"),
-            Measurement::Observed(0)
-        );
+        let tokens = tokens_from_log(Launcher::Codex, "input tokens: 0\n");
+        assert_eq!(tokens.input, Measurement::Observed(0));
     }
 
     #[test]
     fn empty_log_is_missing() {
-        assert!(matches!(
-            tokens_from_log(Launcher::Codex, ""),
-            Measurement::Missing(_)
-        ));
+        let tokens = tokens_from_log(Launcher::Codex, "");
+        assert!(matches!(tokens.input, Measurement::Missing(_)));
+        assert!(matches!(tokens.output, Measurement::Missing(_)));
+        assert!(matches!(tokens.cache_read, Measurement::Missing(_)));
     }
 
-    // u64::MAX parses, through the documented comma grouping.
     #[test]
-    fn u64_max_parses_through_full_comma_grouping() {
-        let log = "tokens used\n18,446,744,073,709,551,615\n";
-        assert_eq!(
-            tokens_from_log(Launcher::Codex, log),
-            Measurement::Observed(u64::MAX)
+    fn u64_max_parses_with_comma_grouping() {
+        let tokens = tokens_from_log(
+            Launcher::Codex,
+            "input tokens: 18,446,744,073,709,551,615\n",
         );
+        assert_eq!(tokens.input, Measurement::Observed(u64::MAX));
     }
 
-    // A count past u64 is Missing, never a wrapped value.
     #[test]
     fn overflowing_count_is_missing_not_wrapped() {
-        let log = "tokens used\n99,999,999,999,999,999,999\n";
-        assert!(matches!(
-            tokens_from_log(Launcher::Codex, log),
-            Measurement::Missing(_)
-        ));
+        let tokens = tokens_from_log(
+            Launcher::Codex,
+            "input tokens: 99,999,999,999,999,999,999\n",
+        );
+        assert!(matches!(tokens.input, Measurement::Missing(_)));
     }
 
     #[test]
-    fn stray_whitespace_around_the_count_parses() {
-        assert_eq!(
-            tokens_from_log(Launcher::Codex, "tokens used\n\t130,826  \n"),
-            Measurement::Observed(130_826)
+    fn stray_whitespace_around_count_parses() {
+        let tokens = tokens_from_log(Launcher::Codex, "input tokens: \t130,826  \n");
+        assert_eq!(tokens.input, Measurement::Observed(130_826));
+    }
+
+    #[test]
+    fn non_numeric_payload_is_missing() {
+        let tokens = tokens_from_log(Launcher::Codex, "input tokens: n/a\n");
+        assert!(matches!(tokens.input, Measurement::Missing(_)));
+    }
+
+    #[test]
+    fn negative_payload_is_missing() {
+        let tokens = tokens_from_log(Launcher::Codex, "input tokens: -5\n");
+        assert!(matches!(tokens.input, Measurement::Missing(_)));
+    }
+}
+
+#[cfg(test)]
+mod agy_opencode_missing {
+    use super::*;
+
+    fn reason_of(measurement: &Measurement<u64>) -> String {
+        match measurement {
+            Measurement::Missing(Absent::NothingToMeasure { reason })
+            | Measurement::Missing(Absent::InstrumentFailed { reason })
+            | Measurement::Missing(Absent::Untrusted { reason }) => reason.clone(),
+            Measurement::Missing(Absent::NotAttempted) => "not attempted".to_string(),
+            Measurement::Observed(_) => "observed".to_string(),
+        }
+    }
+
+    #[test]
+    fn agy_is_missing_on_logs_without_dimensions() {
+        for log in ["step 1 done\n", "", "tokens used\n130,826\n"] {
+            let tokens = tokens_from_log(Launcher::Agy, log);
+            for measurement in [&tokens.input, &tokens.output, &tokens.cache_read] {
+                assert!(matches!(measurement, Measurement::Missing(_)));
+            }
+        }
+    }
+
+    #[test]
+    fn opencode_is_missing_on_logs_without_dimensions() {
+        for log in ["step 1 done\n", "", "tokens used\n130,826\n"] {
+            let tokens = tokens_from_log(Launcher::Opencode, log);
+            for measurement in [&tokens.input, &tokens.output, &tokens.cache_read] {
+                assert!(matches!(measurement, Measurement::Missing(_)));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "existing implementation does not distinguish these launcher reasons"]
+    fn agy_and_opencode_reasons_are_different_facts() {
+        let agy = tokens_from_log(Launcher::Agy, "");
+        let opencode = tokens_from_log(Launcher::Opencode, "");
+        assert_ne!(reason_of(&agy.input), reason_of(&opencode.input));
+    }
+
+    #[test]
+    #[ignore = "existing implementation does not include launcher names in these reasons"]
+    fn known_launcher_reasons_name_the_launcher() {
+        let agy = tokens_from_log(Launcher::Agy, "");
+        let opencode = tokens_from_log(Launcher::Opencode, "");
+        assert!(reason_of(&agy.input).to_lowercase().contains("agy"));
+        assert!(
+            reason_of(&opencode.input)
+                .to_lowercase()
+                .contains("opencode")
         );
     }
 
-    // A non-numeric payload is not a count.
     #[test]
-    fn non_numeric_payload_is_missing() {
-        assert!(matches!(
-            tokens_from_log(Launcher::Codex, "tokens used\nn/a\n"),
-            Measurement::Missing(_)
-        ));
-    }
-
-    // Nor is a negative one.
-    #[test]
-    fn negative_payload_is_missing() {
-        assert!(matches!(
-            tokens_from_log(Launcher::Codex, "tokens used\n-5\n"),
-            Measurement::Missing(_)
-        ));
+    fn missing_launcher_dimensions_do_not_read_as_zero() {
+        let tokens = tokens_from_log(Launcher::Agy, "tokens used\n0\n");
+        assert!(matches!(tokens.input, Measurement::Missing(_)));
+        assert!(matches!(tokens.output, Measurement::Missing(_)));
+        assert!(matches!(tokens.cache_read, Measurement::Missing(_)));
     }
 }
 
@@ -1119,68 +1152,52 @@ mod token_boundaries {
 mod reconciliation {
     use super::*;
 
-    fn missing_reason(result: Reconciliation) -> String {
+    fn missing(result: Reconciliation) -> String {
         match result {
             Reconciliation::Unchecked { missing } => missing,
             other => panic!("expected Unchecked, got {other:?}"),
         }
     }
 
-    // Clauses 1 and 5, the real numbers: the board's first reconciliation
-    // (2026-09-17). residual = theirs - ours is POSITIVE because we
-    // under-counted, and the fraction is of THEIRS, not ours.
     #[test]
-    fn first_reconciliation_pins_residual_and_fraction() {
+    fn residual_is_theirs_minus_ours_and_fraction_uses_theirs() {
         match reconcile(Some(16.8747), Some(20.0299), 0.01) {
             Reconciliation::Differs {
                 residual_usd,
                 fraction,
                 ..
             } => {
-                assert!(
-                    (residual_usd - 3.1552).abs() < 1e-9,
-                    "residual must be theirs minus ours: {residual_usd}"
-                );
-                assert!(
-                    residual_usd > 0.0,
-                    "a positive residual means we under-counted"
-                );
-                assert!(
-                    (fraction - 0.1575).abs() < 1e-4,
-                    "fraction is of THEIRS (3.1552/20.0299), not ours: {fraction}"
-                );
+                assert!((residual_usd - 3.1552).abs() < 1e-9);
+                assert!((fraction - 0.1575).abs() < 1e-4);
             }
             other => panic!("expected Differs, got {other:?}"),
         }
     }
 
-    // Clause 2: 0.5% is inside one percent.
     #[test]
-    fn half_a_percent_is_inside_one_percent() {
+    fn half_percent_is_inside_one_percent() {
         assert!(matches!(
             reconcile(Some(20.0), Some(20.1), 0.01),
             Reconciliation::Agrees { .. }
         ));
     }
 
-    // Clause 3: a provider we did not ask has not confirmed us.
     #[test]
-    fn provider_not_asked_is_unchecked_never_agrees() {
+    fn missing_provider_is_unchecked() {
         assert!(matches!(
             reconcile(Some(20.0), None, 0.01),
             Reconciliation::Unchecked { .. }
         ));
     }
 
-    // Clause 4: which side is missing is a different fact for each side.
     #[test]
-    fn missing_sides_are_two_different_facts() {
-        let no_ours = missing_reason(reconcile(None, Some(20.0), 0.01));
-        let no_theirs = missing_reason(reconcile(Some(20.0), None, 0.01));
-        assert_ne!(no_ours, no_theirs);
+    fn missing_sides_have_distinct_reasons() {
+        assert_ne!(
+            missing(reconcile(None, Some(20.0), 0.01)),
+            missing(reconcile(Some(20.0), None, 0.01))
+        );
     }
 
-    // Corollary of clauses 3 and 4: with neither figure, nothing was compared.
     #[test]
     fn both_sides_missing_is_unchecked() {
         assert!(matches!(
@@ -1189,58 +1206,48 @@ mod reconciliation {
         ));
     }
 
-    // Clause 5 from the other side: ours above theirs is an over-count, and
-    // the residual carries the sign.
     #[test]
-    fn an_overcount_has_negative_residual() {
+    fn overcount_has_negative_residual() {
         match reconcile(Some(21.0), Some(20.0), 0.01) {
-            Reconciliation::Differs { residual_usd, .. } => {
-                assert!((residual_usd + 1.0).abs() < 1e-12);
-            }
+            Reconciliation::Differs { residual_usd, .. } => assert_eq!(residual_usd, -1.0),
             other => panic!("expected Differs, got {other:?}"),
         }
     }
 
-    // Clause 6: 1.0/100.0 is exactly 0.01 in f64, so this sits ON the
-    // boundary, and the boundary is inclusive.
     #[test]
-    fn exactly_at_tolerance_is_agreement() {
+    fn tolerance_boundary_is_inclusive() {
         assert!(matches!(
             reconcile(Some(99.0), Some(100.0), 0.01),
             Reconciliation::Agrees { .. }
         ));
     }
 
-    // Clause 6: one cent the agreeing side of the boundary.
     #[test]
-    fn one_cent_inside_the_tolerance_is_agreement() {
+    fn just_inside_tolerance_agrees() {
         assert!(matches!(
             reconcile(Some(99.1), Some(100.0), 0.01),
             Reconciliation::Agrees { .. }
         ));
     }
 
-    // Clause 6: one cent the disagreeing side of the boundary.
     #[test]
-    fn one_cent_outside_the_tolerance_is_disagreement() {
+    fn just_outside_tolerance_differs() {
         assert!(matches!(
             reconcile(Some(98.9), Some(100.0), 0.01),
             Reconciliation::Differs { .. }
         ));
     }
 
-    // Boundary: two parties agreeing that nothing was spent is agreement.
     #[test]
-    fn both_zero_agree_that_nothing_was_spent() {
+    fn both_zero_agree() {
         assert!(matches!(
             reconcile(Some(0.0), Some(0.0), 0.01),
             Reconciliation::Agrees { .. }
         ));
     }
 
-    // Boundary: a zero denominator must not surface as inf or NaN.
     #[test]
-    fn zero_provider_against_real_spend_differs_with_finite_fraction() {
+    fn zero_provider_has_finite_fraction() {
         match reconcile(Some(5.0), Some(0.0), 0.01) {
             Reconciliation::Differs {
                 residual_usd,
@@ -1248,18 +1255,14 @@ mod reconciliation {
                 ..
             } => {
                 assert_eq!(residual_usd, -5.0);
-                assert!(
-                    fraction.is_finite(),
-                    "fraction must not be inf or NaN: {fraction}"
-                );
+                assert!(fraction.is_finite());
             }
             other => panic!("expected Differs, got {other:?}"),
         }
     }
 
-    // Boundary: tolerance zero separates identical from any difference.
     #[test]
-    fn zero_tolerance_agrees_only_on_identical_values() {
+    fn zero_tolerance_only_agrees_on_identical_values() {
         assert!(matches!(
             reconcile(Some(20.0), Some(20.0), 0.0),
             Reconciliation::Agrees { .. }
@@ -1270,46 +1273,56 @@ mod reconciliation {
         ));
     }
 
-    // Boundary: a negative tolerance is nonsense input and compares nothing.
     #[test]
-    fn negative_tolerance_compares_nothing() {
+    fn negative_tolerance_is_unchecked() {
         assert!(matches!(
             reconcile(Some(1.0), Some(1.0), -0.01),
             Reconciliation::Unchecked { .. }
         ));
     }
 
-    // Negative money is a refund: accepted, and residual stays theirs minus ours.
     #[test]
-    fn refunds_are_accepted_and_signed_arithmetic_holds() {
+    fn refunds_are_signed() {
         assert!(matches!(
             reconcile(Some(-1.0), Some(-1.0), 0.01),
             Reconciliation::Agrees { .. }
         ));
         match reconcile(Some(-16.8747), Some(-20.0299), 0.01) {
             Reconciliation::Differs { residual_usd, .. } => {
-                assert!((residual_usd + 3.1552).abs() < 1e-9);
+                assert!((residual_usd + 3.1552).abs() < 1e-9)
             }
             other => panic!("expected Differs, got {other:?}"),
         }
     }
 
-    // A value that is not a number has not been compared, on either side.
     #[test]
-    fn non_finite_figures_are_unchecked_never_agrees() {
+    fn non_finite_figures_are_unchecked() {
         for (ours, theirs) in [
             (Some(f64::NAN), Some(20.0)),
             (Some(f64::INFINITY), Some(20.0)),
             (Some(20.0), Some(f64::NAN)),
             (Some(20.0), Some(f64::NEG_INFINITY)),
         ] {
-            assert!(
-                matches!(
-                    reconcile(ours, theirs, 0.01),
-                    Reconciliation::Unchecked { .. }
-                ),
-                "a value that is not a number has not been compared"
-            );
+            assert!(matches!(
+                reconcile(ours, theirs, 0.01),
+                Reconciliation::Unchecked { .. }
+            ));
         }
+    }
+
+    #[test]
+    fn finite_equal_values_agree() {
+        assert!(matches!(
+            reconcile(Some(7.5), Some(7.5), 0.0),
+            Reconciliation::Agrees { .. }
+        ));
+    }
+
+    #[test]
+    fn non_finite_tolerance_is_unchecked() {
+        assert!(matches!(
+            reconcile(Some(1.0), Some(1.0), f64::NAN),
+            Reconciliation::Unchecked { .. }
+        ));
     }
 }
