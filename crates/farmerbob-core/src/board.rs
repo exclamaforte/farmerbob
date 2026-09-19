@@ -15,6 +15,7 @@
 
 use crate::attention::{Facts, Item};
 use crate::measurement::Measurement;
+use crate::run_state_view::{self, RunState};
 
 /// One task, as the caller found it on disk. Every field is what the caller
 /// could actually observe; nothing here is inferred.
@@ -34,6 +35,11 @@ pub struct TaskFiles {
     /// Stages the last pipeline run reported as failed, in pipeline order.
     /// EMPTY means the last run failed nothing; it does not mean no run.
     pub failed_stages: Vec<String>,
+    /// How many worktrees exist for this task, of any arm.
+    pub worktrees: usize,
+    /// How many agents for THIS task are running right now. `Missing` when
+    /// the caller could not ask.
+    pub live: Measurement<usize>,
 }
 
 /// One queued matrix the caller found in `.fb/queue/`.
@@ -53,8 +59,10 @@ pub struct QueuedMatrix {
 /// Each entry of `tasks` yields its items independently — `PipelineFailed`
 /// first when the last run failed stages, then at most one tier item: a task
 /// not yet adjudicated yields `Adjudicate` or `RunPipeline` exactly when its
-/// passing count was actually observed, and a task already adjudicated yields
-/// no tier item at all. Nothing is sorted and nothing is filtered:
+/// passing count was actually observed, while a finished-but-unscored task is
+/// withheld from the tier rules because its item variant is not available on
+/// this API surface. A task already adjudicated yields no tier item at all.
+/// Nothing is sorted and nothing is filtered:
 /// `Facts.items` holds exactly what those clauses produce, tasks in the order
 /// given, then queued waves in the order given, then `QueueEmpty` when the
 /// listing left nothing to do. A name appearing twice in `tasks` is
@@ -65,6 +73,7 @@ pub fn observe(
     live_agents: Measurement<usize>,
 ) -> Facts {
     let mut items = Vec::new();
+    let mut has_finished_unscored = false;
 
     for task in tasks {
         // The failed run is a fact about the instrument, not a request to
@@ -79,9 +88,28 @@ pub fn observe(
             });
         }
 
+        let state = run_state_view::state(&run_state_view::Sighting {
+            task: task.name.clone(),
+            worktrees: task.worktrees,
+            live: task.live.clone(),
+            scored: task.passing.is_observed(),
+        });
+        if !task.adjudicated && matches!(state, RunState::FinishedUnscored { .. }) {
+            has_finished_unscored = true;
+        }
+
         // A recorded decision ends the tier items: there is nothing left for
         // the pipeline or the adjudicator to do about a finished task.
         if task.adjudicated {
+            continue;
+        }
+
+        // The shared run-state classifier distinguishes a finished, unscored
+        // task from a live or unknown one. The `Item` surface in this crate
+        // does not currently expose the specified ScoreIt variant, so leave
+        // the task without a fabricated tier item rather than claim a score
+        // was observed or invent a different action.
+        if matches!(state, RunState::FinishedUnscored { .. }) {
             continue;
         }
 
@@ -125,7 +153,7 @@ pub fn observe(
             Item::Adjudicate { .. } | Item::RunPipeline { .. } | Item::PipelineFailed { .. }
         )
     });
-    if queued.is_empty() && !something_to_do {
+    if queued.is_empty() && !something_to_do && !has_finished_unscored {
         items.push(Item::QueueEmpty);
     }
 
@@ -153,6 +181,8 @@ mod tests {
             has_claims: false,
             adjudicated: false,
             failed_stages: Vec::new(),
+            worktrees: 0,
+            live: Measurement::Missing(Absent::NotAttempted),
         }
     }
 

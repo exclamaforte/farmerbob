@@ -1,0 +1,26 @@
+MERGED codex-luna
+Single arm, 33 lines, clippy 0.
+
+observe now builds a run_state_view::Sighting per task and uses its
+classification, with PipelineFailed still first and independent. A
+FinishedUnscored task is withheld from the tier rules rather than given a
+fabricated item, and QueueEmpty is suppressed while one exists so the board does
+not claim there is nothing to do.
+
+SPEC DEFECT, MINE, and the arm was right to stop where it did: the spec ordered
+`Item` to gain a ScoreIt variant while scoping the task to board.rs alone. `Item`
+is defined in attention.rs. There was no legal home for the variant, and the arm
+implemented everything else, left ScoreIt pending, and named the conflict in both
+its spec critique and its handoff rather than reaching into a second file. Its
+speccheck also caught that the existing TaskFiles fixture cannot compile unchanged
+once two required fields are added, which clause 9 demanded.
+
+So farmerbob-ervw is HALF closed: the state is now computed and a finished-unscored
+task no longer masquerades as QueueEmpty, but there is still no ScoreIt item
+telling the orchestrator to go score it. The variant needs a task scoped to
+attention.rs.
+
+I fixed crates/fb/src/next_cmd.rs myself at merge, which the spec correctly told
+the arm to leave broken: worktrees is counted from the worktree root, and live is
+Missing(NotAttempted) rather than a fabricated 0 -- this layer has not asked the
+per-task question and says so.

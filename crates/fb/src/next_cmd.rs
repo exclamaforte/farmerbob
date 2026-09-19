@@ -5,7 +5,7 @@
 use farmerbob_core::target_decl;
 use farmerbob_core::attention::{self, Facts, Item};
 use farmerbob_core::board::{self, QueuedMatrix, TaskFiles};
-use farmerbob_core::measurement::Measurement;
+use farmerbob_core::measurement::{Absent, Measurement};
 use farmerbob_core::wave_compose::{self, Row};
 use serde_json::Value;
 use std::fs;
@@ -59,6 +59,28 @@ fn is_adjudicated(repo: &Path, name: &str) -> bool {
     }
 }
 
+/// How many worktrees exist for `task`, of any arm.
+///
+/// Worktrees are named `<task>--<arm>` under the harness's worktree root. A
+/// root that cannot be read yields 0, which is the same answer as "none": this
+/// count only ever distinguishes dispatched from never-dispatched, and
+/// `run_state_view` treats both as `NeverDispatched`.
+fn worktree_count(task: &str) -> usize {
+    let root = match std::env::var_os("HOME") {
+        Some(h) => PathBuf::from(h).join(".local/share/farmerbob/worktrees"),
+        None => return 0,
+    };
+    let prefix = format!("{task}--");
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 pub fn gather(p: &Paths, live_agents: Measurement<usize>) -> Facts {
     let tasks = prompt_names(&p.repo)
         .into_iter()
@@ -68,6 +90,14 @@ pub fn gather(p: &Paths, live_agents: Measurement<usize>) -> Facts {
             has_claims: has_nonempty_claims(&p.logs.join(format!("{name}.claims.json"))),
             adjudicated: is_adjudicated(&p.repo, &name),
             failed_stages: Vec::new(),
+            // Counted here rather than inferred: board::observe now asks
+            // run_state_view whether a task's runs have FINISHED, and a
+            // fabricated zero would read as "nothing was ever dispatched".
+            worktrees: worktree_count(&name),
+            // NOT substituted with 0. The caller of `gather` supplies the
+            // machine-wide live count; a per-task count is a different
+            // question and this layer has not asked it, so it says so.
+            live: Measurement::Missing(Absent::NotAttempted),
             name,
         })
         .collect::<Vec<_>>();
