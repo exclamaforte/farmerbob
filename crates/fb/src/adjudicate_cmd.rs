@@ -312,7 +312,7 @@ pub fn run(task: &str, epsilon: f64, allow_missing_critique: bool) -> i32 {
     if js.is_empty() {
         println!("  NONE FOUND. The critiques are the half of this the harness cannot compute,");
         println!("  and six consecutive tasks were decided without them. Run:");
-        println!("    ./fb-pipeline.sh {task} <crate>");
+        println!("    fb pipeline {task} --krate <crate>");
         if !allow_missing_critique {
             println!("\nREFUSING to adjudicate. Pass --allow-missing-critique to override.");
             return 2;

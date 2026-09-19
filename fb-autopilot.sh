@@ -196,7 +196,7 @@ while :; do
       crate=$(awk -F'\t' -v t="$pending" '$1==t{print $2}' "$DONE"/*.tsv .fb/wave*.tsv 2>/dev/null | head -1)
       beat "pipeline $pending (blocks this loop until it finishes)"
       say "running missing pipeline stages for $pending"
-      if ! ./fb-pipeline.sh "$pending" "${crate:-farmerbob-core}" >> "$LOG" 2>&1; then
+      if ! "$FB_BIN" pipeline "$pending" --krate "${crate:-farmerbob-core}" >> "$LOG" 2>&1; then
         say "pipeline FAILED for $pending -- skipping"
         touch "$DONE/.skip.$pending"
       fi
