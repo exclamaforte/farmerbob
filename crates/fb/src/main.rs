@@ -20,7 +20,9 @@ mod eligible;
 mod escalate;
 mod fate_cmd;
 mod followups_cmd;
+mod hooks_cmd;
 mod import;
+mod isolated_cmd;
 mod launch;
 mod ledger_cmd;
 mod live_cmd;
@@ -128,6 +130,17 @@ enum Command {
         /// Decide even when no critique exists. Off by default, deliberately.
         #[arg(long)]
         allow_missing_critique: bool,
+    },
+    /// Install this repository's git hooks as links to this binary.
+    Hooks {
+        #[arg(default_value = "install")]
+        action: String,
+    },
+    /// Run a command with sibling worktrees hidden.
+    Isolated {
+        worktree: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        cmd: Vec<String>,
     },
     /// Have an arm write a test suite from the SPEC alone, then run it against the field.
     Verifier {
@@ -752,6 +765,13 @@ fn leaderboard(from: &str, show_excluded: bool, json: bool) -> i32 {
 }
 
 fn main() {
+    // A hook is a SYMLINK to this binary, so git execs `fb` under the hook's own name. This
+    // must run before clap, which would try to parse git's hook arguments as subcommands.
+    let argv: Vec<String> = std::env::args().collect();
+    if let Some(hook) = argv.first().and_then(|a| hooks_cmd::invoked_as(a)) {
+        std::process::exit(hooks_cmd::run_hook(hook, &argv[1..]));
+    }
+
     let cli = Cli::parse();
     let code = match cli.command {
         Some(Command::Compare { task }) => {
@@ -928,6 +948,16 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Hooks { action }) => match action.as_str() {
+            "install" => hooks_cmd::install(),
+            other => {
+                eprintln!("fb hooks: {other}: expected install");
+                1
+            }
+        },
+        Some(Command::Isolated { worktree, cmd }) => {
+            isolated_cmd::run(std::path::Path::new(&worktree), &cmd)
+        }
         Some(Command::Verifier {
             task,
             target,

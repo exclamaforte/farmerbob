@@ -12,9 +12,13 @@ use farmerbob_core::measurement::Measurement;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// The confinement wrapper every arm is run under.
+/// The confinement wrapper every arm is run under: this binary, as `fb isolated`.
+///
+/// It must be a real executable rather than a shell function, because systemd-run execs its
+/// argument directly and reports "Failed to find executable" for a function. Two runs died
+/// at 0s that way.
 fn isolated() -> PathBuf {
-    crate::paths::repo().join("fb-isolated")
+    std::env::current_exe().unwrap_or_else(|_| crate::paths::repo().join("target/debug/fb"))
 }
 
 /// Why an arm cannot be launched.
@@ -198,10 +202,14 @@ pub fn launch_in(
                 "TasksMax=2048",
                 "--",
             ]);
-            c.arg(isolated());
+            c.arg(isolated()).arg("isolated");
             c
         }
-        None => Command::new(isolated()),
+        None => {
+            let mut c = Command::new(isolated());
+            c.arg("isolated");
+            c
+        }
     };
     cmd.arg(wd).args(&argv).current_dir(wd);
     for (k, v) in env {
