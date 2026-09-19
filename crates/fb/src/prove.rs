@@ -394,8 +394,10 @@ fn write_json_pretty<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 /// Public entry point, mirroring the script's positional parameters in order:
 /// `bead` (`$1`), `krate` (`$2`), `target` (`$3`, repo-relative), `prover` (`$4`).
 ///
-/// Returns the process exit code: `0` on a complete run that wrote
-/// `<logs>/<bead>.proved.json`, `1` on a usage or I/O error.
+/// Returns the process exit code:
+/// - `0` on a complete run that wrote `<logs>/<bead>.proved.json`
+/// - `1` on a usage or I/O error
+/// - `4` when there is no claims file (not applicable; matching `fb-prove.sh`)
 pub fn run_cmd(bead: &str, krate: &str, target: &str, prover: &str) -> i32 {
     match run(bead, krate, target, prover) {
         Ok(code) => code,
@@ -409,6 +411,10 @@ pub fn run_cmd(bead: &str, krate: &str, target: &str, prover: &str) -> i32 {
 /// The real body of [`run_cmd`], returning its exit code or a structured error.
 fn run(bead: &str, krate: &str, target: &str, prover: &str) -> Result<i32> {
     let claims_path = logs_dir().join(format!("{bead}.claims.json"));
+    if !is_non_empty_file(&claims_path) {
+        println!("prove: n/a, no claims file -- nothing was promoted, so there is nothing to prove");
+        return Ok(4);
+    }
     let claims = load_claims(&claims_path)?;
     let subjects = subjects_with_testable(&claims);
 
@@ -524,6 +530,26 @@ fn process_subject(
     Ok(Some((result, line)))
 }
 
+/// The farmerbob state directory root: `$HOME/.local/share/farmerbob/state`.
+pub fn state_root() -> Measurement<PathBuf> {
+    match std::env::var_os("HOME") {
+        Some(home) => {
+            Measurement::observed(PathBuf::from(home).join(".local/share/farmerbob/state"))
+        }
+        None => Measurement::instrument_failed("HOME is not set"),
+    }
+}
+
+/// Compute the XDG data, state, and cache paths for a run.
+pub fn environment_paths(state_root: &Path, run: &str) -> [PathBuf; 3] {
+    let run_root = state_root.join(run);
+    [
+        run_root.join("data"),
+        run_root.join("state"),
+        run_root.join("cache"),
+    ]
+}
+
 /// Run the prover (the script's `fb_launch`) best-effort, generating tests in the
 /// candidate tree. Any failure is non-fatal: the candidate suite is simply empty
 /// and `cargo test` reports no results, which [`parse_test_count`] records as
@@ -552,6 +578,19 @@ fn run_prover(
     std::fs::write(&prompt_path, prompt)
         .with_context(|| format!("writing prompt {}", prompt_path.display()))?;
 
+    let state_root = match state_root() {
+        Measurement::Observed(root) => root,
+        Measurement::Missing(reason) => {
+            anyhow::bail!("cannot resolve state root: {reason:?}");
+        }
+    };
+    let run = format!("{bead}--{subject}");
+    let [data_home, state_home, cache_home] = environment_paths(&state_root, &run);
+    for directory in [&data_home, &state_home, &cache_home] {
+        std::fs::create_dir_all(directory)
+            .with_context(|| format!("creating directory {}", directory.display()))?;
+    }
+
     let prompt_str = std::fs::read_to_string(&prompt_path).unwrap_or_default();
     let launch = format!(
         "set -e; . {}/fb-launch.sh; fb_launch {} {} {}",
@@ -563,6 +602,9 @@ fn run_prover(
     let log = cand_tree.join(format!("{subject}.log"));
     let out = Command::new("bash")
         .args(["-c", &launch])
+        .env("XDG_DATA_HOME", &data_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .env("XDG_CACHE_HOME", &cache_home)
         .output()
         .context("spawning prover")?;
     std::fs::write(&log, out.stdout).ok();
@@ -992,5 +1034,106 @@ mod tests {
         assert_eq!(rec.refuted, Some(5));
         assert_eq!(rec.veto, "unavailable");
         assert!(rec.provisional);
+    }
+
+    #[test]
+    fn environment_paths_are_isolated_and_stable() {
+        let root = PathBuf::from("/tmp/fb-prove-state");
+        let first = environment_paths(&root, "task--subject1");
+        let second = environment_paths(&root, "task--subject2");
+        let repeat = environment_paths(&root, "task--subject1");
+
+        // Clause 1: Different run values receive different XDG_DATA_HOME values.
+        assert_ne!(first[0], second[0]);
+        assert_ne!(first, second);
+
+        // Clause 2: Same run receives the same value.
+        assert_eq!(first, repeat);
+
+        // Clause 3: All three variables are set, and all three point inside that run's directory.
+        let run_root = root.join("task--subject1");
+        assert!(first.iter().all(|path| path.starts_with(&run_root)));
+        assert_eq!(first[0], run_root.join("data"));
+        assert_eq!(first[1], run_root.join("state"));
+        assert_eq!(first[2], run_root.join("cache"));
+    }
+
+    #[test]
+    fn different_subjects_get_different_directories() {
+        let root = PathBuf::from("/tmp/fb-prove-state");
+        let task = "sample-task";
+        let run_a = format!("{task}--subject-a");
+        let run_b = format!("{task}--subject-b");
+        let env_a = environment_paths(&root, &run_a);
+        let env_b = environment_paths(&root, &run_b);
+
+        // Clause 5: Two different subjects of the same task get different directories.
+        assert_ne!(env_a, env_b);
+        assert_ne!(env_a[0], env_b[0]);
+        assert_ne!(env_a[1], env_b[1]);
+        assert_ne!(env_a[2], env_b[2]);
+    }
+
+    #[test]
+    fn missing_claims_file_returns_not_applicable_and_creates_no_directory() {
+        let bead = format!("fb-prove-test-missing-{}", std::process::id());
+        let claims_file = logs_dir().join(format!("{bead}.claims.json"));
+        let proofs_dir = logs_dir().join("proofs").join(&bead);
+        let _ = std::fs::remove_file(&claims_file);
+        let _ = std::fs::remove_dir_all(&proofs_dir);
+
+        // Clause 6: Exit code 4 when there is no claims file.
+        // Boundary: ZERO subjects: nothing is spawned and nothing is created.
+        let code = run_cmd(&bead, "fb", "crates/fb/src/prove.rs", "dummy-prover");
+        assert_eq!(code, 4, "missing claims file must return exit code 4");
+        assert!(
+            !proofs_dir.exists(),
+            "no directory must appear for a task with no claims"
+        );
+    }
+
+    #[test]
+    fn empty_claims_file_returns_not_applicable() {
+        let bead = format!("fb-prove-test-empty-{}", std::process::id());
+        let claims_file = logs_dir().join(format!("{bead}.claims.json"));
+        let proofs_dir = logs_dir().join("proofs").join(&bead);
+        let _ = std::fs::create_dir_all(logs_dir());
+        let _ = std::fs::write(&claims_file, "");
+        let _ = std::fs::remove_dir_all(&proofs_dir);
+
+        let code = run_cmd(&bead, "fb", "crates/fb/src/prove.rs", "dummy-prover");
+        let _ = std::fs::remove_file(&claims_file);
+        assert_eq!(code, 4, "empty claims file must return exit code 4");
+        assert!(
+            !proofs_dir.exists(),
+            "no directory must appear for a task with no claims"
+        );
+    }
+
+    #[test]
+    fn doc_comment_names_all_three_codes() {
+        let text = std::fs::read_to_string("crates/fb/src/prove.rs")
+            .or_else(|_| std::fs::read_to_string("src/prove.rs"))
+            .expect("prove.rs source text");
+        let doc_start = text.find("pub fn run_cmd").expect("run_cmd definition");
+        let doc_prefix = &text[..doc_start];
+        let doc_comment = doc_prefix
+            .lines()
+            .rev()
+            .take(15)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            doc_comment.contains('0'),
+            "doc comment must name exit code 0"
+        );
+        assert!(
+            doc_comment.contains('1'),
+            "doc comment must name exit code 1"
+        );
+        assert!(
+            doc_comment.contains('4'),
+            "doc comment must name exit code 4"
+        );
     }
 }

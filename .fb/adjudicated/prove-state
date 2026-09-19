@@ -1,0 +1,16 @@
+MERGED gemini-38-flash
+Single arm, 145 lines, clippy 0, prove.rs only.
+
+The last of the three agent-launching paths to get per-run XDG state. It copied
+critique.rs's shape rather than inventing a second one, which the spec asked for
+explicitly -- same environment_paths function, same test name, path computation
+separated from the spawn so the isolation is tested without launching a real
+prover.
+
+Its test pins the fan-out directly: task--subject1 and task--subject2 get
+different directories, and task--subject1 repeated gets the same one. A task
+proving claims against three implementations launches three provers concurrently,
+and they now land in three stores instead of one.
+
+All three paths now set XDG_DATA_HOME: fb-dispatch.sh, critique.rs, prove.rs.
+Closes farmerbob-p3r, and the cause behind farmerbob-wuu with it.
