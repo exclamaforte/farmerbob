@@ -391,19 +391,17 @@ fn write_json_pretty<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(())
 }
 
+/// The arm that writes the discriminating test.
+///
+/// An explicit choice wins. Otherwise the cheapest eligible arm, and failing that the fallback
+/// is the arm fb-prove.sh carried: free, healthy, and 100% over five runs at the time. A
+/// hardcoded default is worth naming rather than hiding, because when it is wrong every
+/// proof in the queue goes to the wrong arm.
 /// Public entry point, mirroring the script's positional parameters in order:
 /// `bead` (`$1`), `krate` (`$2`), `target` (`$3`, repo-relative), `prover` (`$4`).
 ///
 /// Returns the process exit code:
 /// - `0` on a complete run that wrote `<logs>/<bead>.proved.json`
-/// - `1` on a usage or I/O error
-/// - `4` when there is no claims file (not applicable; matching `fb-prove.sh`)
-/// The arm that writes the discriminating test.
-///
-/// An explicit choice wins. Otherwise `fb select` picks one, and failing that the fallback
-/// is the arm fb-prove.sh carried: free, healthy, and 100% over five runs at the time. A
-/// hardcoded default is worth naming rather than hiding, because when it is wrong every
-/// proof in the queue goes to the wrong arm.
 pub fn default_prover(explicit: Option<&str>) -> String {
     if let Some(a) = explicit.filter(|a| !a.is_empty()) {
         return a.to_string();
@@ -417,6 +415,8 @@ pub fn default_prover(explicit: Option<&str>) -> String {
         .unwrap_or_else(|| "or-ling-30-flash".to_string())
 }
 
+/// - `1` on a usage or I/O error
+/// - `4` when there is no claims file (not applicable; matching `fb-prove.sh`)
 pub fn run_cmd(bead: &str, krate: &str, target: &str, prover: &str) -> i32 {
     match run(bead, krate, target, prover) {
         Ok(code) => code,
