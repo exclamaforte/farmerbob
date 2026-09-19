@@ -304,7 +304,13 @@ $P"
     claude-sonnet)   run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" claude \
                          -p "$P" --permission-mode bypassPermissions --model sonnet \
                          --effort "${FB_CLAUDE_EFFORT:-xhigh}" "${c_c[@]}" --output-format json ;;
-    gemini-38-flash) run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" agy -p "$P" --print-timeout 45m --model gemini-3.8-flash-high --add-dir "$WT" \
+    # agy takes its model from the REGISTRY, like ifm-* and or-* here already do. This branch
+    # hardcoded gemini-3.8-flash-high while sources.toml declared the model separately, so the
+    # two could disagree with nothing comparing them -- and adding an agy arm meant editing
+    # this table AND fb-launch.sh, which is exactly how agy-sonnet-46 came back rc=127 in 0s
+    # on its first dispatch: patched there, missed here, precisely as the comment below warns.
+    gemini-38-flash|agy-*)
+                     run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" agy -p "$P" --print-timeout 45m --model "$MODEL" --add-dir "$WT" \
                          "${a_c[@]}" --dangerously-skip-permissions --output-format text ;;
     glm-53-flash)    run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" zcode "${z_c[@]}" --prompt "$P" ;;
     ifm-*)           set -a; . "$HOME/.config/farmerbob/secrets.env"; set +a
