@@ -15,6 +15,7 @@ mod escalate;
 mod fate_cmd;
 mod followups_cmd;
 mod import;
+mod launch;
 mod ledger_cmd;
 mod live_cmd;
 mod mutants;
