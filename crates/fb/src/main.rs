@@ -1,5 +1,6 @@
 mod adjudicate_cmd;
 mod cmd;
+mod compare_cmd;
 mod critique;
 mod crossx;
 mod decl_cmd;
@@ -29,6 +30,7 @@ mod sources;
 mod stage_cmd;
 mod status;
 mod trial;
+mod verify_cmd;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
