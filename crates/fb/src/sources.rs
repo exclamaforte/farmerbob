@@ -31,6 +31,14 @@ pub enum Eligibility {
         /// The paid route's output price, per 1M tokens.
         price_out: f64,
     },
+    /// The provider has refused this arm until a stated time. Quota exhaustion is not
+    /// an arm failure (bead farmerbob-h04): the arm is fine and the wall is temporary.
+    Parked {
+        /// `parked_until` exactly as the registry holds it.
+        until: String,
+        /// Why this is not dispatchable, in prose. Never empty.
+        why: String,
+    },
     /// The arm's time box has closed, or its `expires_at` cannot be read.
     /// Carries the reason a human should see, non-empty.
     WindowClosed {
@@ -53,6 +61,7 @@ impl Eligibility {
             Eligibility::Ok => None,
             Eligibility::Disabled(why) => Some(format!("disabled: {why}")),
             Eligibility::NotDispatchable(st) => Some(format!("status is `{st}`, not dispatchable")),
+            Eligibility::Parked { until, why } => Some(format!("parked until {until}: {why}")),
             Eligibility::RedundantPaidRoute {
                 free_arm,
                 price_in,
@@ -108,6 +117,16 @@ pub struct Source {
     /// set-but-unreadable and must not collapse into `None`.
     #[serde(default)]
     pub expires_at: Option<String>,
+    /// When a provider-side refusal expires, exactly as `sources.toml` writes it and
+    /// unparsed. `None` when the arm is not parked.
+    ///
+    /// This field did not exist until 2026-09-19, and its absence meant the Rust registry
+    /// was blind to parks while `fb-eligible.sh` and `fb eligible`'s own command path both
+    /// honoured them. Three implementations of one rule, and the one every programmatic
+    /// caller uses was the one missing it: `fb critique` cast a parked arm twice in a row,
+    /// seconds after `fb eligible` had refused that same arm by name.
+    #[serde(default)]
+    pub parked_until: Option<String>,
 }
 
 impl Source {
@@ -191,6 +210,30 @@ impl Registry {
                     .unwrap_or_else(|| "no reason recorded".into()),
             );
         }
+        // A park needs a clock, so it is checked only on the `Some(now)` path. It comes
+        // before the status test deliberately: a parked arm is usually `verified`, and
+        // testing status first would call it dispatchable.
+        if let (Some(now), Some(until)) = (now, s.parked_until.as_deref()) {
+            match DateTime::parse_from_rfc3339(until) {
+                Ok(parsed) if parsed.with_timezone(&Utc) > now => {
+                    return Eligibility::Parked {
+                        until: until.to_string(),
+                        why:
+                            "the provider refused this arm; quota exhaustion is not an arm failure"
+                                .into(),
+                    };
+                }
+                Ok(_) => {}
+                // Unreadable is not absent. Refusing is the safe direction: the alternative
+                // is dispatching into a wall the registry was trying to warn about.
+                Err(_) => {
+                    return Eligibility::Parked {
+                        until: until.to_string(),
+                        why: "parked_until is set but cannot be parsed as a timestamp".into(),
+                    };
+                }
+            }
+        }
         if let Some((expires_at, why)) = window_stop(s, now) {
             return Eligibility::WindowClosed { expires_at, why };
         }
@@ -219,10 +262,13 @@ impl Registry {
     /// Every arm that may be dispatched, cheapest first so that a caller taking the first N
     /// gets the cheapest N rather than an arbitrary N.
     pub fn dispatchable(&self) -> Vec<(&str, &Source)> {
+        // eligible_at, not eligible: the window-blind check cannot see a park, and this is
+        // the function every programmatic caller reaches for.
+        let now = Utc::now();
         let mut v: Vec<(&str, &Source)> = self
             .sources
             .iter()
-            .filter(|(k, _)| self.eligible(k).is_ok())
+            .filter(|(k, _)| self.eligible_at(k, now).is_ok())
             .map(|(k, s)| (k.as_str(), s))
             .collect();
         v.sort_by(|a, b| {
@@ -622,5 +668,50 @@ expires_at = "2030-01-01T00:00:00Z"
             r.eligible_at("no-such-arm", at(NOW)),
             Eligibility::NotDispatchable("absent from the registry".into())
         );
+    }
+
+    /// A parked arm is not dispatchable, and `dispatchable()` -- which every programmatic
+    /// caller uses -- must agree with `fb eligible`, which has always refused one.
+    #[test]
+    fn a_parked_arm_is_not_dispatchable() {
+        let toml = concat!(
+            "[source.parked-arm]\nstatus = \"verified\"\n",
+            "parked_until = \"2099-01-01T00:00:00Z\"\n",
+            "[source.free-arm]\nstatus = \"verified\"\n"
+        );
+        let r = reg(toml);
+        let names: Vec<&str> = r.dispatchable().into_iter().map(|(k, _)| k).collect();
+        assert!(
+            !names.contains(&"parked-arm"),
+            "a parked arm must not be dispatchable, got {names:?}"
+        );
+        assert!(names.contains(&"free-arm"), "an unparked arm still is");
+    }
+
+    /// A park in the PAST is spent, not a permanent refusal. Same field as the test
+    /// above with one value changed: the two answers must differ.
+    #[test]
+    fn a_park_that_has_expired_no_longer_refuses() {
+        let toml = concat!(
+            "[source.was-parked]\nstatus = \"verified\"\n",
+            "parked_until = \"2000-01-01T00:00:00Z\"\n"
+        );
+        let r = reg(toml);
+        let names: Vec<&str> = r.dispatchable().into_iter().map(|(k, _)| k).collect();
+        assert!(names.contains(&"was-parked"), "an expired park is spent");
+    }
+
+    /// An unreadable `parked_until` refuses rather than being treated as absent. The
+    /// alternative is dispatching into the wall the registry was warning about.
+    #[test]
+    fn an_unparseable_park_refuses() {
+        let toml = concat!(
+            "[source.bad-park]\nstatus = \"verified\"\n",
+            "parked_until = \"soon\"\n"
+        );
+        let r = reg(toml);
+        let e = r.eligible_at(&"bad-park".to_string(), Utc::now());
+        assert!(!e.is_ok());
+        assert!(e.reason().unwrap_or_default().contains("bad-park") || !e.is_ok());
     }
 }
