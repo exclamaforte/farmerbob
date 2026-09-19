@@ -360,7 +360,7 @@ enum Command {
         /// Arm that turns critics' claims into executed tests.
         #[arg(long, default_value = "glm-53-flash")]
         prover: String,
-        /// Resume from a stage: dispatch|score|critique|promote|prove|report
+        /// Resume from a stage: dispatch|score|differential|crossx|critique|promote|prove|report
         #[arg(long, default_value = "dispatch")]
         from: String,
     },

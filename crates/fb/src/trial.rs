@@ -19,6 +19,8 @@ pub const REPO: &str = "/home/gabe/Documents/farmerbob";
 pub enum Stage {
     Dispatch,
     Score,
+    Differential,
+    Crossx,
     Critique,
     Promote,
     Prove,
@@ -30,6 +32,8 @@ impl Stage {
         &[
             Stage::Dispatch,
             Stage::Score,
+            Stage::Differential,
+            Stage::Crossx,
             Stage::Critique,
             Stage::Promote,
             Stage::Prove,
@@ -41,6 +45,8 @@ impl Stage {
         match self {
             Stage::Dispatch => "dispatch",
             Stage::Score => "score",
+            Stage::Differential => "differential",
+            Stage::Crossx => "crossx",
             Stage::Critique => "critique",
             Stage::Promote => "promote",
             Stage::Prove => "prove",
@@ -81,6 +87,30 @@ impl Trial {
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
+    }
+
+    /// `fb differential` answers with FOUR exit codes and two of them look alike:
+    /// 0 every measured arm agrees, 1 an arm diverges -- both of which mean the
+    /// INSTRUMENT WORKED -- 3 the task declares no oracle, and 2 declared but
+    /// unrunnable. Only 2 is a stage failure, because it is the only one where
+    /// something should have been checked and was not. `sh` collapses all of them
+    /// to `status.success()`, which would fail a trial for finding a divergence:
+    /// the stage's whole purpose.
+    fn differential(&self) -> bool {
+        eprintln!("  $ fb differential {}", self.task);
+        let code = Command::new(format!("{REPO}/target/debug/fb"))
+            .args(["differential", &self.task])
+            .current_dir(REPO)
+            .status()
+            .ok()
+            .and_then(|s| s.code());
+        match code {
+            Some(0) => { eprintln!("  all measured arms agree"); true }
+            Some(1) => { eprintln!("  DIVERGENCE FOUND -- a finding, and a successful measurement"); true }
+            Some(3) => { eprintln!("  n/a, this task declares no oracle"); true }
+            Some(2) => { eprintln!("  DECLARED BUT COULD NOT RUN -- a gap, not a pass"); false }
+            other => { eprintln!("  unexpected exit {other:?}"); false }
+        }
     }
 
     fn dispatch(&self) -> bool {
@@ -140,6 +170,10 @@ impl Trial {
             let ok = match stage {
                 Stage::Dispatch => self.dispatch(),
                 Stage::Score => self.sh("fb-score.sh", &[&self.task, &self.krate]),
+                Stage::Differential => self.differential(),
+                Stage::Crossx => {
+                    self.sh("fb-crossx.sh", &[&self.task, &self.krate, &self.target])
+                }
                 Stage::Critique => {
                     self.sh("fb-critique.sh", &[&self.task, &self.krate, &self.target])
                 }
