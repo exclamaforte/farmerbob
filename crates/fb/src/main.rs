@@ -49,6 +49,7 @@ mod stage_cmd;
 mod status;
 mod timing_cmd;
 mod trial;
+mod verifier_cmd;
 mod verify_cmd;
 mod verify_gather;
 mod wave_cmd;
@@ -127,6 +128,14 @@ enum Command {
         /// Decide even when no critique exists. Off by default, deliberately.
         #[arg(long)]
         allow_missing_critique: bool,
+    },
+    /// Have an arm write a test suite from the SPEC alone, then run it against the field.
+    Verifier {
+        task: String,
+        target: String,
+        arm: String,
+        #[arg(long, default_value = "farmerbob-core")]
+        krate: String,
     },
     /// Launch queued waves and run missing pipeline stages.
     Autopilot {
@@ -919,6 +928,12 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Verifier {
+            task,
+            target,
+            arm,
+            krate,
+        }) => verifier_cmd::run(&task, &krate, &target, &arm),
         Some(Command::Autopilot { once }) => autopilot_cmd::run(once),
         Some(Command::Dispatch {
             arm,
