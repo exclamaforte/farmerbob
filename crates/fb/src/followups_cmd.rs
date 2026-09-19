@@ -5,19 +5,19 @@
 //! into [`Proposal`]s since it was merged and had ZERO CALLERS, so critics were writing
 //! into a format the harness could read while nothing read it. This is the caller.
 //!
-//! The routing rule, which lives in `ledger::route` rather than here:
+//! What it gathers, for a judge to rule on:
 //!
-//! - every path in `SCOPE:` was declared by the reviewed task -> resume that arm in the
-//!   worktree it still owns. The default, and the cheap path: the agent has the file, the
-//!   worktree and its own reasoning already loaded.
-//! - any path outside -> the backlog group that owns that code. No arm confined to this
-//!   task can complete it.
-//! - no `SCOPE:` at all -> unroutable, which is not a rejection.
+//! - which named paths the author already owns, and which belong to someone else
+//! - whether the author.s worktree still exists, since an in-turn ruling needs one
+//!
+//! It does NOT decide. The question is how much work the follow-up is, and no file
+//! comparison answers that.
+//!
 //!
 //! This command decides and prints. It does not resume: launching an agent costs money and
 //! belongs behind an explicit act, so the resume command is printed for the operator.
 
-use farmerbob_core::ledger::{self, Kind, Route};
+use farmerbob_core::ledger::{self, Evidence, Kind};
 use farmerbob_core::measurement::Measurement;
 use farmerbob_core::target_decl;
 use std::fs;
@@ -28,7 +28,8 @@ struct Routed {
     critic: String,
     subject: String,
     title: String,
-    route: Route,
+    why: String,
+    evidence: Evidence,
 }
 
 fn read_text(path: &Path) -> Measurement<String> {
@@ -104,11 +105,20 @@ pub fn run(task: &str, json: bool) -> i32 {
             if proposal.kind != Kind::FollowUp {
                 continue;
             }
+            let worktree = crate::paths::worktrees().join(format!("{task}--{subject}"));
+            let why = proposal
+                .body
+                .lines()
+                .find_map(|l| l.trim_start().strip_prefix("WHY:"))
+                .unwrap_or("(no WHY given)")
+                .trim()
+                .to_string();
             routed.push(Routed {
                 critic: critic.clone(),
                 subject: subject.clone(),
                 title: proposal.title.clone(),
-                route: ledger::route(&proposal, &declared),
+                why,
+                evidence: ledger::evidence(&proposal, &declared, worktree.is_dir()),
             });
         }
     }
@@ -122,17 +132,14 @@ pub fn run(task: &str, json: bool) -> i32 {
         let rows: Vec<String> = routed
             .iter()
             .map(|r| {
-                let (kind, detail) = match &r.route {
-                    Route::Resume { scope } => ("resume", scope.join(",")),
-                    Route::Backlog { outside, .. } => ("backlog", outside.join(",")),
-                    Route::Unroutable => ("unroutable", String::new()),
-                };
                 format!(
-                    r#"{{"critic":"{}","subject":"{}","route":"{}","detail":"{}","title":"{}"}}"#,
+                    r#"{{"critic":"{}","subject":"{}","scope":"{}","inside":"{}","outside":"{}","author_worktree":{},"title":"{}"}}"#,
                     r.critic,
                     r.subject,
-                    kind,
-                    detail,
+                    r.evidence.scope.join(","),
+                    r.evidence.inside.join(","),
+                    r.evidence.outside.join(","),
+                    r.evidence.author_worktree,
                     r.title.replace('"', "'")
                 )
             })
@@ -141,30 +148,54 @@ pub fn run(task: &str, json: bool) -> i32 {
         return 0;
     }
 
-    println!("{task}: {} follow-up(s)", routed.len());
+    println!("{task}: {} follow-up(s) awaiting a ruling", routed.len());
+    println!();
+    println!("  This command GATHERS. It does not rule. The question is how much work each");
+    println!("  follow-up is -- a turn, or its own spec and run -- and no file comparison");
+    println!("  answers that. An earlier version of this decided by whether the scope fell");
+    println!("  inside the task's declared set, and that rule was wrong in both directions:");
+    println!("  it called a twenty-site migration in a foreign file a task (right) and an");
+    println!("  API redesign in the author's own file a one-turn fix (wrong, and expensive).");
+
     for r in &routed {
         println!();
         println!("  {} on {}", r.critic, r.subject);
-        println!("  {}", r.title);
-        match &r.route {
-            Route::Resume { scope } => {
-                println!("  -> RESUME {} (scope: {})", r.subject, scope.join(", "));
+        println!("    ASKS : {}", r.title);
+        println!("    WHY  : {}", r.why);
+        if r.evidence.scope.is_empty() {
+            println!("    SCOPE: (none named -- cannot be placed as written)");
+        } else {
+            if !r.evidence.inside.is_empty() {
+                println!("    OWNED BY THE AUTHOR : {}", r.evidence.inside.join(", "));
+            }
+            if !r.evidence.outside.is_empty() {
                 println!(
-                    "     . fb-launch.sh; fb_launch {} \"<the follow-up>\" {}/{}--{} continue",
-                    r.subject,
-                    crate::paths::worktrees().display(),
-                    task,
-                    r.subject
+                    "    OWNED BY SOMEONE ELSE: {}",
+                    r.evidence.outside.join(", ")
                 );
             }
-            Route::Backlog { outside, .. } => {
-                println!("  -> BACKLOG (outside the task: {})", outside.join(", "));
-                println!("     file it into the group in .fb/BACKLOG.md that owns those files");
-            }
-            Route::Unroutable => {
-                println!("  -> UNROUTABLE: no SCOPE line. Not a rejection; ask the critic.");
-            }
         }
+        println!(
+            "    AUTHOR'S WORKTREE: {}",
+            if r.evidence.author_worktree {
+                "present -- an in-turn ruling is available"
+            } else {
+                "GONE -- in-turn is not available whatever the work costs"
+            }
+        );
+        println!("    RULE IT:");
+        println!(
+            "      in-turn:  . fb-launch.sh; fb_launch {} \"<the follow-up>\" {}/{}--{} continue",
+            r.subject,
+            crate::paths::worktrees().display(),
+            task,
+            r.subject
+        );
+        println!("      task:     write a spec into .fb/prompts/ and queue it");
+        println!(
+            "      then:     fb ledger --record --arm {} --task {task} --kind followup --ruling accepted|rejected|duplicate --title '...'",
+            r.critic
+        );
     }
     0
 }

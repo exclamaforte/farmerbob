@@ -159,41 +159,79 @@ pub struct Proposal {
 
 /// Where an accepted proposal's work goes.
 ///
-/// This is the decision the adjudicator makes on every follow-up, and it is a
-/// different axis from [`Ruling`]: `Ruling` says whether a proposal was acted
-/// on, `Route` says where the work went. Accepted-and-resumed and
-/// accepted-and-filed are both acceptances and they cost very different
-/// amounts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// This is a RULING, not a computation. Nothing in this module derives it, and that is
+/// deliberate: the question is how much work the follow-up is, and no function here can
+/// answer that. `scope_of` and [`evidence`] gather what a judge needs; a judge decides.
+///
+/// It was derived once, from whether the named paths fell inside the reviewed task's
+/// declared set. That rule is confidently wrong in both directions. Three follow-ups from
+/// one afternoon:
+///
+/// - `labelled_count` -- same file, one turn. Membership said in-turn. Right.
+/// - the `pareto.rs` migration -- different file, twenty call sites. Membership said task.
+///   Right, and it was a duplicate of a bead filed weeks earlier.
+/// - `Tokens` needs a fourth field -- SAME file, and an API redesign contradicting a pinned
+///   clause of the spec. Membership said in-turn. Wrong, and it is the expensive one: it
+///   needed a spec revision and a run, and was instead done inline in a merge commit.
+///
+/// Files do not predict effort. A one-line change in a foreign file is trivial; a redesign
+/// in the file under review is a week.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
-    /// Every path the proposal names was declared by the task under review,
-    /// so the arm that wrote that code can do the work in the worktree it
-    /// still owns. The cheap path, and the common one.
-    Resume {
-        /// The paths named, in the order written.
-        scope: Vec<String>,
-    },
-    /// At least one path lies outside what the task declared, so no arm
-    /// confined to that task can complete it. It belongs to the backlog group
-    /// that owns the code instead.
-    Backlog {
-        /// The paths named, in the order written.
-        scope: Vec<String>,
-        /// The named paths that the task did not declare, in the order
-        /// written. Never empty for this variant.
-        outside: Vec<String>,
-    },
-    /// The proposal names no scope at all, so nothing can be decided about
-    /// where it goes. NOT a rejection: the finding may be correct and is
-    /// simply unroutable as written.
+    /// Small enough to hand back to the arm that wrote the code, in one turn, in the
+    /// worktree it still owns. The cheap path: the author has the file, the task and its
+    /// own reasoning already loaded, and nothing becomes a bead.
+    InTurn,
+    /// Needs its own spec and its own run -- a refactor, a new type, a decision the author
+    /// cannot make alone, or anything that changes what the spec pinned.
+    Task,
+    /// Nothing can be decided about it as written.
     Unroutable,
+}
+
+/// What an adjudicator needs in order to rule on a follow-up.
+///
+/// Every field here is GATHERED. None of it is a verdict, and the struct deliberately
+/// carries no method that returns a [`Route`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Evidence {
+    /// The paths the follow-up names, in the order written. Empty when it named none,
+    /// which is the one case a judge can dispose of without reading anything else.
+    pub scope: Vec<String>,
+    /// Those the reviewed task declared. A judge reads this as "the author is already
+    /// here", not as "therefore in-turn".
+    pub inside: Vec<String>,
+    /// Those it did not. A judge reads this as "somebody else owns this file", not as
+    /// "therefore a task".
+    pub outside: Vec<String>,
+    /// Whether the author's worktree still exists. When it does not, an in-turn ruling is
+    /// not available whatever the work costs -- there is nothing to resume into.
+    pub author_worktree: bool,
+}
+
+/// Gather what a judge needs. Decides nothing.
+///
+/// `declared` is what the reviewed task declared; `author_worktree` is whether the arm's
+/// worktree is still on disk. Paths are compared as exact strings, the same way
+/// `crate::scope` compares them.
+pub fn evidence(proposal: &Proposal, declared: &[String], author_worktree: bool) -> Evidence {
+    let scope = scope_of(proposal);
+    let (inside, outside): (Vec<String>, Vec<String>) = scope
+        .iter()
+        .cloned()
+        .partition(|path| declared.iter().any(|d| d == path));
+    Evidence {
+        scope,
+        inside,
+        outside,
+        author_worktree,
+    }
 }
 
 /// The paths a proposal's `SCOPE:` line names, in the order written.
 ///
-/// A scope line may name several paths separated by commas or whitespace.
-/// Returns empty when the proposal has no `SCOPE:` line, which is the input
-/// that makes a proposal [`Route::Unroutable`].
+/// A scope line may name several paths separated by commas or whitespace. Returns empty
+/// when the proposal has no `SCOPE:` line.
 pub fn scope_of(proposal: &Proposal) -> Vec<String> {
     for line in proposal.body.lines() {
         let Some(rest) = line.trim_start().strip_prefix("SCOPE:") else {
@@ -207,28 +245,6 @@ pub fn scope_of(proposal: &Proposal) -> Vec<String> {
             .collect();
     }
     Vec::new()
-}
-
-/// Where this proposal's work goes, given the files the reviewed task declared.
-///
-/// Paths are compared as exact strings, the same way `crate::scope` compares
-/// them and for the same reason: guessing at path equivalence is how a check
-/// silently permits something.
-pub fn route(proposal: &Proposal, declared: &[String]) -> Route {
-    let scope = scope_of(proposal);
-    if scope.is_empty() {
-        return Route::Unroutable;
-    }
-    let outside: Vec<String> = scope
-        .iter()
-        .filter(|path| !declared.iter().any(|d| d == *path))
-        .cloned()
-        .collect();
-    if outside.is_empty() {
-        Route::Resume { scope }
-    } else {
-        Route::Backlog { scope, outside }
-    }
 }
 
 /// Parse the `FINDING:` / `FOLLOWUP:` blocks out of an arm's report.
@@ -411,86 +427,57 @@ mod tests {
         }
     }
 
-    /// The headline: a follow-up naming only files the task declared goes back
-    /// to the arm that wrote them.
+    /// Evidence separates the paths the author already owns from the rest. It does NOT
+    /// say what to do about them: a one-line change in a foreign file is trivial and a
+    /// redesign in the author's own file is a week, and this struct knows neither.
     #[test]
-    fn a_followup_inside_the_declared_set_resumes_its_author() {
-        let p = followup("WHY: it is backwards\nSCOPE: crates/farmerbob-core/src/cost.rs");
-        let declared = vec!["crates/farmerbob-core/src/cost.rs".to_string()];
-        assert_eq!(
-            route(&p, &declared),
-            Route::Resume {
-                scope: vec!["crates/farmerbob-core/src/cost.rs".to_string()]
-            }
-        );
-    }
-
-    /// Same follow-up, one entry removed from the declared set: the two answers
-    /// must differ, and the outside path must be named so the adjudicator knows
-    /// which group owns it.
-    #[test]
-    fn a_followup_outside_the_declared_set_goes_to_the_backlog() {
-        let p = followup("SCOPE: crates/fb/src/pareto.rs");
-        let declared = vec!["crates/farmerbob-core/src/cost.rs".to_string()];
-        assert_eq!(
-            route(&p, &declared),
-            Route::Backlog {
-                scope: vec!["crates/fb/src/pareto.rs".to_string()],
-                outside: vec!["crates/fb/src/pareto.rs".to_string()],
-            }
-        );
-    }
-
-    /// A scope naming several files, only some of them declared, cannot be done
-    /// by an arm confined to the task. It goes to the backlog and says which
-    /// paths put it there.
-    #[test]
-    fn a_mixed_scope_goes_to_the_backlog_and_names_the_outside_paths() {
+    fn evidence_partitions_scope_without_ruling_on_it() {
         let p = followup("SCOPE: crates/farmerbob-core/src/cost.rs, crates/fb/src/pareto.rs");
         let declared = vec!["crates/farmerbob-core/src/cost.rs".to_string()];
-        match route(&p, &declared) {
-            Route::Backlog { scope, outside } => {
-                assert_eq!(scope.len(), 2);
-                assert_eq!(outside, vec!["crates/fb/src/pareto.rs".to_string()]);
-            }
-            other => panic!("expected Backlog, got {other:?}"),
-        }
+        let e = evidence(&p, &declared, true);
+        assert_eq!(
+            e.inside,
+            vec!["crates/farmerbob-core/src/cost.rs".to_string()]
+        );
+        assert_eq!(e.outside, vec!["crates/fb/src/pareto.rs".to_string()]);
+        assert_eq!(e.scope.len(), 2);
     }
 
-    /// No SCOPE line is Unroutable, and that is NOT a rejection: the finding
-    /// may be perfectly correct and simply cannot be sent anywhere as written.
+    /// A follow-up with no SCOPE names nothing. This is the one case a judge can dispose
+    /// of without reading further, and it is still not a rejection.
     #[test]
-    fn a_followup_without_a_scope_is_unroutable_not_rejected() {
+    fn a_followup_without_a_scope_gathers_an_empty_scope() {
         let p = followup("WHY: it is backwards and costs a wrong frontier");
-        let declared = vec!["crates/farmerbob-core/src/cost.rs".to_string()];
-        assert_eq!(route(&p, &declared), Route::Unroutable);
+        let e = evidence(&p, &["crates/x.rs".to_string()], true);
+        assert!(e.scope.is_empty());
+        assert!(e.inside.is_empty());
+        assert!(e.outside.is_empty());
     }
 
-    /// An empty declared set routes everything to the backlog, never to a
-    /// resume. A task that declared nothing has no arm to resume into.
+    /// Without the author's worktree an in-turn ruling is unavailable whatever the work
+    /// costs -- there is nothing to resume into. Same follow-up, one flag different.
     #[test]
-    fn an_empty_declared_set_never_resumes() {
+    fn a_missing_author_worktree_is_recorded_as_evidence() {
         let p = followup("SCOPE: crates/farmerbob-core/src/cost.rs");
-        assert!(matches!(route(&p, &[]), Route::Backlog { .. }));
+        let declared = vec!["crates/farmerbob-core/src/cost.rs".to_string()];
+        assert!(evidence(&p, &declared, true).author_worktree);
+        assert!(!evidence(&p, &declared, false).author_worktree);
     }
 
-    /// Paths are compared exactly. A leading `./` is a different string and
-    /// must not be guessed equivalent.
+    /// Paths are compared exactly: a leading `./` is a different string and is not guessed
+    /// equivalent, because guessing is how a check silently permits something.
     #[test]
     fn scope_paths_are_compared_exactly() {
         let p = followup("SCOPE: ./crates/farmerbob-core/src/cost.rs");
         let declared = vec!["crates/farmerbob-core/src/cost.rs".to_string()];
-        assert!(matches!(route(&p, &declared), Route::Backlog { .. }));
+        assert!(evidence(&p, &declared, true).inside.is_empty());
     }
 
-    /// The real report from 2026-09-19, verbatim, routing to a resume.
+    /// The three rulings are distinct values. There is deliberately no function from
+    /// Evidence to Route: if one existed, this module would be deciding again.
     #[test]
-    fn the_cost_frontier_followup_routes_to_a_resume() {
-        let report = "### CLAIMS\n\nNO MATERIAL DEFECTS FOUND\n\nFOLLOWUPS\n\nFOLLOWUP: Fix completion rate dominance condition in `frontier`.\nWHY: strictly_better is written for a lower-is-better axis.\nSCOPE: crates/farmerbob-core/src/cost.rs\n";
-        let parsed = parse(report);
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].kind, Kind::FollowUp);
-        let declared = vec!["crates/farmerbob-core/src/cost.rs".to_string()];
-        assert!(matches!(route(&parsed[0], &declared), Route::Resume { .. }));
+    fn route_is_a_ruling_with_no_derivation() {
+        assert_ne!(Route::InTurn, Route::Task);
+        assert_ne!(Route::Task, Route::Unroutable);
     }
 }
