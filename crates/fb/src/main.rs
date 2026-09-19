@@ -1,4 +1,5 @@
 mod adjudicate_cmd;
+mod archive_cmd;
 mod bench_cmd;
 mod bench_gather;
 mod cmd;
@@ -119,6 +120,8 @@ enum Command {
         #[arg(long)]
         allow_missing_critique: bool,
     },
+    /// Capture every candidate worktree's work as a patch, before anything reaps it.
+    Archive { worktrees: Vec<String> },
     /// Refuse a spec that would split the field: delegation-shaped instructions, formats
     /// the arm is told to pin, and a missing deliverable declaration.
     Speclint { specs: Vec<String> },
@@ -860,6 +863,7 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Archive { worktrees }) => archive_cmd::run(&worktrees),
         Some(Command::Speclint { specs }) => speclint_cmd::run(&specs),
         Some(Command::Speccheck { task, krate, arms }) => {
             speccheck_cmd::run(&task, &krate, arms.as_deref())
