@@ -252,11 +252,7 @@ fn state_root() -> Measurement<PathBuf> {
 }
 
 fn launch(arm: &str, text: &str, worktree: &Path, run: &str, log: &Path) -> Measurement<()> {
-    // A test that reaches the launcher spends money and hangs. Before critics could be drawn
-    // from the registry no test could get this far -- a one-arm field returned 4 first -- and
-    // the moment that changed, `not_applicable_and_failure_are_different_codes` launched a
-    // real agent from `cargo test`. The stage still reports the assignment, as "(no critique
-    // written)", which is exactly what it reports for a launcher that failed in production.
+    // A test that reaches the launcher spends money and hangs.
     if cfg!(test) {
         return Measurement::instrument_failed("launcher disabled under cargo test");
     }
@@ -273,40 +269,28 @@ fn launch(arm: &str, text: &str, worktree: &Path, run: &str, log: &Path) -> Meas
             ));
         }
     }
-
-    let result = Command::new("bash")
-        .arg("-c")
-        .arg(". /home/gabe/Documents/farmerbob/fb-launch.sh; fb_launch \"$1\" \"$2\" \"$3\"")
-        .arg("fb-launch")
-        .arg(arm)
-        .arg(text)
-        .arg(worktree)
-        .env("XDG_DATA_HOME", &data_home)
-        .env("XDG_STATE_HOME", &state_home)
-        .env("XDG_CACHE_HOME", &cache_home)
-        .output();
-    // Capture what the launcher said. It was Stdio::null() on both streams while an empty
-    // <critic>.log was written beside it, so a critic that crashed on startup and a critic
-    // that ran and chose to write nothing produced the identical artefact: a zero-byte log
-    // and "(no critique written)". There was no way to tell them apart, which is why the
-    // first three runs of this stage could not be diagnosed at all.
-    if let Ok(ref out) = result {
-        let mut captured = String::from_utf8_lossy(&out.stdout).into_owned();
-        let err = String::from_utf8_lossy(&out.stderr);
-        if !err.is_empty() {
-            captured.push_str("\n=== stderr ===\n");
-            captured.push_str(&err);
+    // crate::launch, not fb-launch.sh. One launcher table, in Rust, tested.
+    let env = [
+        ("XDG_DATA_HOME", data_home),
+        ("XDG_STATE_HOME", state_home),
+        ("XDG_CACHE_HOME", cache_home),
+    ];
+    match crate::launch::launch(arm, text, worktree, false, &env) {
+        Measurement::Observed(said) => {
+            let _ = fs::write(
+                log,
+                if said.is_empty() {
+                    "(the launcher wrote nothing to stdout or stderr)\n".to_string()
+                } else {
+                    said
+                },
+            );
+            Measurement::observed(())
         }
-        if captured.is_empty() {
-            captured.push_str("(the launcher wrote nothing to stdout or stderr)\n");
+        Measurement::Missing(reason) => {
+            let _ = fs::write(log, format!("{reason:?}\n"));
+            Measurement::Missing(reason)
         }
-        let _ = fs::write(log, captured);
-    }
-    let result = result.map(|out| out.status);
-    match result {
-        Ok(status) if status.success() => Measurement::observed(()),
-        Ok(status) => Measurement::instrument_failed(&format!("launcher exited with {status}")),
-        Err(error) => Measurement::instrument_failed(&format!("cannot launch critic: {error}")),
     }
 }
 
