@@ -85,6 +85,7 @@ pub mod task_contract;
 pub mod taskid;
 pub mod testout;
 pub mod timing;
+pub mod verify_plan;
 pub mod verifier;
 pub mod vrouter;
 pub mod wave_plan;
