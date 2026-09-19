@@ -97,6 +97,7 @@ total is the bug this task makes fixable.
   tests. `cargo test -p fb` may need `cargo build -p fb` first: a test in this crate shells out
   to `target/debug/fb` and reads a stale binary otherwise.
 
+
 ## How this will be scored
 
 farmerbob re-runs everything itself; your self-report is not used. Stated so you can
@@ -118,6 +119,17 @@ optimise for the real bar rather than guess at it.
   exactly two things: the declared target, and adding `pub mod y;` to the `lib.rs` beside it
   when a NEW file needs that to compile. There is no tolerance band: ONE other changed file
   is a departure, and a departure now yields the verdict `OutOfScope`, which is not a pass.
+
+  **DO NOT RUN `cargo fmt`.** This is now the single most common way a good implementation
+  loses its task, and it is worth its own line because it does not feel like a departure. This
+  workspace is not uniformly formatted, `cargo fmt` has no `--check`-only habit to fall back
+  on, and running it rewrites every file it disagrees with anywhere in the workspace.
+  score-delta/codex-luna shipped a careful, correct-looking 272-line implementation of its
+  actual target -- a `git archive` baseline, every failure represented as `Missing` -- and
+  scored `OUT-OF-SCOPE` on 17 departures that were ENTIRELY reformatting: line-wrapped
+  `assert!` calls in files the task never mentioned. Not one of them changed behaviour, and
+  all 17 counted. Format the file you were given, by hand, and leave the rest of the workspace
+  exactly as you found it.
 
   Read this as permission, not only as prohibition. If the task's own instructions make the
   wider workspace fail to build -- a new enum variant breaking a caller in another crate, say
@@ -288,22 +300,3 @@ summary and any failures, which is the entire signal.
 **Not scored:** wallclock. Taking longer to produce better work is the preferred trade.
 There is a generous resource budget; a run is cut early only if it stops making progress or
 regresses past its own best error count.
-
-## Handoff (required)
-
-When you are done, write `.fb/handoff.md` in the repository root. Keep it under 300 words.
-
-**Do not state anything the harness can check.** No test counts, no "all tests pass", no "this
-handles empty input", no performance claims. Those are measured independently and a claim
-about them adds nothing — the harness has already run them by the time anyone reads this.
-
-Write only what cannot be measured:
-
-- **Approach.** The shape of the solution and why this shape rather than an obvious alternative.
-- **Trade-offs.** What you chose against, and what it would cost to choose differently.
-- **Risk.** Where you think this is most likely to be wrong, or hardest to change later.
-- **Deliberate omissions.** What the spec allows that you did not do, and why.
-
-If you found the specification ambiguous or underdetermined, say exactly where. That is the
-most valuable thing this file can contain: it routes back to the task author instead of
-becoming a defect argued about later.

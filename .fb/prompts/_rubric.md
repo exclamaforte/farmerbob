@@ -21,6 +21,17 @@ optimise for the real bar rather than guess at it.
   when a NEW file needs that to compile. There is no tolerance band: ONE other changed file
   is a departure, and a departure now yields the verdict `OutOfScope`, which is not a pass.
 
+  **DO NOT RUN `cargo fmt`.** This is now the single most common way a good implementation
+  loses its task, and it is worth its own line because it does not feel like a departure. This
+  workspace is not uniformly formatted, `cargo fmt` has no `--check`-only habit to fall back
+  on, and running it rewrites every file it disagrees with anywhere in the workspace.
+  score-delta/codex-luna shipped a careful, correct-looking 272-line implementation of its
+  actual target -- a `git archive` baseline, every failure represented as `Missing` -- and
+  scored `OUT-OF-SCOPE` on 17 departures that were ENTIRELY reformatting: line-wrapped
+  `assert!` calls in files the task never mentioned. Not one of them changed behaviour, and
+  all 17 counted. Format the file you were given, by hand, and leave the rest of the workspace
+  exactly as you found it.
+
   Read this as permission, not only as prohibition. If the task's own instructions make the
   wider workspace fail to build -- a new enum variant breaking a caller in another crate, say
   -- that breakage is EXPECTED and you must leave it. Reaching out to fix it is the departure.

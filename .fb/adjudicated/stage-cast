@@ -1,0 +1,1 @@
+stage-cast MERGED codex-luna -- spec critic found the unpinned duplicate-candidate boundary; implementer found it independently and resolved it the same way. 9 tests, clippy clean.
