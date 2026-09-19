@@ -51,14 +51,36 @@ echo "spec critique of $BEAD: $N arm(s)"
 # task the file does not exist yet, so show the module it will sit beside -- lib.rs plus any
 # type the spec names by path. Showing nothing would make every "wrong-reference" finding a
 # guess, which is the one kind of finding this stage must not encourage.
-TARGET=$(fb_target "$BEAD" 2>/dev/null)
+# EVERY declared file, not one. fb_target prints one path per line since a task may declare
+# several, and this captured the lot into a single string: `[ -f "$REPO/$TARGET" ]` then
+# tested a path containing a newline, failed, and emitted
+#
+#     === crates/fb/src/score.rs
+#     crates/fb/src/scope_cmd.rs does not exist yet (fb:modifies) ===
+#
+# So the first two-file spec went to its critic with NO code at all, under a prompt that
+# tells it to "check these against the code below rather than assuming" and warns that a
+# fabricated finding is worse than an empty report. Every wrong-reference finding it could
+# make would have been a guess.
+TARGET=$(fb_target "$BEAD" 2>/dev/null | head -1)
 VERB=$(fb_target_verb "$BEAD" 2>/dev/null)
 code=""
-if [ -n "$TARGET" ] && [ -f "$REPO/$TARGET" ]; then
-  code="=== $TARGET ($(wc -l < "$REPO/$TARGET") lines) ===
-$(head -c 60000 "$REPO/$TARGET")"
+targets=$(fb_target "$BEAD" 2>/dev/null)
+if [ -n "$targets" ]; then
+  budget=$((60000 / $(printf '%s\n' "$targets" | grep -c .)))
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    if [ -f "$REPO/$t" ]; then
+      code="$code
+=== $t ($(wc -l < "$REPO/$t") lines) ===
+$(head -c "$budget" "$REPO/$t")"
+    else
+      code="$code
+=== $t does not exist yet (fb:${VERB:-creates}) ==="
+    fi
+  done <<< "$targets"
 else
-  code="=== $TARGET does not exist yet (fb:${VERB:-creates}) ==="
+  code="=== the spec declares no deliverable, so no code could be shown ==="
 fi
 # Types the spec names as `crate::x::Y` or `x::Y` and that exist as modules: carry them, so a
 # reference check is a check rather than a recollection.
