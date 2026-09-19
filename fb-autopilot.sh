@@ -39,9 +39,27 @@ mkdir -p "$Q" "$DONE"
 say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >> "$LOG"; }
 
 FB_BIN=/home/gabe/Documents/farmerbob/target/debug/fb
-MAX_WAVES=${FB_MAX_WAVES:-2}
+MAX_WAVES=${FB_MAX_WAVES:-4}
 HEADROOM_MB=${FB_HEADROOM_MB:-3072}
-HARD_MB=${FB_HARD_MB:-2048}
+HARD_MB=${FB_HARD_MB:-1536}
+
+# THE ENVIRONMENT THE LAUNCH ACTUALLY NEEDS.
+#
+# This loop launched 65 waves and then stopped, at wave85, and the reason was not the loop: it
+# was that every launch after that was made BY HAND with two variables this script did not set.
+#
+#   FB_MEM_GB=1.5          admission was charging 2G a slot against a measured p95 of 1.26G,
+#                          so a 14G machine granted 5 slots where it holds 8.
+#   FB_SKIP_SPECCHECK=1    fb-admit runs the spec critique for every matrix line SERIALLY and
+#                          blocking, six to thirteen minutes each, before dispatching anything.
+#                          At one arm per task and eight tasks that is over an hour of ramp.
+#
+# Hand-launching with the right flags while the daemon sat idle with the wrong ones is not a
+# daemon that does not work. It is a daemon that was never told what the job had become.
+#
+# Both are exported so `fb-wave.sh` -> `fb-admit.sh` inherit them, and both stay overridable.
+export FB_MEM_GB="${FB_MEM_GB:-1.5}"
+export FB_SKIP_SPECCHECK="${FB_SKIP_SPECCHECK:-1}"
 
 # How many arms the machine can hold right now. Same question fb-admit.sh asks, same binary,
 # so the two cannot disagree about the size of the box. Echoes nothing when it cannot be
