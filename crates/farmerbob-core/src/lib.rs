@@ -89,6 +89,7 @@ pub mod timing;
 pub mod verify_plan;
 pub mod verifier;
 pub mod vrouter;
+pub mod wave_compose;
 pub mod wave_plan;
 pub mod window;
 pub mod witness;
