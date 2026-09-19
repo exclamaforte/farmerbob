@@ -76,6 +76,10 @@ print(tomllib.load(open('$repo/sources.toml','rb'))['source'].get('$arm',{}).get
     ifm-*)           set -a; . "$HOME/.config/farmerbob/secrets.env"; set +a
                      /home/gabe/Documents/farmerbob/fb-isolated "$wd" opencode run --dir "$wd" --auto "${oc_c[@]}" -m "$model" "$prompt" ;;
     or-*)            /home/gabe/Documents/farmerbob/fb-isolated "$wd" ori opencode run --dir "$wd" --auto "${oc_c[@]}" -m "$model" "$prompt" ;;
+    # oc-* is plain opencode with NEITHER wrapper: no secrets.env (that is IFM_API_KEY, which
+    # these do not use) and no `ori` (that is OpenRouter). opencode's own auth.json holds the
+    # nvidia credential and the opencode/ provider is free.
+    oc-*)            /home/gabe/Documents/farmerbob/fb-isolated "$wd" opencode run --dir "$wd" --auto "${oc_c[@]}" -m "$model" "$prompt" ;;
     *)               echo "fb_launch: unknown arm $arm" >&2; return 127 ;;
   esac
 }

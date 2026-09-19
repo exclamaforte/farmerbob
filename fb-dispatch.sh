@@ -316,6 +316,12 @@ $P"
     ifm-*)           set -a; . "$HOME/.config/farmerbob/secrets.env"; set +a
                      run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" opencode run "${o_c[@]}" -m "$MODEL" "$P" ;;
     or-*)            run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" ori opencode run "${o_c[@]}" -m "$MODEL" "$P" ;;
+    # oc-* is plain opencode with neither wrapper. It carries --dir and --auto, which the two
+    # branches above still lack here: farmerbob-1bd's fix went into fb-launch.sh only, so this
+    # table has been dispatching opencode without --auto ever since. Not changed for ifm-*/or-*
+    # in this commit -- those arms are producing work and a behaviour change belongs in its own
+    # task -- but the new branch is not going to inherit the defect.
+    oc-*)            run_confined /home/gabe/Documents/farmerbob/fb-isolated "$WT" opencode run --dir "$WT" --auto "${o_c[@]}" -m "$MODEL" "$P" ;;
     # An arm the registry calls verified but this table cannot launch. sources.toml declares
     # `cmd` and `args` for every arm and NOTHING HERE READS THEM -- this case statement is a
     # second, authoritative-looking copy of the same fact, and claude-sonnet was re-enabled,

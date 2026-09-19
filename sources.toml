@@ -578,3 +578,74 @@ quota_bucket = "agy-anthropic-opus"   # Its own bucket, per the owner: Sonnet an
 # The strongest arm in the roster on paper, and the least measured -- it has never run here.
 # Treat its first results as a sample of one: this project has twice crowned an arm on a field
 # where the instrument, not the arm, was the variable.
+
+# ---------------------------------------------------------------------------------------------
+# opencode free routes, added 2026-09-19. All five owner-supplied ids were smoke-tested BEFORE
+# registration; three answered and two are dead. Registering the dead ones as verified would
+# have cost two dispatch slots per wave to discover the same thing.
+#
+# The `oc-` prefix is new. ifm-* sources secrets.env for IFM_API_KEY and or-* goes through
+# `ori` for OpenRouter; these need neither -- opencode's own auth.json holds the nvidia
+# credential, and the opencode/ provider is free.
+
+[source.oc-muse-spark]
+status     = "verified"
+kind       = "opencode"
+launcher   = "opencode"
+model      = "opencode/muse-spark-1.3-contributor-free"
+provider   = "opencode"
+quota      = "free"
+quota_bucket = "opencode-free"
+notes      = "Smoke-tested 2026-09-19: PONG, exit 0. Contributor-free tier; no published rate limit found, so the cap is unknown rather than absent."
+
+[source.oc-deepseek-v4-flash]
+status     = "verified"
+kind       = "opencode"
+launcher   = "opencode"
+model      = "nvidia/deepseek-ai/deepseek-v4-flash-0731"
+provider   = "nvidia"
+quota      = "free"
+quota_bucket = "nvidia-build"
+notes      = "Smoke-tested 2026-09-19: PONG, exit 0. NVIDIA build free tokens; limit not published to the CLI, so treat as unknown."
+
+[source.oc-kimi-k3]
+status     = "verified"
+kind       = "opencode"
+launcher   = "opencode"
+model      = "nvidia/moonshotai/kimi-k3"
+provider   = "nvidia"
+quota      = "free"
+quota_bucket = "nvidia-build"
+notes      = "Smoke-tested 2026-09-19: PONG, exit 0."
+
+[source.oc-deepseek-v4-pro]
+status     = "disabled"
+kind       = "opencode"
+launcher   = "opencode"
+model      = "nvidia/deepseek-ai/deepseek-v4-pro-0813"
+provider   = "nvidia"
+quota      = "free"
+quota_bucket = "nvidia-build"
+disabled_reason = """MEASURED 2026-09-19, not assumed. The provider answers HTTP 410:
+
+    The model 'deepseek-ai/deepseek-v4-pro-0813' has reached its end of life on
+    2026-09-14T08:00:00Z and is no longer available.
+
+That is five days before this entry was written. opencode exits 1, so a dispatch would score as
+a failed run rather than a silent no-op -- but it would still burn a slot and an adjudication.
+Re-enable only against a successor id; this one will not come back."""
+
+[source.oc-minimax-m3]
+status     = "disabled"
+kind       = "opencode"
+launcher   = "opencode"
+model      = "nvidia/minimaxai/minimax-m3"
+provider   = "nvidia"
+quota      = "free"
+quota_bucket = "nvidia-build"
+disabled_reason = """MEASURED 2026-09-19. HTTP 410:
+
+    The model 'minimaxai/minimax-m3' has reached its end of life on
+    2026-09-09T09:00:00Z and is no longer available.
+
+Ten days before registration. Same handling as oc-deepseek-v4-pro."""

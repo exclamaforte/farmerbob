@@ -1,0 +1,16 @@
+MERGED agy-sonnet-46
+Single arm, 274 lines, clippy 0, main.rs only. FIRST RUN OF THE NEW SONNET-VIA-AGY ARM.
+
+fb bench exists and the whole chain runs. Measured on a real task directory:
+
+  correct kernel      rc=0  "smoke: measured 3 samples"
+  incorrect kernel    rc=1  "smoke: incorrect: mismatch at index 3"
+  malformed verify    rc=4  "smoke: instrument: ... Unparseable(...)"
+
+Three codes for three facts: the candidate is fine, the candidate is wrong, we are
+broken. The third case was my own fixture -- printf ate the JSON braces -- and the
+chain diagnosed it exactly right, reporting Instrument rather than blaming the
+kernel. That is the separation this harness has spent the night failing to make in
+crossx, critique, promote, prove and verify.
+
+Closes farmerbob-p172. The gate is no longer cargo-only.

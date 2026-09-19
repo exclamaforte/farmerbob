@@ -425,6 +425,20 @@ enum Command {
         #[arg(long, conflicts_with = "path_only")]
         verb_only: bool,
     },
+    /// Run a benchmark task: verify once, then time it.
+    Bench {
+        /// Directory holding manifest.json, verify.sh and bench.sh.
+        dir: PathBuf,
+        /// Seconds before one trial is killed. 0 means no limit.
+        #[arg(long, default_value_t = 0)]
+        timeout_s: u64,
+        /// Total trials that may be attempted.
+        #[arg(long, default_value_t = 10)]
+        max_attempts: u32,
+        /// Unreadable runs tolerated before the instrument is judged unreliable.
+        #[arg(long, default_value_t = 3)]
+        max_bad: u32,
+    },
 }
 
 /// Exit codes are part of the contract: the planning agent branches on these without
@@ -857,6 +871,20 @@ fn main() {
                 decl_cmd::Format::Line
             };
             decl_cmd::run(&spec, format, &mut std::io::stdout())
+        }
+        Some(Command::Bench {
+            dir,
+            timeout_s,
+            max_attempts,
+            max_bad,
+        }) => {
+            let plan = bench_cmd::BenchPlan {
+                dir: dir.clone(),
+                timeout_s,
+                max_attempts,
+                max_bad,
+            };
+            bench_gather::run(&dir, &plan, &mut std::io::stdout())
         }
         None => {
             println!("fb — farmerbob. Try `fb --help`.");
@@ -1567,5 +1595,251 @@ mod tests {
         let expected_code = verify_gather::run(fixture.path(), &mut expected_out);
         assert_eq!(rc, expected_code);
         assert_eq!(stdout, expected_out);
+    }
+
+    // -- fb bench -----------------------------------------------------------------------
+
+    struct BenchScratch {
+        path: PathBuf,
+    }
+
+    impl BenchScratch {
+        fn new(tag: &str) -> Self {
+            static BENCH_COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let n = BENCH_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "fb_bench_wire_test_{}_{}_{tag}",
+                std::process::id(),
+                n
+            ));
+            std::fs::create_dir_all(&path).expect("create bench scratch dir");
+            BenchScratch { path }
+        }
+
+        fn write(&self, name: &str, content: &str) {
+            std::fs::write(self.path.join(name), content).expect("write bench scratch file");
+        }
+
+        fn write_valid_manifest(&self, min_trials: u32) {
+            self.write(
+                "manifest.json",
+                &format!(
+                    r#"{{"name":"bench_wire","description":"wire test","verification":"Benchmark","timeout_s":0,"exclusive":[],"min_trials":{min_trials}}}"#
+                ),
+            );
+        }
+    }
+
+    impl Drop for BenchScratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// Parse `fb bench <args>` and run through bench_gather::run, returning (exit_code, stdout).
+    fn run_bench_args(args: &[&str]) -> Result<(i32, Vec<u8>), clap::Error> {
+        let mut full = vec!["fb", "bench"];
+        full.extend_from_slice(args);
+        let cli = Cli::try_parse_from(full)?;
+        match cli.command {
+            Some(Command::Bench {
+                dir,
+                timeout_s,
+                max_attempts,
+                max_bad,
+            }) => {
+                let plan = bench_cmd::BenchPlan {
+                    dir: dir.clone(),
+                    timeout_s,
+                    max_attempts,
+                    max_bad,
+                };
+                let mut out = Vec::new();
+                let code = bench_gather::run(&dir, &plan, &mut out);
+                Ok((code, out))
+            }
+            _ => panic!("expected Bench command"),
+        }
+    }
+
+    #[test]
+    fn clause_1_bench_clean_run_exits_with_gather_code() {
+        let scratch = BenchScratch::new("c1");
+        scratch.write_valid_manifest(3);
+        scratch.write("verify.sh", "echo '{\"correct\":true,\"detail\":\"ok\"}'\n");
+        scratch.write("bench.sh", "echo '{\"ms\":10.0}'\n");
+
+        let (code, out) =
+            run_bench_args(&[scratch.path.to_str().unwrap()]).expect("parse bench args");
+
+        // Compare to bench_gather::run directly to verify the code is passed through unchanged.
+        let plan = bench_cmd::BenchPlan {
+            dir: scratch.path.clone(),
+            timeout_s: 0,
+            max_attempts: 10,
+            max_bad: 3,
+        };
+        let mut expected_out = Vec::new();
+        let expected_code = bench_gather::run(&scratch.path, &plan, &mut expected_out);
+
+        assert_eq!(code, expected_code);
+        assert_eq!(out, expected_out);
+    }
+
+    #[test]
+    fn clause_2_bench_incorrect_exits_1() {
+        let scratch = BenchScratch::new("c2");
+        scratch.write_valid_manifest(3);
+        scratch.write(
+            "verify.sh",
+            "echo '{\"correct\":false,\"detail\":\"wrong answer\"}'\n",
+        );
+        scratch.write("bench.sh", "exit 0\n");
+
+        let (code, _) =
+            run_bench_args(&[scratch.path.to_str().unwrap()]).expect("parse bench args");
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn clause_3_bench_missing_manifest_exits_4_differs_from_1() {
+        let nonexistent = std::env::temp_dir().join(format!(
+            "fb_bench_wire_nodir_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&nonexistent);
+
+        let (code, _) =
+            run_bench_args(&[nonexistent.to_str().unwrap()]).expect("parse bench args");
+        assert_eq!(code, 4);
+        assert_ne!(code, 1, "missing manifest (exit 4) must differ from incorrect (exit 1)");
+    }
+
+    #[test]
+    fn clause_4_bench_default_flags_are_accepted() {
+        let scratch = BenchScratch::new("c4");
+        // Parse bare `fb bench <dir>` and verify the defaults match the spec.
+        let cli = Cli::try_parse_from(["fb", "bench", scratch.path.to_str().unwrap()])
+            .expect("bare `fb bench <dir>` must not be a clap error");
+        match cli.command {
+            Some(Command::Bench {
+                timeout_s,
+                max_attempts,
+                max_bad,
+                ..
+            }) => {
+                assert_eq!(timeout_s, 0, "timeout_s default must be 0");
+                assert_eq!(max_attempts, 10, "max_attempts default must be 10");
+                assert_eq!(max_bad, 3, "max_bad default must be 3");
+            }
+            _ => panic!("expected Bench command"),
+        }
+    }
+
+    #[test]
+    fn clause_5_bench_no_dir_arg_is_clap_usage_error_exit_2() {
+        let err = match Cli::try_parse_from(["fb", "bench"]) {
+            Err(e) => e,
+            Ok(_) => panic!("expected clap error for missing dir"),
+        };
+        assert_eq!(err.exit_code(), 2);
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn clause_6_slots_subcommand_unchanged_after_bench_added() {
+        let parsed = Cli::try_parse_from([
+            "fb",
+            "slots",
+            "--available-mb",
+            "2048",
+            "--headroom-mb",
+            "512",
+            "--memory-mb",
+            "1024",
+            "--plan",
+        ])
+        .expect("slots must still parse after adding bench");
+        match parsed.command {
+            Some(Command::Slots {
+                available_mb,
+                headroom_mb,
+                memory_mb,
+                plan,
+            }) => {
+                assert_eq!(available_mb, 2048);
+                assert_eq!(headroom_mb, 512);
+                assert_eq!(memory_mb, 1024);
+                assert!(plan);
+                let rc = slots_cmd::run_cmd(available_mb, headroom_mb, memory_mb, plan);
+                assert_eq!(rc, 0);
+            }
+            _ => panic!("expected Slots command"),
+        }
+    }
+
+    #[test]
+    fn clause_7_help_lists_bench() {
+        let err = match Cli::try_parse_from(["fb", "--help"]) {
+            Err(e) => e,
+            Ok(_) => panic!("--help should return clap DisplayHelp"),
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help_text = err.to_string();
+        assert!(
+            help_text.contains("bench"),
+            "`fb --help` must list the bench subcommand: {help_text}"
+        );
+    }
+
+    #[test]
+    fn boundary_timeout_s_0_is_accepted_and_means_no_limit() {
+        let scratch = BenchScratch::new("timeout0");
+        scratch.write_valid_manifest(1);
+        scratch.write("verify.sh", "echo '{\"correct\":true,\"detail\":\"ok\"}'\n");
+        scratch.write("bench.sh", "echo '{\"ms\":1.0}'\n");
+
+        // --timeout-s 0 must parse without error and a clean single-trial run exits 0.
+        let (code, _) =
+            run_bench_args(&[scratch.path.to_str().unwrap(), "--timeout-s", "0"])
+                .expect("--timeout-s 0 must not be a clap error");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn boundary_max_attempts_0_agrees_with_bench_gather() {
+        // With max_attempts=0 trial_plan abandons before any script runs.
+        // Assert agreement with bench_gather::run rather than hard-coding the exit code.
+        let scratch = BenchScratch::new("attempts0");
+        scratch.write_valid_manifest(3);
+        scratch.write("verify.sh", "echo '{\"correct\":true,\"detail\":\"ok\"}'\n");
+        scratch.write("bench.sh", "echo '{\"ms\":1.0}'\n");
+
+        let (code, _) =
+            run_bench_args(&[scratch.path.to_str().unwrap(), "--max-attempts", "0"])
+                .expect("--max-attempts 0 must not be a clap error");
+
+        let plan = bench_cmd::BenchPlan {
+            dir: scratch.path.clone(),
+            timeout_s: 0,
+            max_attempts: 0,
+            max_bad: 3,
+        };
+        let mut expected_out = Vec::new();
+        let expected_code = bench_gather::run(&scratch.path, &plan, &mut expected_out);
+        assert_eq!(code, expected_code);
+    }
+
+    #[test]
+    fn boundary_nonexistent_dir_exits_4() {
+        let gone = std::env::temp_dir().join(format!(
+            "fb_bench_wire_gone_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&gone);
+
+        let (code, _) =
+            run_bench_args(&[gone.to_str().unwrap()]).expect("parse bench args");
+        assert_eq!(code, 4);
     }
 }
