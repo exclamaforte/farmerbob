@@ -36,6 +36,7 @@ mod sem_cmd;
 mod slots_cmd;
 mod sources;
 mod speccheck_cmd;
+mod speclint_cmd;
 mod stage_cmd;
 mod status;
 mod timing_cmd;
@@ -118,6 +119,9 @@ enum Command {
         #[arg(long)]
         allow_missing_critique: bool,
     },
+    /// Refuse a spec that would split the field: delegation-shaped instructions, formats
+    /// the arm is told to pin, and a missing deliverable declaration.
+    Speclint { specs: Vec<String> },
     /// Critique a task's SPEC before anyone implements it, and write each arm's findings.
     Speccheck {
         task: String,
@@ -856,6 +860,7 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Speclint { specs }) => speclint_cmd::run(&specs),
         Some(Command::Speccheck { task, krate, arms }) => {
             speccheck_cmd::run(&task, &krate, arms.as_deref())
         }
