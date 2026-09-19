@@ -10,6 +10,7 @@ mod escalate;
 mod fate_cmd;
 mod import;
 mod ledger_cmd;
+mod live_cmd;
 mod mutants;
 mod objective;
 mod pareto;
