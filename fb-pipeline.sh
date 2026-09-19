@@ -61,9 +61,39 @@ print(','.join(p) if p else 'NONE')" 2>/dev/null
 # score.json: a stale root yields a stale fingerprint that every downstream artefact then
 # validates against successfully. The check certified staleness as freshness.
 #   (bead farmerbob-oad)
+#
+# IT MUST INCLUDE THE WORKTREE'S CONTENT, not only the arm's name. A candidate can be
+# CHANGED without the set of candidates changing: that is exactly what a follow-up turn does
+# -- the critic raises something, the arm is resumed in the worktree it already owns, and it
+# edits the same file. The names are identical before and after, so a name-only fingerprint
+# says "already done" for every stage and the improved code is never re-measured. The old
+# score, the old critique and the old verdict would all be served back as current.
+#
+# Hashing the diff fixes it for free: a follow-up turn invalidates score, and score's change
+# invalidates everything downstream through `field`, so `./fb-pipeline.sh <task> <crate>` is
+# the whole re-adjudication and no state has to be poked by hand.
+#
+# `git diff HEAD` covers tracked edits; a CREATED deliverable is untracked and invisible to
+# it, so its content is hashed separately. No `git add` here -- a freshness check must not
+# mutate the thing it is measuring.
 wtfield() {
-  ls -d "$HOME/.local/share/farmerbob/worktrees/$T--"*/ 2>/dev/null \
-    | sed "s|.*/$T--||; s|/$||" | sort | paste -sd, - | sed 's/^$/NOCANDIDATES/'
+  local root="$HOME/.local/share/farmerbob/worktrees"
+  local out="" d arm h
+  for d in "$root/$T--"*/; do
+    [ -d "$d" ] || continue
+    arm="$(basename "$d" | sed "s|^$T--||")"
+    # A critic's scratch worktree, <task>--critic--<arm>, matches the same glob and is NOT a
+    # candidate: it is a checkout of HEAD that the reviewer works in. Counting it would put a
+    # second "arm" in the field's fingerprint and invalidate every artefact the moment a
+    # critique ran.
+    case "$arm" in critic--*) continue ;; esac
+    h="$( { git -C "$d" diff HEAD 2>/dev/null
+            git -C "$d" ls-files --others --exclude-standard 2>/dev/null \
+              | while read -r f; do [ -f "$d/$f" ] && cat "$d/$f"; done
+          } | sha1sum | cut -c1-12 )"
+    out="$out,$arm:$h"
+  done
+  printf '%s' "${out#,}" | sed 's/^$/NOCANDIDATES/'
 }
 
 # An artefact is either a non-empty FILE or a directory holding at least one entry.
