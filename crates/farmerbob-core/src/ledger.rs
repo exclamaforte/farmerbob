@@ -157,6 +157,80 @@ pub struct Proposal {
     pub body: String,
 }
 
+/// Where an accepted proposal's work goes.
+///
+/// This is the decision the adjudicator makes on every follow-up, and it is a
+/// different axis from [`Ruling`]: `Ruling` says whether a proposal was acted
+/// on, `Route` says where the work went. Accepted-and-resumed and
+/// accepted-and-filed are both acceptances and they cost very different
+/// amounts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Route {
+    /// Every path the proposal names was declared by the task under review,
+    /// so the arm that wrote that code can do the work in the worktree it
+    /// still owns. The cheap path, and the common one.
+    Resume {
+        /// The paths named, in the order written.
+        scope: Vec<String>,
+    },
+    /// At least one path lies outside what the task declared, so no arm
+    /// confined to that task can complete it. It belongs to the backlog group
+    /// that owns the code instead.
+    Backlog {
+        /// The paths named, in the order written.
+        scope: Vec<String>,
+        /// The named paths that the task did not declare, in the order
+        /// written. Never empty for this variant.
+        outside: Vec<String>,
+    },
+    /// The proposal names no scope at all, so nothing can be decided about
+    /// where it goes. NOT a rejection: the finding may be correct and is
+    /// simply unroutable as written.
+    Unroutable,
+}
+
+/// The paths a proposal's `SCOPE:` line names, in the order written.
+///
+/// A scope line may name several paths separated by commas or whitespace.
+/// Returns empty when the proposal has no `SCOPE:` line, which is the input
+/// that makes a proposal [`Route::Unroutable`].
+pub fn scope_of(proposal: &Proposal) -> Vec<String> {
+    for line in proposal.body.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("SCOPE:") else {
+            continue;
+        };
+        return rest
+            .split([',', ' ', '\t'])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    Vec::new()
+}
+
+/// Where this proposal's work goes, given the files the reviewed task declared.
+///
+/// Paths are compared as exact strings, the same way `crate::scope` compares
+/// them and for the same reason: guessing at path equivalence is how a check
+/// silently permits something.
+pub fn route(proposal: &Proposal, declared: &[String]) -> Route {
+    let scope = scope_of(proposal);
+    if scope.is_empty() {
+        return Route::Unroutable;
+    }
+    let outside: Vec<String> = scope
+        .iter()
+        .filter(|path| !declared.iter().any(|d| d == *path))
+        .cloned()
+        .collect();
+    if outside.is_empty() {
+        Route::Resume { scope }
+    } else {
+        Route::Backlog { scope, outside }
+    }
+}
+
 /// Parse the `FINDING:` / `FOLLOWUP:` blocks out of an arm's report.
 ///
 /// A marker is recognised only at the START of a line, after optional leading
@@ -327,5 +401,96 @@ mod tests {
         ]);
         assert_eq!(t[0].spec_accepted, 1);
         assert_eq!(t[0].spec_duplicate, 2);
+    }
+
+    fn followup(body: &str) -> Proposal {
+        Proposal {
+            kind: Kind::FollowUp,
+            title: "swap the comparison".to_string(),
+            body: body.to_string(),
+        }
+    }
+
+    /// The headline: a follow-up naming only files the task declared goes back
+    /// to the arm that wrote them.
+    #[test]
+    fn a_followup_inside_the_declared_set_resumes_its_author() {
+        let p = followup("WHY: it is backwards\nSCOPE: crates/farmerbob-core/src/cost.rs");
+        let declared = vec!["crates/farmerbob-core/src/cost.rs".to_string()];
+        assert_eq!(
+            route(&p, &declared),
+            Route::Resume {
+                scope: vec!["crates/farmerbob-core/src/cost.rs".to_string()]
+            }
+        );
+    }
+
+    /// Same follow-up, one entry removed from the declared set: the two answers
+    /// must differ, and the outside path must be named so the adjudicator knows
+    /// which group owns it.
+    #[test]
+    fn a_followup_outside_the_declared_set_goes_to_the_backlog() {
+        let p = followup("SCOPE: crates/fb/src/pareto.rs");
+        let declared = vec!["crates/farmerbob-core/src/cost.rs".to_string()];
+        assert_eq!(
+            route(&p, &declared),
+            Route::Backlog {
+                scope: vec!["crates/fb/src/pareto.rs".to_string()],
+                outside: vec!["crates/fb/src/pareto.rs".to_string()],
+            }
+        );
+    }
+
+    /// A scope naming several files, only some of them declared, cannot be done
+    /// by an arm confined to the task. It goes to the backlog and says which
+    /// paths put it there.
+    #[test]
+    fn a_mixed_scope_goes_to_the_backlog_and_names_the_outside_paths() {
+        let p = followup("SCOPE: crates/farmerbob-core/src/cost.rs, crates/fb/src/pareto.rs");
+        let declared = vec!["crates/farmerbob-core/src/cost.rs".to_string()];
+        match route(&p, &declared) {
+            Route::Backlog { scope, outside } => {
+                assert_eq!(scope.len(), 2);
+                assert_eq!(outside, vec!["crates/fb/src/pareto.rs".to_string()]);
+            }
+            other => panic!("expected Backlog, got {other:?}"),
+        }
+    }
+
+    /// No SCOPE line is Unroutable, and that is NOT a rejection: the finding
+    /// may be perfectly correct and simply cannot be sent anywhere as written.
+    #[test]
+    fn a_followup_without_a_scope_is_unroutable_not_rejected() {
+        let p = followup("WHY: it is backwards and costs a wrong frontier");
+        let declared = vec!["crates/farmerbob-core/src/cost.rs".to_string()];
+        assert_eq!(route(&p, &declared), Route::Unroutable);
+    }
+
+    /// An empty declared set routes everything to the backlog, never to a
+    /// resume. A task that declared nothing has no arm to resume into.
+    #[test]
+    fn an_empty_declared_set_never_resumes() {
+        let p = followup("SCOPE: crates/farmerbob-core/src/cost.rs");
+        assert!(matches!(route(&p, &[]), Route::Backlog { .. }));
+    }
+
+    /// Paths are compared exactly. A leading `./` is a different string and
+    /// must not be guessed equivalent.
+    #[test]
+    fn scope_paths_are_compared_exactly() {
+        let p = followup("SCOPE: ./crates/farmerbob-core/src/cost.rs");
+        let declared = vec!["crates/farmerbob-core/src/cost.rs".to_string()];
+        assert!(matches!(route(&p, &declared), Route::Backlog { .. }));
+    }
+
+    /// The real report from 2026-09-19, verbatim, routing to a resume.
+    #[test]
+    fn the_cost_frontier_followup_routes_to_a_resume() {
+        let report = "### CLAIMS\n\nNO MATERIAL DEFECTS FOUND\n\nFOLLOWUPS\n\nFOLLOWUP: Fix completion rate dominance condition in `frontier`.\nWHY: strictly_better is written for a lower-is-better axis.\nSCOPE: crates/farmerbob-core/src/cost.rs\n";
+        let parsed = parse(report);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].kind, Kind::FollowUp);
+        let declared = vec!["crates/farmerbob-core/src/cost.rs".to_string()];
+        assert!(matches!(route(&parsed[0], &declared), Route::Resume { .. }));
     }
 }

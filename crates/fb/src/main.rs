@@ -13,6 +13,7 @@ mod doctor;
 mod eligible;
 mod escalate;
 mod fate_cmd;
+mod followups_cmd;
 mod import;
 mod ledger_cmd;
 mod live_cmd;
@@ -115,6 +116,9 @@ enum Command {
         #[arg(long)]
         allow_missing_critique: bool,
     },
+    /// Read every critic's FOLLOWUPs for a task and say where each one goes: back to the
+    /// arm that wrote the code, or into the backlog group that owns it.
+    Followups { task: String },
     /// Run environment preflight checks and print an actionable report.
     Doctor,
     /// Turn critics' CLAIMs into executed evidence: classify, then test each allegation.
@@ -834,6 +838,7 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Followups { task }) => followups_cmd::run(&task, cli.json),
         Some(Command::Doctor) => doctor::run(cli.json),
         Some(Command::Agents { all }) => agents(all, cli.json),
         Some(Command::Leaderboard { from, excluded }) => leaderboard(&from, excluded, cli.json),
