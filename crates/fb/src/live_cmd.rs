@@ -131,7 +131,7 @@ fn gather_procs(root: &str) -> Vec<Proc> {
         let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))
             .ok()
             .map(|p| p.to_string_lossy().into_owned());
-        let inside = cwd.as_deref().is_some_and(|c| c.starts_with(&root));
+        let inside = cwd.as_deref().is_some_and(|c| c.starts_with(root));
         if inside || cwd.is_none() {
             procs.push(Proc { pid, comm, cwd });
         }
