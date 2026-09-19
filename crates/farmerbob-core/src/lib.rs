@@ -64,6 +64,7 @@ pub mod resume;
 pub mod reviewer;
 pub mod roster;
 pub mod router;
+pub mod rubric_carry;
 pub mod run;
 pub mod run_timing;
 pub mod runstate;
