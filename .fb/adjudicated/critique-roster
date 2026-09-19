@@ -1,0 +1,17 @@
+critique-roster NOT MERGED after two attempts, both TESTS-FAIL on the same boundary.
+
+  attempt 1  codex-luna  NO-TESTS   the pre-existing zero_candidates test pointed FB_WT at a
+                                    path it had not created, got InstrumentFailed, expected 4
+  attempt 2  codex-luna  TESTS-FAIL its own missing_worktree_root test got Observed(vec![]),
+                                    expected 1 -- the opposite direction, same boundary
+
+Everything else passed both times: 722 of 723 tests, zero scope departures. The defect is
+my clause 10, which asked arms to pin the difference between "zero candidates" and "the
+candidate list could not be measured". The distinction is real and it is not reliably
+reachable from a test -- whether fs::read_dir fails depends on ordering and on what else
+recreated the directory. Narrowed to the readable-empty case only; the missing-root case is
+now explicitly unpinned and tests may not assert on it.
+
+Requeued as wave155. The stale spec critique was also cleared: wave154 reused the report
+written against the pre-fix spec text, so the critic never saw the three findings I had
+already addressed.

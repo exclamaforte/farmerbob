@@ -108,16 +108,17 @@ survives past the terminal. Name the file after the critic and the subject.
    direction, and `fb-eligible.sh` already excludes it, so divergence here would put the two
    implementations of one rule into disagreement.
 
-10. **Zero candidates and unmeasurable candidates are different answers.** `candidates()`
-    returns a `Measurement`. `Observed(vec![])` is zero candidates and returns 4. `Missing(..)`
-    -- the worktree root does not exist, is unreadable, is not a directory -- is an instrument
-    failure and returns **1**, with the reason on stderr.
+10. **Zero candidates returns 4.** `candidates()` returning `Observed(vec![])` -- a readable
+    worktree root containing no `<bead>--<arm>` directory -- is not-applicable. Create the
+    empty directory in the test; do not rely on a missing one.
 
-    This is not hypothetical: the existing test
-    `zero_candidates_returns_not_applicable_and_writes_nothing` pointed `FB_WT` at a temporary
-    path it had not created, got `InstrumentFailed`, and asserted 4. A previous attempt at this
-    task failed the gate on exactly that. Pin BOTH cases, in one test each, and make the
-    zero-candidate one create its empty directory.
+    What a MISSING or unreadable root does is deliberately NOT pinned, and your tests may not
+    assert on it. Two attempts at this task have now failed the gate on that one case, in
+    opposite directions -- the first got `InstrumentFailed` and expected 4, the second got
+    `Observed(vec![])` and expected 1 -- because whether `fs::read_dir` fails depends on test
+    ordering and on what else has recreated the directory. It is a real distinction and it is
+    not reliably reachable from a test, so it is not this task's to pin. Say in your handoff
+    which way your implementation goes.
 
 ## Boundaries, at N and at zero
 
