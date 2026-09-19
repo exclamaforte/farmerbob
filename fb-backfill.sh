@@ -27,7 +27,7 @@ for t in $TASKS; do
   crate=$(awk -F/ '{print $2}' <<< "$tgt")
   echo "======== $t ($crate, $tgt)"
   bash ./fb-critique.sh "$t" "$crate" "$tgt" 2>&1 | sed 's/^/  /'
-  bash ./fb-promote.sh  "$t" "$crate" "$tgt" 2>&1 | sed 's/^/  /'
+  /home/gabe/Documents/farmerbob/target/debug/fb promote "$t" 2>&1 | sed 's/^/  /'
   bash ./fb-prove.sh    "$t" "$crate" "$tgt" 2>&1 | sed 's/^/  /'
 done
 echo "======== backfill complete"

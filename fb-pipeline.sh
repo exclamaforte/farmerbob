@@ -21,6 +21,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 cd /home/gabe/Documents/farmerbob
 T="${1:?task}"; CRATE="${2:-farmerbob-core}"; TARGET="${3:-}"
 LOGS="$HOME/.local/share/farmerbob/logs"
+FB=/home/gabe/Documents/farmerbob/target/debug/fb
 
 # Infer the target from the spec's own declaration rather than making the caller repeat it.
 # BOTH verbs, not just fb:creates. Specs declare `fb:modifies` when the deliverable is an
@@ -321,7 +322,7 @@ run_promote() {
 }
 
 # score is keyed on the CANDIDATES ON DISK; everything downstream on who PASSED.
-stage score    "$LOGS/$T.score.json"    wtfield bash ./fb-score.sh   "$T" "$CRATE"
+stage score    "$LOGS/$T.score.json"    wtfield "$FB" score "$T" --crate "$CRATE"
 run_differential || FAILED_STAGES="$FAILED_STAGES differential"
 run_crossx || FAILED_STAGES="$FAILED_STAGES crossx"
 run_critique || FAILED_STAGES="$FAILED_STAGES critique"
