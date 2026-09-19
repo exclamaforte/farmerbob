@@ -1566,7 +1566,7 @@ esac
     fn coverage_all_covered_is_ok() {
         let dir = fixture_dir("coverage-ok");
         write_fixture(&dir, "sources.toml", &sources_fixture(""));
-        write_fixture(&dir, "fb-dispatch.sh", DISPATCH_FIXTURE);
+        write_fixture(&dir, "crates/fb/src/launch.rs", DISPATCH_FIXTURE);
         let check = check_launcher_coverage(&dir);
         assert_eq!(check.status, Status::Ok, "message was: {}", check.message);
         let _ = fs::remove_dir_all(&dir);
@@ -1577,7 +1577,7 @@ esac
         let dir = fixture_dir("coverage-missing");
         let extra = "[source.gemini-38-flash]\nstatus = \"verified\"\n";
         write_fixture(&dir, "sources.toml", &sources_fixture(extra));
-        write_fixture(&dir, "fb-dispatch.sh", DISPATCH_FIXTURE);
+        write_fixture(&dir, "crates/fb/src/launch.rs", DISPATCH_FIXTURE);
         let check = check_launcher_coverage(&dir);
         assert_eq!(check.status, Status::Fail);
         assert!(
@@ -1594,7 +1594,7 @@ esac
         let extra = "[source.parked-thing]\nstatus = \"disabled\"\n\n\
                      [source.paid-duplicate]\nstatus = \"verified\"\nredundant_with = \"codex-luna\"\n";
         write_fixture(&dir, "sources.toml", &sources_fixture(extra));
-        write_fixture(&dir, "fb-dispatch.sh", DISPATCH_FIXTURE);
+        write_fixture(&dir, "crates/fb/src/launch.rs", DISPATCH_FIXTURE);
         let check = check_launcher_coverage(&dir);
         assert_eq!(check.status, Status::Ok, "message was: {}", check.message);
         let _ = fs::remove_dir_all(&dir);
@@ -1604,7 +1604,7 @@ esac
     fn coverage_zero_arms_is_ok() {
         let dir = fixture_dir("coverage-zero");
         write_fixture(&dir, "sources.toml", "");
-        write_fixture(&dir, "fb-dispatch.sh", DISPATCH_FIXTURE);
+        write_fixture(&dir, "crates/fb/src/launch.rs", DISPATCH_FIXTURE);
         let check = check_launcher_coverage(&dir);
         assert_eq!(check.status, Status::Ok);
         let _ = fs::remove_dir_all(&dir);
@@ -1613,7 +1613,7 @@ esac
     #[test]
     fn coverage_missing_sources_toml_is_warn_and_names_it() {
         let dir = fixture_dir("coverage-no-sources");
-        write_fixture(&dir, "fb-dispatch.sh", DISPATCH_FIXTURE);
+        write_fixture(&dir, "crates/fb/src/launch.rs", DISPATCH_FIXTURE);
         let check = check_launcher_coverage(&dir);
         assert_eq!(check.status, Status::Warn);
         assert!(
@@ -1631,7 +1631,7 @@ esac
         let check = check_launcher_coverage(&dir);
         assert_eq!(check.status, Status::Warn);
         assert!(
-            check.message.contains("fb-dispatch.sh"),
+            check.message.contains("launch.rs"),
             "message was: {}",
             check.message
         );
