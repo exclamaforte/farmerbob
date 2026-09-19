@@ -17,22 +17,52 @@
 #   fb_target <task>  -> echoes the declared path, or nothing
 #   fb_target_verb <task> -> echoes "creates" | "modifies" | nothing
 #
-# fb-dispatch.sh deliberately does NOT use this: its precondition check is specific to
-# `creates` (the file must be absent on the base), which is meaningless for `modifies`.
+# fb-dispatch.sh uses `fb_declaration` below. It used to run its own `grep -oE` over EVERY
+# fb:creates marker in the prompt, with no fence tracking and no first-wins, so a spec that
+# DOCUMENTS the marker format was refused on its own examples: target-decl declared
+# target_decl.rs on line 1 and was killed for "declares creates:.../window.rs", a path that
+# appears only inside a fenced example block. That is the wave60 defect -- an EXAMPLE of a
+# declaration parsed as a declaration -- recurring in a second reader, and fb-speclint did
+# not catch it because speclint permits a FENCED marker while the dispatcher did not.
 
 fb_spec() { echo "/home/gabe/Documents/farmerbob/.fb/prompts/$1.md"; }
 
-fb_target() {
+# The ONE declaration a spec makes, as "<verb> <path>", or nothing.
+#
+# Fence-aware and first-wins, matching farmerbob_core::precondition, which is the only
+# reader that already got this right. A marker inside a ``` block is an EXAMPLE and is not a
+# declaration; every spec about the marker format contains several.
+#
+# Takes a FILE, so the same rule can be applied to a prompt that is not in .fb/prompts.
+fb_declaration_in() {
+  awk '
+    /^[[:space:]]*```/ { fence = 1 - fence; next }
+    fence { next }
+    match($0, /<!-- fb:(creates|modifies) [^ ]+ -->/) {
+      seg = substr($0, RSTART, RLENGTH)
+      split(seg, a, " ")
+      sub(/^fb:/, "", a[2])
+      print a[2], a[3]
+      exit
+    }' "${1:?file}" 2>/dev/null
+}
+
+fb_declaration() {
   local s; s=$(fb_spec "${1:?task}")
   [ -f "$s" ] || return 1
-  grep -ohE '<!-- fb:(creates|modifies) [^ ]+ -->' "$s" 2>/dev/null | awk '{print $3}' | head -1
+  fb_declaration_in "$s"
+}
+
+fb_target() {
+  local d; d=$(fb_declaration "${1:?task}") || return 1
+  [ -n "$d" ] || return 0
+  printf '%s\n' "${d#* }"
 }
 
 fb_target_verb() {
-  local s; s=$(fb_spec "${1:?task}")
-  [ -f "$s" ] || return 1
-  grep -ohE '<!-- fb:(creates|modifies) [^ ]+ -->' "$s" 2>/dev/null \
-    | awk '{print $2}' | head -1 | sed 's/^fb://'
+  local d; d=$(fb_declaration "${1:?task}") || return 1
+  [ -n "$d" ] || return 0
+  printf '%s\n' "${d%% *}"
 }
 
 # Why the target could not be read. The two causes need different fixes and reporting them

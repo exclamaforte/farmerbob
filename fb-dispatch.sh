@@ -81,12 +81,32 @@ json.dump({'source': os.environ['SRC'], 'bead': os.environ['BEAD'],
   exit 3
 }
 export SRC BEAD WT BRANCH META
-for path in $(grep -oE '<!-- fb:creates [^ ]+ -->' "$PROMPT_FILE" 2>/dev/null | awk '{print $3}'); do
-  [ -e "$WT/$path" ] && fail_precondition "declares creates:$path but it already exists on the base"
-done
-for path in $(grep -oE '<!-- fb:modifies [^ ]+ -->' "$PROMPT_FILE" 2>/dev/null | awk '{print $3}'); do
-  [ -e "$WT/$path" ] || fail_precondition "declares modifies:$path but it does not exist on the base"
-done
+
+# ONE declaration, fence-aware, via the shared reader.
+#
+# This used to loop over EVERY fb:creates marker in the prompt with a bare grep. A spec that
+# documents the marker format carries several as EXAMPLES, so target-decl -- which declared
+# target_decl.rs on its first line -- was killed with "declares creates:.../window.rs",
+# a path that appears only inside a fenced example block. Its arm was refused before it ran.
+#
+# That is the wave60 defect in a second reader: an example of a declaration parsed as a
+# declaration. fb-speclint did not catch it because speclint permits a FENCED marker, which
+# is correct, while this loop did not honour fences at all. Three readers, three rules.
+. /home/gabe/Documents/farmerbob/fb-target.sh
+DECL=$(fb_declaration_in "$PROMPT_FILE")
+case "${DECL%% *}" in
+  creates)
+    dpath="${DECL#* }"
+    [ -e "$WT/$dpath" ] && fail_precondition "declares creates:$dpath but it already exists on the base"
+    ;;
+  modifies)
+    dpath="${DECL#* }"
+    [ -e "$WT/$dpath" ] || fail_precondition "declares modifies:$dpath but it does not exist on the base"
+    ;;
+  *)
+    : # no declaration: other stages report that; it is not this stage's refusal
+    ;;
+esac
 
 MODEL=$(python3 -c "
 import tomllib;print(tomllib.load(open('$REPO/sources.toml','rb'))['source']['$SRC'].get('model',''))")
