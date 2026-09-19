@@ -29,6 +29,7 @@ mod slots_cmd;
 mod sources;
 mod stage_cmd;
 mod status;
+mod timing_cmd;
 mod trial;
 mod verify_cmd;
 
