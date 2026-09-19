@@ -13,6 +13,36 @@ A grouped task declares every file it touches. That became possible on 2026-09-1
 `scope::Declared` went from one path to a set; before that a task spanning two files in one
 crate could not pass its own gate.
 
+## T0 — Route every critic FOLLOWUP  (farmerbob-aqos, P0)
+
+**Files:** `crates/farmerbob-core/src/ledger.rs` + `crates/fb/src/adjudicate_cmd.rs` + fb-launch.sh  
+**Beads:** 1 (P0)  
+**Status:** open — do this first
+
+A critic's FOLLOWUP is the cheapest work this project can do, and it is the mechanism that
+stops the backlog growing rather than adding to it. A followup handled in-turn never becomes a
+bead, and resuming the agent that wrote the code costs a fraction of a fresh dispatch: it
+already has the file, the worktree, the task and the reasoning loaded.
+
+The rule the adjudicator applies to every followup:
+
+- **SCOPE names a file the task declared** → resume that agent in its own worktree. This is the
+  default and should be most of them.
+- **SCOPE names different code** → fold it into the T that owns that code. Do not dispatch it
+  on its own.
+- otherwise reject, or mark duplicate of an existing bead.
+
+Two things block automating that. `farmerbob_core::ledger` already parses `FOLLOWUP:` blocks
+into `Proposal` and tallies rulings into `Credit` — and has **zero callers**, so critics have
+been writing followups into a format the harness can read while nothing reads them. And
+`Ruling` is `Accepted | Rejected | Duplicate`, which records *whether* a proposal was acted on
+and cannot record *where the work went* — accepted-and-resumed and accepted-and-filed are
+different facts.
+
+- `farmerbob-aqos` **P0** — Route every critic FOLLOWUP: resume the agent that wrote the code, or fold it into its backlog group
+
+---
+
 ## Ordering
 
 T1, T3, T4 and T6 first. T1 is the headline deliverable's axis. T3 and T4 are the duplication
