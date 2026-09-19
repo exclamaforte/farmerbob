@@ -35,6 +35,7 @@ mod select;
 mod sem_cmd;
 mod slots_cmd;
 mod sources;
+mod speccheck_cmd;
 mod stage_cmd;
 mod status;
 mod timing_cmd;
@@ -116,6 +117,15 @@ enum Command {
         /// Decide even when no critique exists. Off by default, deliberately.
         #[arg(long)]
         allow_missing_critique: bool,
+    },
+    /// Critique a task's SPEC before anyone implements it, and write each arm's findings.
+    Speccheck {
+        task: String,
+        #[arg(long, default_value = "farmerbob-core")]
+        krate: String,
+        /// Only these arms, comma-separated. Default: every dispatchable arm.
+        #[arg(long)]
+        arms: Option<String>,
     },
     /// Read every critic's FOLLOWUPs for a task and say where each one goes: back to the
     /// arm that wrote the code, or into the backlog group that owns it.
@@ -840,6 +850,9 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Speccheck { task, krate, arms }) => {
+            speccheck_cmd::run(&task, &krate, arms.as_deref())
+        }
         Some(Command::Followups { task }) => followups_cmd::run(&task, cli.json),
         Some(Command::Doctor) => doctor::run(cli.json),
         Some(Command::Agents { all }) => agents(all, cli.json),

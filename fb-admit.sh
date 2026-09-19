@@ -125,7 +125,7 @@ else
       continue
     fi
     echo "speccheck $task: running before dispatch"
-    timeout "$SPECCHECK_TIMEOUT" ./fb-speccheck.sh "$task" "$crate" "$arms" \
+    timeout "$SPECCHECK_TIMEOUT" "$FB_BIN" speccheck "$task" --krate "$crate" --arms "$arms" \
       > "$LOGS/speccheck.$task.log" 2>&1 &
     speccheck_pids+=("$!")
     speccheck_tasks+=("$task")
