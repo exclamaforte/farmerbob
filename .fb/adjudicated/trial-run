@@ -1,0 +1,22 @@
+MERGED glm-53-flash
+Single arm, 230 lines, clippy 0.
+
+Probed all ten behaviours. The one that carries it:
+
+  good 5 >= min_trials 5, BUT bad 4 > max_bad 3  ->  Abandon(4), scorable=false
+
+Enough measurements gathered alongside more failures than tolerated is NOT a
+result. An instrument that flaked four times out of nine is suspect, and scoring
+that run would blame a candidate for the harness.
+
+The rest, all correct:
+  bad == max_bad (3)          Run        tolerance means the limit is allowed
+  bad == max_bad + 1          Abandon
+  attempts exhausted, few     Abandon(0) never measured, not a failure
+  attempts exhausted, enough  Enough(5)  the clause-5 pair, same attempts
+  min_trials 0, good 0        Enough(0)  the manifest asked for no minimum
+  max_attempts 0              Abandon    nothing may be attempted
+  max_bad 0, one bad          Abandon(1)
+
+scorable is true only for Enough, which is the point: Abandon is an ending that
+yields a report about the instrument, not a score about the arm.

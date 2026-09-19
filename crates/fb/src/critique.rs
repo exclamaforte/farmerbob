@@ -8,7 +8,7 @@ use farmerbob_core::gate::{Observation, Verdict, judge};
 use farmerbob_core::measurement::Measurement;
 use std::ffi::OsStr;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const REPO: &str = "/home/gabe/Documents/farmerbob";
@@ -192,7 +192,39 @@ fn prompt(template: &Path, patch: &str, handoff: &str, output: &Path) -> Measure
     }
 }
 
-fn launch(arm: &str, text: &str, worktree: &Path) -> Measurement<()> {
+fn environment_paths(state_root: &Path, run: &str) -> [PathBuf; 3] {
+    let run_root = state_root.join(run);
+    [
+        run_root.join("data"),
+        run_root.join("state"),
+        run_root.join("cache"),
+    ]
+}
+
+fn state_root() -> Measurement<PathBuf> {
+    match std::env::var_os("HOME") {
+        Some(home) => {
+            Measurement::observed(PathBuf::from(home).join(".local/share/farmerbob/state"))
+        }
+        None => Measurement::instrument_failed("HOME is not set"),
+    }
+}
+
+fn launch(arm: &str, text: &str, worktree: &Path, run: &str) -> Measurement<()> {
+    let state_root = match state_root() {
+        Measurement::Observed(root) => root,
+        Measurement::Missing(reason) => return Measurement::Missing(reason),
+    };
+    let [data_home, state_home, cache_home] = environment_paths(&state_root, run);
+    for directory in [&data_home, &state_home, &cache_home] {
+        if let Err(error) = fs::create_dir_all(directory) {
+            return Measurement::instrument_failed(&format!(
+                "cannot create {}: {error}",
+                directory.display()
+            ));
+        }
+    }
+
     let result = Command::new("bash")
         .arg("-c")
         .arg(". /home/gabe/Documents/farmerbob/fb-launch.sh; fb_launch \"$1\" \"$2\" \"$3\"")
@@ -200,6 +232,9 @@ fn launch(arm: &str, text: &str, worktree: &Path) -> Measurement<()> {
         .arg(arm)
         .arg(text)
         .arg(worktree)
+        .env("XDG_DATA_HOME", &data_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .env("XDG_CACHE_HOME", &cache_home)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
@@ -353,7 +388,8 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
         };
         let log = log_dir.join(format!("{critic}.log"));
         let _ = fs::write(&log, "");
-        let _ = launch(critic, &prompt_text, &cw);
+        let run = format!("{bead}--{critic}");
+        let _ = launch(critic, &prompt_text, &cw, &run);
         if let Measurement::Observed(line) = format_result(critic, subject, &critique_path) {
             println!("{line}");
         }
@@ -368,7 +404,7 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_result, run_cmd};
+    use super::{environment_paths, format_result, run_cmd};
     use farmerbob_core::measurement::Measurement;
     use std::fs;
     use std::path::PathBuf;
@@ -386,6 +422,19 @@ mod tests {
             )
         );
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn environment_paths_are_isolated_and_stable() {
+        let root = PathBuf::from("/tmp/fb-critique-state");
+        let first = environment_paths(&root, "task--critic");
+        let second = environment_paths(&root, "task--other-critic");
+        let repeat = environment_paths(&root, "task--critic");
+
+        assert_ne!(first, second);
+        assert_eq!(first, repeat);
+        let run_root = root.join("task--critic");
+        assert!(first.iter().all(|path| path.starts_with(&run_root)));
     }
 
     /// Fixture bead for tests whose candidate arm worktrees are created in
@@ -470,7 +519,10 @@ mod tests {
         field.arm("codex-luna", "crates/fb/src/critique.rs");
         field.arm("glm-53-flash", "crates/fb/src/critique.rs");
         let code = run_cmd(&field.bead, "fb", "crates/fb/src/critique.rs");
-        assert_ne!(code, 4, "two candidates with passing gate must not return 4");
+        assert_ne!(
+            code, 4,
+            "two candidates with passing gate must not return 4"
+        );
         assert_eq!(code, 0);
     }
 
@@ -506,9 +558,23 @@ mod tests {
             .expect("critique.rs source text");
         let doc_start = text.find("pub fn run_cmd").expect("run_cmd definition");
         let doc_prefix = &text[..doc_start];
-        let doc_comment = doc_prefix.lines().rev().take(15).collect::<Vec<_>>().join("\n");
-        assert!(doc_comment.contains("0"), "doc comment must name exit code 0");
-        assert!(doc_comment.contains("1"), "doc comment must name exit code 1");
-        assert!(doc_comment.contains("4"), "doc comment must name exit code 4");
+        let doc_comment = doc_prefix
+            .lines()
+            .rev()
+            .take(15)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            doc_comment.contains("0"),
+            "doc comment must name exit code 0"
+        );
+        assert!(
+            doc_comment.contains("1"),
+            "doc comment must name exit code 1"
+        );
+        assert!(
+            doc_comment.contains("4"),
+            "doc comment must name exit code 4"
+        );
     }
 }

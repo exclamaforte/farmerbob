@@ -96,6 +96,7 @@ pub mod test_delta;
 pub mod testout;
 pub mod timing;
 pub mod verify_plan;
+pub mod trial_plan;
 pub mod verifier;
 pub mod vrouter;
 pub mod wave_compose;
