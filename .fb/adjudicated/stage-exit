@@ -1,0 +1,24 @@
+MERGED codex-luna
+Single arm, 100 lines, 4 table-driven tests, clippy 0.
+
+Count says nothing about a table-driven suite, so I probed all seven behaviours
+against the built module. Every one correct, including the two that carry it:
+
+  0 with empty contract   -> Done           proceeds=true  caches=true
+  0 LISTED as N/A         -> Done           proceeds=true  caches=true
+  4 listed                -> NotApplicable  proceeds=true  caches=FALSE
+  4 unlisted              -> Failed(4)      proceeds=false caches=false
+  duplicate 4,4           -> NotApplicable
+  -9 signal kill          -> Failed(-9)     preserved verbatim
+  i32::MIN                -> Failed         preserved verbatim
+
+Clause 5 is the whole point: NotApplicable PROCEEDS but does NOT CACHE. Nothing
+was produced, so recording a freshness signature would make the next run skip a
+stage that never ran -- and an implementation returning the same answer for both
+questions passes clause 4 alone.
+
+Zero hardcoded stage names in the file: the four real contracts belong to the
+caller, so a fifth stage does not require editing this module.
+
+It has no caller yet. The four case blocks in fb-pipeline.sh and the two in
+trial.rs are what it exists to replace, and collapsing them is the next task.
