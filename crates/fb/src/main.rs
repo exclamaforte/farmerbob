@@ -49,6 +49,7 @@ mod timing_cmd;
 mod trial;
 mod verify_cmd;
 mod verify_gather;
+mod wave_cmd;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -124,6 +125,13 @@ enum Command {
         /// Decide even when no critique exists. Off by default, deliberately.
         #[arg(long)]
         allow_missing_critique: bool,
+    },
+    /// Claim a queued matrix and run it, detached by default.
+    Wave {
+        matrix: String,
+        /// Run in the foreground instead of detaching.
+        #[arg(long)]
+        foreground: bool,
     },
     /// Run a dispatch matrix with admission control.
     Admit { matrix: String },
@@ -895,6 +903,9 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Wave { matrix, foreground }) => {
+            wave_cmd::run(std::path::Path::new(&matrix), !foreground)
+        }
         Some(Command::Admit { matrix }) => admit_cmd::run(std::path::Path::new(&matrix)),
         Some(Command::Pipeline {
             task,
