@@ -1,6 +1,5 @@
 mod adjudicate_cmd;
 mod cmd;
-mod compare_cmd;
 mod critique;
 mod crossx;
 mod decl_cmd;
@@ -19,7 +18,6 @@ mod objective;
 mod pareto;
 mod park_cmd;
 mod paths;
-mod prices_cmd;
 mod promote;
 mod prove;
 mod reap_cmd;
@@ -30,9 +28,7 @@ mod slots_cmd;
 mod sources;
 mod stage_cmd;
 mod status;
-mod timing_cmd;
 mod trial;
-mod verify_cmd;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -135,6 +131,12 @@ enum Command {
     /// Ported from fb-status.sh. Its stdout is a wire format: the autopilot greps it and a
     /// human reads it, so ordering and wording are the contract, not a display choice.
     Status,
+    /// What to look at first, and why.
+    Next {
+        /// Print at most this many items. 0 prints all.
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+    },
     /// Refuse to dispatch an arm that is absent, disabled, parked, or redundant.
     ///
     /// Ported from fb-eligible.sh, which the dispatcher sources as a predicate. Exit code and
@@ -649,6 +651,20 @@ fn main() {
             plan,
         }) => slots_cmd::run_cmd(available_mb, headroom_mb, memory_mb, plan),
         Some(Command::Status) => status::run_cmd(),
+        Some(Command::Next { limit }) => {
+            // status::observe_live_agents is private to `status` and yields a list of
+            // scope names, not a count; within this task's one-file rule the count
+            // cannot be re-obtained here, so it is passed as Missing -- never as 0.
+            next_cmd::run(
+                &next_cmd::Paths {
+                    repo: paths::repo(),
+                    logs: paths::logs(),
+                },
+                farmerbob_core::measurement::Measurement::not_attempted(),
+                limit,
+                &mut std::io::stdout(),
+            )
+        }
         Some(Command::Eligible { arm }) => eligible::run_cmd(&arm),
         Some(Command::Differential { task }) => differential::run_cmd(&task),
         Some(Command::Fate { task, veto }) => fate_cmd::run_cmd(&task, &veto),
@@ -778,6 +794,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct TempSpec {
         path: PathBuf,
@@ -974,5 +991,157 @@ mod tests {
             run_decl_from_args(&[spec.path().to_str().unwrap()]).expect("run default format");
         assert_eq!(rc, 0);
         assert_eq!(stdout, b"creates crates/x.rs\n");
+    }
+
+    // -- fb next -------------------------------------------------------------------------
+
+    struct TempHarness {
+        repo: PathBuf,
+        logs: PathBuf,
+    }
+
+    impl TempHarness {
+        /// A readable but idle harness: every directory `next_cmd` reads exists and
+        /// holds no prompts, so there is nothing to act on.
+        fn idle(label: &str) -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let uniq = NEXT.fetch_add(1, Ordering::Relaxed);
+            let repo =
+                std::env::temp_dir().join(format!("fb_next_wire_{label}_{}", std::process::id()));
+            let logs = std::env::temp_dir()
+                .join(format!("fb_next_wire_{label}_logs_{}_{}", std::process::id(), uniq));
+            std::fs::create_dir_all(repo.join(".fb/prompts")).expect("create prompts dir");
+            std::fs::create_dir_all(repo.join(".fb/queue")).expect("create queue dir");
+            std::fs::create_dir_all(&logs).expect("create logs dir");
+            TempHarness { repo, logs }
+        }
+
+        /// A harness with `tasks` prompted tasks, each holding a readable score file,
+        /// so there is something to act on.
+        fn actionable(label: &str, tasks: usize) -> Self {
+            let harness = Self::idle(label);
+            for n in 0..tasks {
+                let name = format!("task{n:02}");
+                std::fs::write(
+                    harness.repo.join(".fb/prompts").join(format!("{name}.md")),
+                    "spec\n",
+                )
+                .expect("write prompt");
+                std::fs::write(harness.logs.join(format!("{name}.score.json")), "[]")
+                    .expect("write score");
+            }
+            harness
+        }
+    }
+
+    impl Drop for TempHarness {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.repo);
+            let _ = std::fs::remove_dir_all(&self.logs);
+        }
+    }
+
+    fn parse_next(args: &[&str]) -> Result<usize, clap::Error> {
+        let mut full_args = vec!["fb", "next"];
+        full_args.extend_from_slice(args);
+        let cli = Cli::try_parse_from(full_args)?;
+        match cli.command {
+            Some(Command::Next { limit }) => Ok(limit),
+            _ => panic!("expected Next command"),
+        }
+    }
+
+    fn run_next(harness: &TempHarness, limit: usize) -> (i32, String) {
+        let mut out = Vec::new();
+        let code = next_cmd::run(
+            &next_cmd::Paths {
+                repo: harness.repo.clone(),
+                logs: harness.logs.clone(),
+            },
+            farmerbob_core::measurement::Measurement::not_attempted(),
+            limit,
+            &mut out,
+        );
+        (code, String::from_utf8_lossy(&out).into_owned())
+    }
+
+    #[test]
+    fn clause_1_next_prints_ranked_items_and_exits_0_when_there_is_work() {
+        let harness = TempHarness::actionable("clause1", 2);
+        let limit = parse_next(&[]).expect("parse bare next");
+        assert_eq!(limit, 0, "no --limit flag must default to 0, which prints all");
+        let (code, all) = run_next(&harness, limit);
+        assert_eq!(code, 0);
+        assert!(all.contains("task00"), "{all}");
+        assert!(all.contains("task01"), "{all}");
+        let (code_capped, capped) = run_next(&harness, 99);
+        assert_eq!(code_capped, 0);
+        assert_eq!(
+            capped, all,
+            "a limit larger than the item count prints all of them, no padding"
+        );
+    }
+
+    #[test]
+    fn clause_3_limit_one_prints_one_item_and_limit_zero_prints_all() {
+        let harness = TempHarness::actionable("clause3", 2);
+        let limit = parse_next(&["--limit", "1"]).expect("parse --limit 1");
+        assert_eq!(limit, 1);
+        let (code, one) = run_next(&harness, limit);
+        assert_eq!(code, 0);
+        assert_eq!(one.lines().count(), 1, "{one}");
+
+        let limit_all = parse_next(&["--limit", "0"]).expect("parse --limit 0");
+        assert_eq!(limit_all, 0);
+        let (code_zero, zero) = run_next(&harness, limit_all);
+        assert_eq!(code_zero, 0);
+        assert!(zero.lines().count() > 1, "{zero}");
+    }
+
+    #[test]
+    fn clause_2_idle_exits_1_and_still_prints_a_readable_line() {
+        let harness = TempHarness::idle("clause2");
+        let (code, out) = run_next(&harness, 0);
+        assert_eq!(code, 1);
+        assert!(
+            !out.trim().is_empty(),
+            "nothing to do must still print, not print nothing: {out:?}"
+        );
+    }
+
+    #[test]
+    fn clause_4_unreadable_harness_exits_4_which_differs_from_idle_1() {
+        let harness = TempHarness::idle("clause4");
+        let (idle_code, _) = run_next(&harness, 0);
+        assert_eq!(idle_code, 1);
+        let gone = next_cmd::Paths {
+            repo: harness.repo.join("removed"),
+            logs: harness.logs.join("removed"),
+        };
+        let mut out = Vec::new();
+        let code = next_cmd::run(
+            &gone,
+            farmerbob_core::measurement::Measurement::not_attempted(),
+            0,
+            &mut out,
+        );
+        assert_eq!(code, 4);
+        assert_ne!(code, idle_code, "an idle harness and an unreadable one differ");
+    }
+
+    #[test]
+    fn clause_7_non_numeric_limit_is_claps_own_usage_error_exit_2() {
+        let err = match parse_next(&["--limit", "soon"]) {
+            Err(e) => e,
+            Ok(_) => panic!("expected a clap usage error for a non-numeric --limit"),
+        };
+        assert_eq!(err.exit_code(), 2);
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+
+        let missing_value = match parse_next(&["--limit"]) {
+            Err(e) => e,
+            Ok(_) => panic!("expected a clap usage error for --limit with no value"),
+        };
+        assert_eq!(missing_value.exit_code(), 2);
     }
 }
