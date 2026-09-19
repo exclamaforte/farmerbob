@@ -295,7 +295,7 @@ run_prove() {
     echo "  prove: already done"; return 0
   fi
   echo "  prove: running"
-  bash ./fb-prove.sh "$T" "$CRATE" "$TARGET" >> "$LOGS/$T.pipeline.log" 2>&1
+  "$FB" prove "$T" --crate "$CRATE" "$TARGET" >> "$LOGS/$T.pipeline.log" 2>&1
   case "$?" in
     0) echo "  prove: ok"; printf '%s' "$now" > "$sig" ;;
     4) echo "  prove: n/a, nothing was promoted -- no claims to execute" ;;

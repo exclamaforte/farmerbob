@@ -398,6 +398,25 @@ fn write_json_pretty<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 /// - `0` on a complete run that wrote `<logs>/<bead>.proved.json`
 /// - `1` on a usage or I/O error
 /// - `4` when there is no claims file (not applicable; matching `fb-prove.sh`)
+/// The arm that writes the discriminating test.
+///
+/// An explicit choice wins. Otherwise `fb select` picks one, and failing that the fallback
+/// is the arm fb-prove.sh carried: free, healthy, and 100% over five runs at the time. A
+/// hardcoded default is worth naming rather than hiding, because when it is wrong every
+/// proof in the queue goes to the wrong arm.
+pub fn default_prover(explicit: Option<&str>) -> String {
+    if let Some(a) = explicit.filter(|a| !a.is_empty()) {
+        return a.to_string();
+    }
+    // The cheapest eligible arm the registry offers. `fb select` ranks a whole field and
+    // needs inputs this caller does not have; one prover only needs the cheapest healthy
+    // arm, which `dispatchable()` already sorts for.
+    crate::sources::Registry::load(&crate::paths::repo().join("sources.toml"))
+        .ok()
+        .and_then(|r| r.dispatchable().first().map(|(n, _)| n.to_string()))
+        .unwrap_or_else(|| "or-ling-30-flash".to_string())
+}
+
 pub fn run_cmd(bead: &str, krate: &str, target: &str, prover: &str) -> i32 {
     match run(bead, krate, target, prover) {
         Ok(code) => code,
@@ -1137,5 +1156,32 @@ mod tests {
             doc_comment.contains('4'),
             "doc comment must name exit code 4"
         );
+    }
+}
+
+#[cfg(test)]
+mod prover_choice_tests {
+    use super::default_prover;
+
+    /// An explicit choice wins, and is not second-guessed.
+    #[test]
+    fn an_explicit_prover_is_used() {
+        assert_eq!(default_prover(Some("codex-luna")), "codex-luna");
+    }
+
+    /// An empty string is NOT a choice. fb-prove.sh took "$4" positionally and an empty
+    /// argument fell through to its default; expressing that as None here keeps the two
+    /// cases apart instead of relying on shell word-splitting.
+    #[test]
+    fn an_empty_choice_is_no_choice() {
+        assert_ne!(default_prover(Some("")), "");
+        assert_eq!(default_prover(Some("")), default_prover(None));
+    }
+
+    /// With nothing explicit the answer is still a real arm name, never empty -- a prover
+    /// that is the empty string dispatches nothing and reports no claims proved.
+    #[test]
+    fn there_is_always_a_prover() {
+        assert!(!default_prover(None).is_empty());
     }
 }

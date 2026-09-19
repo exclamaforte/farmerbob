@@ -815,7 +815,13 @@ fn main() {
             krate,
             target,
             prover,
-        }) => prove::run_cmd(&task, &krate, &target, &prover),
+        }) => {
+            // The script chose the prover before calling in; the command does it now, so
+            // `--prover` is genuinely optional rather than something the caller must know.
+            let chosen = prove::default_prover(Some(prover.as_str()));
+            println!("prover: {chosen}");
+            prove::run_cmd(&task, &krate, &target, &chosen)
+        }
         Some(Command::Escalate {
             command,
             task,

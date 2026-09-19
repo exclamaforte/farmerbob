@@ -28,6 +28,6 @@ for t in $TASKS; do
   echo "======== $t ($crate, $tgt)"
   bash ./fb-critique.sh "$t" "$crate" "$tgt" 2>&1 | sed 's/^/  /'
   /home/gabe/Documents/farmerbob/target/debug/fb promote "$t" 2>&1 | sed 's/^/  /'
-  bash ./fb-prove.sh    "$t" "$crate" "$tgt" 2>&1 | sed 's/^/  /'
+  /home/gabe/Documents/farmerbob/target/debug/fb prove    "$t" "$crate" "$tgt" 2>&1 | sed 's/^/  /'
 done
 echo "======== backfill complete"
