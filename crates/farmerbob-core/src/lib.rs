@@ -30,6 +30,7 @@ pub mod confinement;
 pub mod conform;
 pub mod corpus;
 pub mod cost;
+pub mod cred_shield;
 pub mod critique_plan;
 pub mod crossx;
 pub mod divergence;
