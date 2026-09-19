@@ -1,0 +1,19 @@
+MERGED codex-luna
+Single arm, 209 lines, clippy 0.
+
+Probed the mapping directly. Both traps handled:
+
+  NO-OP          deliverable=false            every other verdict implies something written
+  INDETERMINATE  timed_out=TRUE
+  TESTS-FAIL     timed_out=false              the machine's fault vs the arm's
+  build absent   built=None
+  build "mystery" built=None
+  build "FAIL"   built=Some(false)            unattempted is not failed
+
+The field domains in the spec were measured rather than assumed: 483 records show
+build and test take exactly "pass" and "FAIL", with seven distinct verdicts.
+
+verify_cmd is now reachable. verify_gather is not: there is no `fb verify`
+subcommand yet, so farmerbob-649f stays at three unreachable modules with one
+having moved along the chain. Wiring is the next task and is stated here rather
+than left to be noticed.

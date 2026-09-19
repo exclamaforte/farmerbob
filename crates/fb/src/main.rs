@@ -5,6 +5,7 @@ mod compare_cmd;
 mod prices_cmd;
 mod timing_cmd;
 mod verify_cmd;
+mod verify_gather;
 mod critique;
 mod crossx;
 mod decl_cmd;
