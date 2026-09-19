@@ -1,6 +1,7 @@
 mod adjudicate_cmd;
 mod admit_cmd;
 mod archive_cmd;
+mod autopilot_cmd;
 mod backfill_cmd;
 mod bench_cmd;
 mod bench_gather;
@@ -126,6 +127,12 @@ enum Command {
         /// Decide even when no critique exists. Off by default, deliberately.
         #[arg(long)]
         allow_missing_critique: bool,
+    },
+    /// Launch queued waves and run missing pipeline stages.
+    Autopilot {
+        /// One tick instead of looping forever.
+        #[arg(long)]
+        once: bool,
     },
     /// Run one arm on one task, confined.
     Dispatch {
@@ -912,6 +919,7 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Autopilot { once }) => autopilot_cmd::run(once),
         Some(Command::Dispatch {
             arm,
             task,
