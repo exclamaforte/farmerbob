@@ -81,6 +81,7 @@ pub mod stage_outcome;
 pub mod suite_match;
 pub mod suite_verdict;
 pub mod task;
+pub mod target_decl;
 pub mod task_contract;
 pub mod taskid;
 pub mod testout;
