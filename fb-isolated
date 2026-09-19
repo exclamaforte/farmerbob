@@ -38,7 +38,32 @@ if [ -d "$admin" ]; then
   [ -d "$own" ] && guard+=(--bind "$own" "$own")
 fi
 
+# THE ORCHESTRATOR'S OWN WORKING TREE IS READ-ONLY IN HERE.
+#
+# `--dev-bind / /` binds the whole filesystem READ-WRITE. The tmpfs above hides sibling
+# worktrees from each other, which is what this file was written for, but nothing stopped an
+# arm writing to /home/gabe/Documents/farmerbob itself -- its specs, its shell scripts, its
+# sources.toml, or its source.
+#
+# Not hypothetical. decl-cmd/glm-53-flash resumed its speccheck session, whose working
+# directory was the main repo rather than the worktree, and wrote crates/fb/src/decl_cmd.rs
+# and a `mod decl_cmd;` line STRAIGHT INTO THE ORCHESTRATOR'S TREE. It scored NO-OP -- the
+# worktree was untouched -- while its log read "All three gates pass in
+# /home/gabe/Documents/farmerbob (the repo this task targets)".  (bead farmerbob-p3r)
+#
+# `.git` stays WRITABLE. A worktree shares the repository's object store, so an arm that
+# commits on its own branch writes objects into $repo/.git, and the scorer measures committed
+# work deliberately (farmerbob-qv6u). Read-only there would break committing, which is worse
+# than what it fixes. The guard below then re-applies the admin-directory protection on top.
+repo="${FB_REPO:-${admin%/.git/worktrees}}"
+shield=()
+if [ -d "$repo" ]; then
+  shield+=(--ro-bind "$repo" "$repo")
+  [ -d "$repo/.git" ] && shield+=(--bind "$repo/.git" "$repo/.git")
+fi
+
 exec bwrap --dev-bind / / \
+           "${shield[@]}" \
            --tmpfs "$root" \
            --bind "$wt" "$wt" \
            "${guard[@]}" \
