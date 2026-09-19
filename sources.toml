@@ -561,6 +561,12 @@ quota_bucket = "agy-anthropic-sonnet"   # Owner-confirmed 2026-09-19: agy meters
 #   -> PONG, exit 0
 
 [source.agy-opus-46]
+parked_until = "2026-09-19T22:38:11Z"   # 2026-09-19: RESOURCE_EXHAUSTED 429 as a CRITIC, not as an implementer.
+# "Individual quota reached. Please upgrade your subscription to increase your limits.
+# Resets in 2h0m10s." -- agy's own words, captured because fb critique now keeps the
+# launcher's stderr instead of writing a zero-byte log beside it. Before that this arm
+# produced the line "(no critique written)", which is what it also produces when it runs
+# fine and declines to write. Quota exhaustion is not an arm failure (bead farmerbob-h04).
 status      = "verified"
 kind        = "cli"
 cmd         = "agy"
