@@ -64,8 +64,15 @@ enum Command {
         /// Task name.
         task: String,
     },
-    /// Pending price changes between sources.toml and the provider catalogue.
-    Prices,
+    /// Pending price changes between sources.toml and a provider catalogue.
+    Prices {
+        /// The registry. Defaults to the repository's sources.toml.
+        #[arg(long)]
+        sources: Option<PathBuf>,
+        /// The provider catalogue, as JSON.
+        #[arg(long)]
+        catalogue: PathBuf,
+    },
     /// The slot table and whether another run may start.
     Sem,
     /// Decide a run's verdict from its observations, via farmerbob_core::gate.
@@ -420,9 +427,22 @@ mod exit {
 }
 
 fn registry_path() -> std::path::PathBuf {
-    std::env::var_os("FB_SOURCES")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("sources.toml"))
+    if let Some(src) = std::env::var_os("FB_SOURCES") {
+        return std::path::PathBuf::from(src);
+    }
+    if let Some(repo) = std::env::var_os("FB_REPO") {
+        return std::path::PathBuf::from(repo).join("sources.toml");
+    }
+    let mut dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    loop {
+        let candidate = dir.join("sources.toml");
+        if candidate.is_file() {
+            return candidate;
+        }
+        if !dir.pop() {
+            return std::path::PathBuf::from("sources.toml");
+        }
+    }
 }
 
 fn agents(all: bool, json: bool) -> i32 {
@@ -634,9 +654,13 @@ fn main() {
             let mut out = std::io::stdout();
             timing_cmd::run(&[], &mut out)
         }
-        Some(Command::Prices) => {
+        Some(Command::Prices { sources, catalogue }) => {
+            let sources_path = match sources {
+                Some(p) => p,
+                None => registry_path(),
+            };
             let mut out = std::io::stdout();
-            prices_cmd::run(&[], &mut out)
+            prices_gather::run(&sources_path, &catalogue, &mut out)
         }
         Some(Command::Sem) => {
             let mut out = std::io::stdout();
@@ -1181,5 +1205,173 @@ mod tests {
             Ok(_) => panic!("expected a clap usage error for --limit with no value"),
         };
         assert_eq!(missing_value.exit_code(), 2);
+    }
+
+    // -- fb prices -----------------------------------------------------------------------
+
+    struct TempPricesFile {
+        path: PathBuf,
+    }
+
+    impl TempPricesFile {
+        fn new(name: &str, contents: &str) -> Self {
+            static PRICES_COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let uniq = PRICES_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "fb_prices_wire_{}_{}_{}",
+                std::process::id(),
+                uniq,
+                name
+            ));
+            std::fs::write(&path, contents).expect("write temp prices file");
+            TempPricesFile { path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempPricesFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    fn run_prices_from_args(args: &[&str]) -> Result<(i32, Vec<u8>), clap::Error> {
+        let mut full_args = vec!["fb", "prices"];
+        full_args.extend_from_slice(args);
+        let cli = Cli::try_parse_from(full_args)?;
+        match cli.command {
+            Some(Command::Prices { sources, catalogue }) => {
+                let sources_path = match sources {
+                    Some(p) => p,
+                    None => registry_path(),
+                };
+                let mut out = Vec::new();
+                let code = prices_gather::run(&sources_path, &catalogue, &mut out);
+                Ok((code, out))
+            }
+            _ => panic!("expected Prices command"),
+        }
+    }
+
+    #[test]
+    fn clause_1_prices_runs_and_exits_with_gather_code_and_writes_output() {
+        let cat = TempPricesFile::new("clause1_cat.json", "[]");
+        let (rc, stdout) =
+            run_prices_from_args(&["--catalogue", cat.path().to_str().unwrap()])
+                .expect("run prices");
+        let reg = registry_path();
+        let mut expected_out = Vec::new();
+        let expected_code = prices_gather::run(&reg, cat.path(), &mut expected_out);
+        assert_eq!(rc, expected_code);
+        assert_eq!(stdout, expected_out);
+    }
+
+    #[test]
+    fn clause_2_prices_no_catalogue_exits_2_and_empty_stdout() {
+        let err = match run_prices_from_args(&[]) {
+            Err(e) => e,
+            Ok(_) => panic!("expected clap missing argument error for bare `fb prices`"),
+        };
+        assert_eq!(err.exit_code(), 2);
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+
+        let src = TempPricesFile::new("clause2_src.toml", "");
+        let err2 = match run_prices_from_args(&["--sources", src.path().to_str().unwrap()]) {
+            Err(e) => e,
+            Ok(_) => panic!("expected clap error when --catalogue is missing"),
+        };
+        assert_eq!(err2.exit_code(), 2);
+        assert_eq!(err2.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn clause_3_prices_missing_catalogue_exits_4_differing_from_0() {
+        let nonexistent = std::env::temp_dir().join(format!(
+            "fb_prices_absent_catalogue_{}.json",
+            std::process::id()
+        ));
+        let (rc, _) = run_prices_from_args(&["--catalogue", nonexistent.to_str().unwrap()])
+            .expect("should run and return exit 4");
+        assert_eq!(rc, 4);
+        assert_ne!(rc, 0, "an unreadable catalogue and an all-clear must differ");
+    }
+
+    #[test]
+    fn clause_4_omitting_sources_defaults_to_repository_sources_toml_and_does_not_error() {
+        let cat = TempPricesFile::new("clause4_cat.json", "[]");
+        let (rc, _) = run_prices_from_args(&["--catalogue", cat.path().to_str().unwrap()])
+            .expect("omitting --sources must not error");
+        assert_ne!(rc, 2, "omitting --sources must not be a usage error");
+        assert_ne!(
+            rc, 4,
+            "omitting --sources must resolve to the repository's sources.toml without error"
+        );
+    }
+
+    #[test]
+    fn clause_5_missing_sources_exits_4_naming_sources_path() {
+        let cat = TempPricesFile::new("clause5_cat.json", "[]");
+        let nonexistent_src = format!("fb_prices_absent_sources_{}.toml", std::process::id());
+        let (rc, stdout) = run_prices_from_args(&[
+            "--sources",
+            &nonexistent_src,
+            "--catalogue",
+            cat.path().to_str().unwrap(),
+        ])
+        .expect("run prices with missing sources");
+        assert_eq!(rc, 4);
+        let out_text = String::from_utf8_lossy(&stdout);
+        assert!(
+            out_text.contains(&nonexistent_src),
+            "output must mention the missing sources path: {out_text}"
+        );
+        assert!(
+            !out_text.contains(cat.path().to_str().unwrap()),
+            "output must not name the catalogue when sources failed: {out_text}"
+        );
+    }
+
+    #[test]
+    fn boundary_neither_file_exists_exits_4() {
+        let nonexistent_src = std::env::temp_dir().join(format!(
+            "fb_prices_absent_src_{}.toml",
+            std::process::id()
+        ));
+        let nonexistent_cat = std::env::temp_dir().join(format!(
+            "fb_prices_absent_cat_{}.json",
+            std::process::id()
+        ));
+        let (rc, _) = run_prices_from_args(&[
+            "--sources",
+            nonexistent_src.to_str().unwrap(),
+            "--catalogue",
+            nonexistent_cat.to_str().unwrap(),
+        ])
+        .expect("run prices with neither file existing");
+        assert_eq!(rc, 4);
+    }
+
+    #[test]
+    fn boundary_empty_catalogue_valid_json_matches_prices_gather() {
+        let cat = TempPricesFile::new("boundary_empty.json", "[]");
+        let (rc, stdout) =
+            run_prices_from_args(&["--catalogue", cat.path().to_str().unwrap()])
+                .expect("run prices with empty catalogue array");
+        let reg = registry_path();
+        let mut expected_out = Vec::new();
+        let expected_code = prices_gather::run(&reg, cat.path(), &mut expected_out);
+        assert_eq!(rc, expected_code);
+        assert_eq!(stdout, expected_out);
+    }
+
+    #[test]
+    fn boundary_catalogue_directory_exits_4() {
+        let dir = std::env::temp_dir();
+        let (rc, _) = run_prices_from_args(&["--catalogue", dir.to_str().unwrap()])
+            .expect("run prices with directory catalogue");
+        assert_eq!(rc, 4);
     }
 }

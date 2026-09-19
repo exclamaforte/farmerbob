@@ -1,0 +1,11 @@
+MERGED gemini-38-flash
+Single arm, 199 lines, clippy 0, main.rs only.
+
+Measured before and after, which is the whole point of the task:
+
+  before:  fb prices            -> "nothing pending", exit 0, having read nothing
+  after:   fb prices            -> exit 2, ZERO bytes on stdout
+           fb prices --catalogue /nope/none.json -> exit 4, names the path
+
+--catalogue is required with no default, so a command that cannot name its
+catalogue does not run and cannot report an all-clear. Closes farmerbob-qvrs.

@@ -20,6 +20,7 @@ pub mod autopilot;
 pub mod availability;
 pub mod backfill;
 pub mod graft;
+pub mod bench_read;
 pub mod board;
 pub mod budget;
 pub mod build_verdict;
