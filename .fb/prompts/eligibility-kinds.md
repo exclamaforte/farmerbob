@@ -63,6 +63,21 @@ pub fn dispatchable(e: &Eligibility) -> bool;
 7. `Disabled` with `reason: None` still yields a non-empty stated reason. A refusal with no
    reason is unactionable; assert non-empty, not the wording.
 
+8. **`fb eligible <arm>` keeps working.** `pub fn run_cmd(arm: &str) -> i32` is a shipped CLI
+   command, wired in `main.rs`, and this task does not remove it. It must still read
+   `sources.toml`, still resolve the arm, still print the refusal reason, and still return the
+   same exit codes it returns today. What changes is that it DECIDES by calling `classify` and
+   `dispatchable` instead of re-deriving the rules inline.
+
+   Pin that `run_cmd` on a `verified` arm and on a `disabled` arm return different codes. A
+   previous attempt at this task replaced the whole body with `fn run_cmd(_arm: &str) -> i32 { 1 }`
+   -- "kept solely so main.rs compiles" -- which refuses every arm forever and is
+   indistinguishable from a legitimate refusal. That is the exact failure mode this project
+   exists to hunt, shipped inside the command that reports refusals.
+
+   `run_cmd` may read the filesystem. `classify` may not; keep the I/O in `run_cmd` and the
+   decision in `classify`.
+
 ## Boundaries, at N and at zero
 
 - `status: Some("")`: an empty string is not a recognised status. Refused, per clause 6.
@@ -96,6 +111,7 @@ statement that the two inputs are not independent, and that the refusing one win
 - RUN `cargo clippy -p fb --all-targets -- -D warnings` BEFORE you finish, including over your
   tests. `cargo test -p fb` may need `cargo build -p fb` first.
 
+
 ## How this will be scored
 
 farmerbob re-runs everything itself; your self-report is not used. Stated so you can
@@ -117,6 +133,29 @@ optimise for the real bar rather than guess at it.
   exactly two things: the declared target, and adding `pub mod y;` to the `lib.rs` beside it
   when a NEW file needs that to compile. There is no tolerance band: ONE other changed file
   is a departure, and a departure now yields the verdict `OutOfScope`, which is not a pass.
+
+  **`.fb/handoff.md` is the one exception, and it OVERRIDES the task's own Rules section.**
+  Every spec's Rules says "change <target> and NOTHING else"; the Handoff section below then
+  requires you to write `.fb/handoff.md`. Read literally those contradict, and a critic caught
+  it: "one correct implementation must leave it untouched to obey the Rules, while another must
+  write it to satisfy the Gate". Write the handoff. It is exempt, it has always been exempt,
+  and the scope measurement already excludes it. Nothing else is.
+
+  **`cargo fmt` is safe, and this line used to say the opposite.** The base you are given is
+  rustfmt-clean -- `cargo fmt --all -- --check` exits 0 on it -- so running the formatter
+  rewrites your file and nothing else. Run it if you want it.
+
+  It was not always so, and the history is why this paragraph exists rather than a bare
+  permission. The workspace drifted dirty because every merge takes ONE file from ONE arm in
+  that arm's style and nothing normalised it afterwards. An arm that then ran a formatter had
+  every dirty file its build touched rewritten, and the scope gate counted each one as a
+  departure. One arm lost four runs that way, at 51, 52, 51 and 17 departures; the 51 was
+  exactly the number of rustfmt-dirty files its changes intersected. The arms were doing
+  ordinary Rust and the repository was wrong.
+
+  So if `cargo fmt` DOES touch a file you did not change, the base has drifted again. Revert
+  that file, keep your own, and say so in your handoff -- that sentence routes a harness bug
+  back where it belongs instead of costing you the run.
 
   Read this as permission, not only as prohibition. If the task's own instructions make the
   wider workspace fail to build -- a new enum variant breaking a caller in another crate, say
@@ -287,22 +326,3 @@ summary and any failures, which is the entire signal.
 **Not scored:** wallclock. Taking longer to produce better work is the preferred trade.
 There is a generous resource budget; a run is cut early only if it stops making progress or
 regresses past its own best error count.
-
-## Handoff (required)
-
-When you are done, write `.fb/handoff.md` in the repository root. Keep it under 300 words.
-
-**Do not state anything the harness can check.** No test counts, no "all tests pass", no "this
-handles empty input", no performance claims. Those are measured independently and a claim
-about them adds nothing — the harness has already run them by the time anyone reads this.
-
-Write only what cannot be measured:
-
-- **Approach.** The shape of the solution and why this shape rather than an obvious alternative.
-- **Trade-offs.** What you chose against, and what it would cost to choose differently.
-- **Risk.** Where you think this is most likely to be wrong, or hardest to change later.
-- **Deliberate omissions.** What the spec allows that you did not do, and why.
-
-If you found the specification ambiguous or underdetermined, say exactly where. That is the
-most valuable thing this file can contain: it routes back to the task author instead of
-becoming a defect argued about later.
