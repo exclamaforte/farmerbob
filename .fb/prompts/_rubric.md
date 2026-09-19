@@ -21,6 +21,13 @@ optimise for the real bar rather than guess at it.
   when a NEW file needs that to compile. There is no tolerance band: ONE other changed file
   is a departure, and a departure now yields the verdict `OutOfScope`, which is not a pass.
 
+  **`.fb/handoff.md` is the one exception, and it OVERRIDES the task's own Rules section.**
+  Every spec's Rules says "change <target> and NOTHING else"; the Handoff section below then
+  requires you to write `.fb/handoff.md`. Read literally those contradict, and a critic caught
+  it: "one correct implementation must leave it untouched to obey the Rules, while another must
+  write it to satisfy the Gate". Write the handoff. It is exempt, it has always been exempt,
+  and the scope measurement already excludes it. Nothing else is.
+
   **DO NOT RUN `cargo fmt`.** This is now the single most common way a good implementation
   loses its task, and it is worth its own line because it does not feel like a departure. This
   workspace is not uniformly formatted, `cargo fmt` has no `--check`-only habit to fall back

@@ -1,1 +1,1 @@
-score-delta NOT MERGED -- codex-luna verdict OUT-OF-SCOPE, 17 departures, all of them cargo fmt reformatting. Implementation of the actual target looked correct. Requeued as wave148 to the same arm with a rubric line naming this exact failure.
+score-delta MERGED codex-luna (requeue) -- 0 departures after the cargo fmt rubric line; 663->114 lines. Spec critic found the handoff.md contradiction and the unpinned JSON encoding.
