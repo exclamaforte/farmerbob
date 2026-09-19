@@ -6,6 +6,7 @@
 
 use farmerbob_core::gate::{Observation, Verdict, judge};
 use farmerbob_core::measurement::Measurement;
+use farmerbob_core::stage_cast::{Casting, Stage, Uncast, cast};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -172,7 +173,22 @@ fn outside_files(worktree: &Path, target: &str) -> Measurement<Vec<String>> {
     Measurement::observed(files)
 }
 
-fn prompt(template: &Path, patch: &str, handoff: &str, output: &Path) -> Measurement<()> {
+/// Render the critic's prompt to `prompt_path`, telling it to write its review to
+/// `out`.
+///
+/// These are TWO different paths and were one until 2026-09-19. `{OUT}` was
+/// substituted with the prompt's own path, so every critic was instructed to write
+/// its review over the prompt it had just been given. They did. The harness then
+/// looked for `.fb/critique.md`, found nothing, and printed "(no critique written)"
+/// -- while the review sat in the .prompt.md file, complete and unread. Every
+/// critique this stage has ever run was reported as absent.
+fn prompt(
+    template: &Path,
+    patch: &str,
+    handoff: &str,
+    prompt_path: &Path,
+    out: &Path,
+) -> Measurement<()> {
     let template = match read_text(template) {
         Measurement::Observed(text) => text,
         Measurement::Missing(reason) => return Measurement::Missing(reason),
@@ -183,12 +199,13 @@ fn prompt(template: &Path, patch: &str, handoff: &str, output: &Path) -> Measure
             "{HANDOFF}",
             &handoff.chars().take(4_000).collect::<String>(),
         )
-        .replace("{OUT}", &output.to_string_lossy());
-    match fs::write(output, text) {
+        .replace("{OUT}", &out.to_string_lossy());
+    match fs::write(prompt_path, text) {
         Ok(()) => Measurement::observed(()),
-        Err(error) => {
-            Measurement::instrument_failed(&format!("cannot write {}: {error}", output.display()))
-        }
+        Err(error) => Measurement::instrument_failed(&format!(
+            "cannot write {}: {error}",
+            prompt_path.display()
+        )),
     }
 }
 
@@ -211,6 +228,14 @@ fn state_root() -> Measurement<PathBuf> {
 }
 
 fn launch(arm: &str, text: &str, worktree: &Path, run: &str) -> Measurement<()> {
+    // A test that reaches the launcher spends money and hangs. Before critics could be drawn
+    // from the registry no test could get this far -- a one-arm field returned 4 first -- and
+    // the moment that changed, `not_applicable_and_failure_are_different_codes` launched a
+    // real agent from `cargo test`. The stage still reports the assignment, as "(no critique
+    // written)", which is exactly what it reports for a launcher that failed in production.
+    if cfg!(test) {
+        return Measurement::instrument_failed("launcher disabled under cargo test");
+    }
     let state_root = match state_root() {
         Measurement::Observed(root) => root,
         Measurement::Missing(reason) => return Measurement::Missing(reason),
@@ -267,12 +292,120 @@ fn format_result(critic: &str, subject: &str, critique: &Path) -> Measurement<St
     ))
 }
 
-/// Run cross-review for `bead`, with `crate_name` retained for the script-compatible API.
+/// Every arm this harness may cast as a critic, in `sources.toml` order.
+///
+/// A critic does not need a candidate's worktree and does not need to have
+/// implemented anything: it reads the deliverable from its prompt. So the roster
+/// is the REGISTRY, not the field. That distinction is the whole of this stage --
+/// `crossx` needs two implementations and this never did.
+fn roster() -> Measurement<Vec<String>> {
+    // paths::repo() honours FB_REPO and falls back to the working directory, which is not
+    // the repository root under `cargo test`. Fall back to the same constant candidates()
+    // has always used rather than making the roster unreadable from a test.
+    let mut path = crate::paths::repo().join("sources.toml");
+    if !path.is_file() {
+        path = Path::new(REPO).join("sources.toml");
+    }
+    match crate::sources::Registry::load(&path) {
+        Ok(registry) => {
+            // Free arms first, registry order within each group. stage_cast casts the FIRST
+            // roster entry that is not the subject, so this ordering is what decides who
+            // pays for the review -- and the first run of this stage cast agy-opus-46,
+            // purely because it sits early in sources.toml.
+            let all = registry.dispatchable();
+            let mut free: Vec<String> = Vec::new();
+            let mut paid: Vec<String> = Vec::new();
+            for (name, source) in all {
+                if source.is_free() {
+                    free.push(name.to_string());
+                } else {
+                    paid.push(name.to_string());
+                }
+            }
+            free.extend(paid);
+            Measurement::observed(free)
+        }
+        Err(error) => Measurement::instrument_failed(&error),
+    }
+}
+
+/// Who reviews whom, or the exit code to return instead.
+///
+/// Split out from [`run_cmd`] so it can be tested without launching an agent. A
+/// test that reached the launcher would spend money and hang, which is why the
+/// test this replaces could only ever assert the not-applicable path.
+fn plan(arms: &[String], roster: &[String]) -> Result<Vec<Casting>, i32> {
+    match cast(Stage::Critique, arms, roster) {
+        Ok(castings) => Ok(castings),
+        // Nothing to examine. Nothing went wrong and nothing is written.
+        Err(Uncast::TooFewCandidates { needed, have }) => {
+            println!("no candidates to critique (need {needed}, have {have})");
+            Err(4)
+        }
+        // There IS work to examine and nobody free to examine it. A staffing failure is a
+        // refusal, not a not-applicable, and it must not be reported as one.
+        Err(Uncast::NoIndependentArm) => {
+            eprintln!(
+                "no arm in the registry can review this field: every eligible arm authored it"
+            );
+            Err(1)
+        }
+    }
+}
+
+/// Where a critic works.
+///
+/// A critic that is also a candidate keeps its own worktree, which is what this
+/// stage has always done. A critic drawn from the roster has none, so it gets a
+/// scratch one off the repository's current HEAD. It is never given the SUBJECT's
+/// worktree: that is the artefact under examination, and a critic writing into it
+/// would corrupt the thing being measured.
+fn critic_worktree(
+    wt: &Path,
+    bead: &str,
+    critic: &str,
+    candidates: &[String],
+) -> Measurement<PathBuf> {
+    let own = wt.join(format!("{bead}--{critic}"));
+    if candidates.iter().any(|c| c == critic) && own.is_dir() {
+        return Measurement::observed(own);
+    }
+    let scratch = wt.join(format!("{bead}--critic--{critic}"));
+    if scratch.is_dir() {
+        return Measurement::observed(scratch);
+    }
+    let repo = crate::paths::repo();
+    let status = Command::new("git")
+        .current_dir(&repo)
+        .args(["worktree", "add", "--detach", "--force"])
+        .arg(&scratch)
+        .arg("HEAD")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match status {
+        Ok(status) if status.success() => Measurement::observed(scratch),
+        Ok(status) => Measurement::instrument_failed(&format!(
+            "cannot create a worktree for critic {critic}: git exited with {status}"
+        )),
+        Err(error) => Measurement::instrument_failed(&format!(
+            "cannot create a worktree for critic {critic}: {error}"
+        )),
+    }
+}
+
+/// Critique every candidate for `bead`; `crate_name` is retained for the
+/// script-compatible API.
+///
+/// Critics come from the REGISTRY, not the field: reviewing a deliverable needs a
+/// second agent, not a second implementation. One candidate is a normal field.
 ///
 /// Exit codes:
-/// - `0` — cross-review ran and its artefacts were written.
-/// - `1` — a genuine failure: the gate did not pass, or a stage could not run.
-/// - `4` — NOT APPLICABLE: fewer than two candidates. Nothing went wrong and nothing was written.
+/// - `0` — every assignment was ATTEMPTED. A critic whose launcher fails is a gap
+///   in the evidence, recorded as "(no critique written)", not a failed stage.
+/// - `1` — the gate did not pass, the roster is unreadable, or there is work to
+///   examine and no arm free to examine it.
+/// - `4` — NOT APPLICABLE: no candidates. Nothing went wrong, nothing was written.
 pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
     let _ = crate_name;
     let arms = match candidates(bead, target) {
@@ -282,7 +415,7 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
             return 1;
         }
     };
-    println!("{} candidates with an implementation", arms.len());
+    println!("{} candidate(s) with an implementation", arms.len());
     let gate = judge(&Observation {
         built: Some(true),
         tests_passed: Some(true),
@@ -295,12 +428,37 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
         // here would turn a correct answer into a refusal to answer.
         scope_departures: Some(0),
     });
-    if arms.len() < 2 {
-        println!("need >= 2 to cross-review");
-        return 4;
-    }
+    // WHO REVIEWS. Critics come from the registry, not from the field.
+    //
+    // Until this change the assignment was `arms[(index + 1) % arms.len()]` -- a ring over the
+    // CANDIDATES -- so a one-arm field returned 4 "need >= 2 to cross-review", and promote and
+    // prove returned 4 in turn for want of critiques. The whole subjective tier went dark on
+    // every single-arm task, which is now every task. But critique compares nothing: it puts a
+    // model in front of a deliverable and asks what is wrong with it, and that needs a second
+    // AGENT, not a second IMPLEMENTATION. `crossx` is the stage that genuinely needs two.
+    //
+    // farmerbob_core::stage_cast makes that distinction and this is its first caller.
+    let roster = match roster() {
+        Measurement::Observed(roster) => roster,
+        // An unreadable registry is a failure only if there is something to review. With an
+        // empty field the registry is irrelevant, and reporting 1 here would convert
+        // "nothing to review" into "the stage broke" -- the substitution this whole project
+        // exists to prevent.
+        Measurement::Missing(_) if arms.is_empty() => Vec::new(),
+        Measurement::Missing(reason) => {
+            eprintln!("cannot read the roster: {reason:?}");
+            return 1;
+        }
+    };
+    let castings = match plan(&arms, &roster) {
+        Ok(castings) => castings,
+        Err(code) => return code,
+    };
+    // The gate is checked AFTER applicability, and the order matters: an empty field adds no
+    // lines, so judging it first turns "nothing to review" into "the gate failed" -- which is
+    // how this read 1 instead of 4 the first time the two were swapped.
     if !matches!(gate, Verdict::Pass) {
-        println!("gate did not pass: cannot cross-review");
+        println!("gate did not pass: cannot critique");
         return 1;
     }
     let wt = crate::paths::worktrees();
@@ -309,9 +467,20 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
         eprintln!("cannot create {}: {error}", log_dir.display());
         return 1;
     }
-    for (index, critic) in arms.iter().enumerate() {
-        let subject = &arms[(index + 1) % arms.len()];
-        let cw = wt.join(format!("{bead}--{critic}"));
+    for casting in &castings {
+        let critic = &casting.arm;
+        // Stage::Critique always names a subject; stage_cast pins that. A casting without one
+        // would be a SpecCritic seat, which this command does not run.
+        let Some(subject) = casting.subject.as_ref() else {
+            continue;
+        };
+        let cw = match critic_worktree(&wt, bead, critic, &arms) {
+            Measurement::Observed(path) => path,
+            Measurement::Missing(reason) => {
+                eprintln!("  {critic}: REFUSING -- {reason:?}");
+                continue;
+            }
+        };
         let sw = wt.join(format!("{bead}--{subject}"));
         let mut patch = match patch_for(&sw, target) {
             Measurement::Observed(patch) => patch,
@@ -376,7 +545,8 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
                 Path::new(REPO).join(".fb/prompts/_critique.md").as_path(),
                 &patch,
                 &handoff,
-                &prompt_path
+                &prompt_path,
+                &critique_path
             ),
             Measurement::Observed(())
         ) {
@@ -389,7 +559,12 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
         let log = log_dir.join(format!("{critic}.log"));
         let _ = fs::write(&log, "");
         let run = format!("{bead}--{critic}");
-        let _ = launch(critic, &prompt_text, &cw, &run);
+        if let Measurement::Missing(reason) = launch(critic, &prompt_text, &cw, &run) {
+            // `let _ =` here discarded this for as long as the stage existed, so a critic
+            // that never started and a critic that started and wrote nothing produced the
+            // identical line: "(no critique written)".
+            eprintln!("  {critic}: launcher did not complete -- {reason:?}");
+        }
         if let Measurement::Observed(line) = format_result(critic, subject, &critique_path) {
             println!("{line}");
         }
@@ -500,19 +675,53 @@ mod tests {
     /// Clause 2 and clause 7: one candidate returns 4, and nothing is written
     /// to the critiques directory.
     #[test]
-    fn one_candidate_returns_not_applicable_and_writes_nothing() {
-        let field = ScratchBead::new("one");
-        field.arm("codex-luna", "crates/fb/src/critique.rs");
-        let dir = field.critiques_dir();
-        let _ = fs::remove_dir_all(&dir);
-        assert_eq!(run_cmd(&field.bead, "fb", "crates/fb/src/critique.rs"), 4);
-        assert!(
-            !dir.exists(),
-            "a 4 return must not write to the critiques directory"
+    fn one_candidate_is_reviewable_by_an_arm_from_the_registry() {
+        // The inverse of the test this replaces. `one_candidate_returns_not_applicable`
+        // asserted 4, and that assertion was the whole reason the subjective tier stayed
+        // dark on every one-arm field: critique returned 4, so promote had no critiques,
+        // so prove had no claims. One candidate is a normal, reviewable field.
+        let arms = vec!["glm-53-flash".to_string()];
+        let roster = vec!["glm-53-flash".to_string(), "codex-luna".to_string()];
+        let castings = super::plan(&arms, &roster).expect("one candidate is reviewable");
+        assert_eq!(castings.len(), 1);
+        assert_eq!(
+            castings[0].arm, "codex-luna",
+            "the critic is not the author"
         );
+        assert_eq!(castings[0].subject.as_deref(), Some("glm-53-flash"));
     }
 
-    /// Clause 5 and boundary: two candidates with a passing gate does not return 4.
+    /// Zero candidates is still not-applicable, and it is the ONLY not-applicable.
+    #[test]
+    fn zero_candidates_is_the_only_not_applicable() {
+        let roster = vec!["codex-luna".to_string()];
+        assert_eq!(super::plan(&[], &roster), Err(4));
+    }
+
+    /// Work to examine and nobody free to examine it is a refusal, not a
+    /// not-applicable. Same field as the test above, one entry removed from the
+    /// roster: the two answers must be different.
+    #[test]
+    fn no_independent_arm_is_a_refusal_not_not_applicable() {
+        let arms = vec!["codex-luna".to_string()];
+        let roster = vec!["codex-luna".to_string()];
+        assert_eq!(super::plan(&arms, &roster), Err(1));
+    }
+
+    /// Two candidates still review each other: the ring falls out of
+    /// "first roster entry that is not the subject" rather than being coded.
+    #[test]
+    fn two_candidates_still_review_each_other() {
+        let arms = vec!["a".to_string(), "b".to_string()];
+        let roster = vec!["a".to_string(), "b".to_string()];
+        let castings = super::plan(&arms, &roster).expect("two candidates are reviewable");
+        assert_eq!(castings.len(), 2);
+        assert_eq!(castings[0].arm, "b");
+        assert_eq!(castings[0].subject.as_deref(), Some("a"));
+        assert_eq!(castings[1].arm, "a");
+        assert_eq!(castings[1].subject.as_deref(), Some("b"));
+    }
+
     #[test]
     fn two_candidates_passing_gate_does_not_return_not_applicable() {
         let field = ScratchBead::new("two-pass");
@@ -526,28 +735,22 @@ mod tests {
         assert_eq!(code, 0);
     }
 
-    /// Clause 4: 4 and 1 are distinct codes. Short field returns 4, while a stage failure
-    /// returns 1.
+    /// 4 and 1 are distinct codes, and the short field that yields 4 is now the EMPTY
+    /// one. This test asserted that a ONE-arm field returns 4; that assertion was the
+    /// contract this change exists to break.
     #[test]
     fn not_applicable_and_failure_are_different_codes() {
-        let short = ScratchBead::new("short");
-        short.arm("codex-luna", "crates/fb/src/critique.rs");
-        let code_na = run_cmd(&short.bead, "fb", "crates/fb/src/critique.rs");
-        assert_eq!(code_na, 4);
+        let empty = ScratchBead::new("short");
+        let code_na = run_cmd(&empty.bead, "fb", "crates/fb/src/critique.rs");
+        assert_eq!(code_na, 4, "an empty field is not applicable");
 
-        let broken = ScratchBead::new("broken");
-        broken.arm("codex-luna", "crates/fb/src/critique.rs");
-        broken.arm("glm-53-flash", "crates/fb/src/critique.rs");
-        let dir = broken.critiques_dir();
-        if let Some(parent) = dir.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let _ = fs::remove_dir_all(&dir);
-        let _ = fs::write(&dir, "blocking file");
-        let code_fail = run_cmd(&broken.bead, "fb", "crates/fb/src/critique.rs");
-        let _ = fs::remove_file(&dir);
-        assert_eq!(code_fail, 1);
-        assert_ne!(code_na, code_fail);
+        let lone = ScratchBead::new("lone");
+        lone.arm("codex-luna", "crates/fb/src/critique.rs");
+        let code_one = run_cmd(&lone.bead, "fb", "crates/fb/src/critique.rs");
+        assert_ne!(
+            code_one, 4,
+            "one candidate is reviewable by an arm from the registry"
+        );
     }
 
     /// Clause 8: the doc comment on `run_cmd` names all three codes (0, 1, 4).
