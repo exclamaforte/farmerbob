@@ -785,7 +785,7 @@ fn check_launcher_coverage(repo: &Path) -> Check {
             );
         }
     };
-    let dispatch_path = repo.join("fb-dispatch.sh");
+    let dispatch_path = repo.join("crates/fb/src/launch.rs");
     let dispatch_text = match fs::read_to_string(&dispatch_path) {
         Ok(t) => t,
         Err(e) => {
@@ -818,7 +818,7 @@ fn check_launcher_coverage(repo: &Path) -> Check {
             "launcher coverage",
             Status::Ok,
             format!(
-                "{} dispatchable in sources.toml, every one has a launcher branch in fb-dispatch.sh",
+                "{} dispatchable in sources.toml, every one has a launcher branch in launch.rs",
                 count_noun(dispatchable.len(), "arm")
             ),
             None,

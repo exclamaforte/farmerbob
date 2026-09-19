@@ -34,7 +34,7 @@ spec=spec.split('## How this will be scored')[0]
 print(tpl.replace('{TARGET_FILE}',sys.argv[3]).replace('{CRATE}',sys.argv[4]).replace('{SPEC}',spec.strip()))
 PY
   echo "dispatching verifier $VARM on the spec (no candidate code in context)"
-  "$REPO/fb-dispatch.sh" "$VARM" "verify-$BEAD" "$P" "$CRATE" || true
+  "$REPO/target/debug/fb" dispatch "$VARM" "verify-$BEAD" "$P" "$CRATE" || true
   VW="$WT_ROOT/verify-$BEAD--$VARM"
   awk '/#\[cfg\(test\)\]/{f=1} f' "$VW/$TARGET" 2>/dev/null \
     | sed -e 's/use super::\*;/use crate::*; use crate::vprelude::*;/' \

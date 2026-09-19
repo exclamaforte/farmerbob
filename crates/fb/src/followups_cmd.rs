@@ -185,10 +185,7 @@ pub fn run(task: &str, json: bool) -> i32 {
         );
         println!("    RULE IT:");
         println!(
-            "      in-turn:  . fb-launch.sh; fb_launch {} \"<the follow-up>\" {}/{}--{} continue",
-            r.subject,
-            crate::paths::worktrees().display(),
-            task,
+            "      in-turn:  fb dispatch {} {task} <a file holding the follow-up> --continue",
             r.subject
         );
         println!("      task:     write a spec into .fb/prompts/ and queue it");
