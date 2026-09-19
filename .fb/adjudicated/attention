@@ -1,0 +1,49 @@
+MERGED glm-53-flash
+4/4 PASS, and the first clean four-arm matrix since the partition detector was fixed -- no
+false SPEC-AMBIGUOUS line, which is what partition-truth bought.
+
+  arm                tests  asserts  lines  suite
+  codex-luna             5       16    306  no signal
+  gemini-38-flash       32       89    970  no signal
+  glm-53-flash          18       37    582  no signal
+  or-nemotron-ultra     20       60    521  OVER-FITTED, FoundSeparateFaults(3)
+
+THE MATRIX WAS LOST TWICE BEFORE IT WAS READ. The first crossx run VOIDed with
+"Disk quota exceeded (os error 122)" writing a cell's incremental build. /tmp on this machine
+is a 16G RAM-BACKED tmpfs and crossx builds N^2 cargo target directories in it. The VOID guard
+called it correctly -- "the matrix was lost to the harness, not to any candidate" -- and it
+also explains the four pipeline kills attributed to low memory today: the build artefacts WERE
+the memory. Scratch moved to disk; the re-run is this matrix.
+
+THE SPEC CRITIQUE CONVERGED THE FIELD FOR THE THIRD WAVE RUNNING. All four arms named the same
+three defects before implementing -- `next` required to be both unconditional and busy-filtered,
+`Missing(NothingToMeasure)` written as a unit variant when `Absent::NothingToMeasure` carries a
+required reason, and clause 7 demanding every `why` name a task or matrix that `QueueEmpty`
+does not have -- and all four resolved them identically. None of the three split the field.
+
+winner: glm-53-flash, and gemini-38-flash's critique argues it precisely: `own_name` returns
+`None` for `QueueEmpty` so `Option<&str>::cmp` treats two of them as equal and the stable sort
+preserves input order without dropping information, and both spec defects are handled "honestly
+and correctly" rather than papered over. 18 tests in 582 lines against gemini's 32 in 970.
+
+or-nemotron-ultra is out, on its own suite and on glm's critique of it, which is the sharpest
+single piece of review in this wave:
+  - `next_treats_missing_live_agents_as_busy` "cannot detect a clause-6 violation: with items
+    [PipelineFailed, Adjudicate], busy and idle answers coincide, so a rival treating Missing
+    agents as idle passes." The discriminating input is absent, and clause 6 is the safety
+    clause this spec is loudest about. A test that looks like coverage and is none.
+  - `priority_order_is_total_and_correct`'s `assert_eq!(types.len(), 5)` over a literal
+    five-element array is trivially true.
+  - its `why` for `QueueEmpty` hardcodes "no agents are running" while `next` hands that item
+    out on the BUSY path.
+Its suite fails all three rivals, which at N=4 is the N-1-of-N over-fitted shape.
+
+THE THIRD FINDING IS ABOUT MY SPEC AND GLM SHARES IT. `QueueEmpty`'s doc says "Nothing is
+queued and nothing is running", and clause 3 makes it `safe_while_busy: true`, so `next`
+returns it while agents run. I defined the item as a claim about liveness and then handed it
+out in the busy path. glm's own `why` restates the variant doc and inherits the same
+contradiction. Recorded as a follow-up against the spec, not against the arm.
+
+codex-luna: 5 tests, no critic found a defect in it, and or-nemotron's review of it is
+accurate. Thin but not wrong -- the same shape as partition-truth, where four table-driven
+tests covered everything.

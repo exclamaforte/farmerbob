@@ -14,6 +14,7 @@ pub mod adapter;
 pub mod adjudicate;
 pub mod agent;
 pub mod attempt_log;
+pub mod attention;
 pub mod autopilot;
 pub mod availability;
 pub mod budget;
