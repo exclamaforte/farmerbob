@@ -1,0 +1,4 @@
+MERGED codex-luna
+Single arm, 9 tests, clippy 0. Dispatched hours before it was adjudicated and
+forgotten; recovered by `fb next`'s ScoreIt item on the first run after that item
+existed, which is what the item is for.

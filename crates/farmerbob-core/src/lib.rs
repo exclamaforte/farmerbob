@@ -18,6 +18,8 @@ pub mod attempt_log;
 pub mod attention;
 pub mod autopilot;
 pub mod availability;
+pub mod backfill;
+pub mod graft;
 pub mod board;
 pub mod budget;
 pub mod build_verdict;

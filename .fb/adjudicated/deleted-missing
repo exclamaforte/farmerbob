@@ -1,0 +1,16 @@
+MERGED glm-53-flash
+Single arm, 373 insertions, clippy 0. Also recovered by fb next's ScoreIt item.
+
+score.rs read four diffs and three of them routed a git refusal into
+Measurement::Missing. The fourth did not: the comment above it said "a path git
+cannot report on at all leaves the whole assessment Missing rather than empty" and
+the line beneath it was `.unwrap_or_default()`, so a refusal yielded an EMPTY
+VECTOR and every path was reported as not-deleted. deleted_paths is now a
+Measurement and an absent list makes `scope` Missing rather than computed from a
+partial answer. (farmerbob-7i30)
+
+MERGED AS A DIFF, NOT A COPY. score.rs has changed substantially since this arm
+branched -- measure_base and the committed-work suite landed in between -- and
+copying the arm's file wholesale would have reverted all of it. That is exactly
+the mistake I made with main.rs earlier tonight, which orphaned four modules and
+silently stopped 42 tests (farmerbob-0m34). `git apply --3way` applied it cleanly.

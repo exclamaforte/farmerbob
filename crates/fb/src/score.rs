@@ -50,8 +50,9 @@ struct Record {
     duration_s: Measurement<f64>,
     liveness: Liveness,
     /// Whether the run stayed inside its declared deliverable. Absent when git could not
-    /// read the worktree, because "no departures found" and "we could not look" are
-    /// different facts and an empty list reads as the first.
+    /// read the worktree -- or refused to report deleted paths -- because "no departures
+    /// found" and "we could not look" are different facts and an empty list reads as
+    /// the first.  (bead farmerbob-7i30)
     scope: Measurement<Scope>,
     err: Option<String>,
 }
@@ -146,6 +147,31 @@ fn measure_base(wt: &Path) -> Option<String> {
             .map(str::to_string)
     });
     Some(sha.unwrap_or_else(|| "HEAD".into()))
+}
+
+/// Paths git reported as deleted, or the stated reason there is no list.
+///
+/// `Missing` when git refused; NEVER an empty vector standing in for a
+/// refusal, which is the defect this exists to close. Git ANSWERING with
+/// nothing is `Observed(vec![])`: nothing was deleted is a measurement, and
+/// it must stay distinguishable from "we could not look".
+///
+/// `--name-only` prints one path per line and each line is taken verbatim, so
+/// a path holding a space or a quote survives. `-z` is deliberately not
+/// parsed, so a path holding a NEWLINE is not represented here -- a real
+/// limit of the one-path-per-line wire format, not a choice.
+/// (bead farmerbob-7i30)
+fn deleted_paths(wt: &Path, base: &str) -> Measurement<Vec<String>> {
+    match git(
+        wt,
+        &["diff", "--name-only", "--diff-filter=D", base, "--", "crates/"],
+    ) {
+        Some(out) => Measurement::observed(out.lines().map(str::to_string).collect()),
+        None => Measurement::instrument_failed(
+            "git refused to report deleted paths, so a deletion cannot be told apart \
+             from a modification",
+        ),
+    }
 }
 
 /// Whether any launcher process has `wt` as its working directory.
@@ -357,23 +383,23 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
     // on at all leaves the whole assessment Missing rather than empty. Same base as the
     // count and the path list, or a deletion made in a commit would be listed as changed
     // and never told apart from a modification.
-    let deleted: Vec<String> = base
-        .as_deref()
-        .and_then(|b| {
-            git(
-                wt,
-                &["diff", "--name-only", "--diff-filter=D", b, "--", "crates/"],
-            )
-        })
-        .map(|o| o.lines().map(str::to_string).collect())
-        .unwrap_or_default();
-    let scope: Measurement<Scope> = match (changed_paths.as_ref(), target) {
-        (Some(paths), Some(t)) => {
+    let deleted: Measurement<Vec<String>> = match base.as_deref() {
+        Some(b) => deleted_paths(wt, b),
+        None => Measurement::instrument_failed(
+            "git cannot read this worktree, so which paths were deleted is unknown",
+        ),
+    };
+    // A refused deletion list is NOT an empty one, and the assessment is never computed
+    // from a partial answer: with the list Missing, scope is Missing with git's refusal
+    // named. An arm whose deletions we could not read must not read as one who deleted
+    // nothing.  (bead farmerbob-7i30)
+    let scope: Measurement<Scope> = match (changed_paths.as_ref(), deleted.value(), target) {
+        (Some(paths), Some(gone), Some(t)) => {
             let changes: Vec<Change> = paths
                 .iter()
                 .map(|p| Change {
                     path: p.clone(),
-                    deleted: deleted.contains(p),
+                    deleted: gone.contains(p),
                 })
                 .collect();
             Measurement::observed(assess(
@@ -383,11 +409,15 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
                 &changes,
             ))
         }
-        (None, _) => Measurement::instrument_failed(
+        (None, _, _) => Measurement::instrument_failed(
             "git cannot read this worktree, so which files changed is unknown",
         ),
-        (_, None) => Measurement::nothing_to_measure(
+        (_, _, None) => Measurement::nothing_to_measure(
             "the task spec declares no deliverable, so there is no scope to check",
+        ),
+        (_, None, _) => Measurement::instrument_failed(
+            "git refused to report deleted paths, so a deletion cannot be told apart \
+             from a modification",
         ),
     };
 
@@ -1286,5 +1316,331 @@ mod committed_work {
             r.crates.contains("other"),
             "the crate set reads the same diff as the count"
         );
+    }
+}
+
+#[cfg(test)]
+mod deleted_list {
+    //! Clause tests for `deleted_paths` and the scope verdict it feeds. Every
+    //! fixture is a fresh repository in a scratch directory; none of this
+    //! suite reads this repository's own worktrees, and a refusal is
+    //! reproduced by pointing at a directory that is not a repository.
+    //!
+    //! Fixture construction runs git subcommands beyond the module's closed
+    //! five (init, symbolic-ref, config, add, commit) -- that is setup, and no
+    //! assertion is made on any invocation the module itself does not make.
+    use super::*;
+    use farmerbob_core::measurement::Absent;
+
+    /// The declared deliverable: a module INSIDE the crate, so the crate root
+    /// beside it can be deleted as its own case.
+    const TARGET: &str = "crates/demo/src/greeter.rs";
+    /// The module declaration beside TARGET: a library crate's root.
+    const DECLARATION: &str = "crates/demo/src/lib.rs";
+    /// A path in another crate: the out-of-scope side of clause 6.
+    const FOREIGN: &str = "crates/other/src/old.rs";
+
+    fn scratch(tag: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("fb-score-deleted-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).expect("scratch dir");
+        p
+    }
+
+    fn git_ok(repo: &Path, args: &[&str]) {
+        let st = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .status()
+            .expect("git must be runnable");
+        assert!(st.success(), "git {args:?} failed in {}", repo.display());
+    }
+
+    /// A readable repository, one baseline commit on `master`, with a module
+    /// declaration to delete, a foreign crate to stray into, and one path
+    /// holding a space.
+    fn new_repo(parent: &Path, name: &str) -> PathBuf {
+        let p = parent.join(name);
+        fs::create_dir_all(p.join("crates/demo/src")).expect("repo layout");
+        fs::create_dir_all(p.join("crates/other/src")).expect("repo layout");
+        git_ok(&p, &["init", "-q"]);
+        git_ok(&p, &["symbolic-ref", "HEAD", "refs/heads/master"]);
+        git_ok(&p, &["config", "user.email", "test@example.com"]);
+        git_ok(&p, &["config", "user.name", "test"]);
+        git_ok(&p, &["config", "commit.gpgsign", "false"]);
+        fs::write(p.join(DECLARATION), "pub mod greeter;\n").expect("baseline lib.rs");
+        fs::write(p.join(TARGET), "pub fn greet() -> u32 {\n    1\n}\n").expect("baseline target");
+        fs::write(p.join(FOREIGN), "o1\no2\no3\no4\no5\no6\n").expect("baseline other crate");
+        fs::write(p.join("crates/other/src/has space.rs"), "s1\ns2\n")
+            .expect("baseline spaced path");
+        git_ok(&p, &["add", "-A"]);
+        git_ok(&p, &["commit", "-q", "-m", "baseline"]);
+        p
+    }
+
+    /// The base every diff in `measure` takes -- the same one `deleted_paths`
+    /// must take, never a second base.
+    fn base_of(repo: &Path) -> String {
+        measure_base(repo).expect("fixture repo must be readable by git")
+    }
+
+    /// The stated reason there is no list, whatever `Absent` shape it took.
+    fn absent_reason<T>(m: &Measurement<T>) -> String {
+        match m.absent() {
+            Some(Absent::InstrumentFailed { reason })
+            | Some(Absent::NothingToMeasure { reason })
+            | Some(Absent::Untrusted { reason }) => reason.clone(),
+            Some(Absent::NotAttempted) | None => String::new(),
+        }
+    }
+
+    fn run_measure(wt: &Path, log_root: &Path) -> Record {
+        let t = Task {
+            bead: "deleted-list-spec",
+            krate: "demo",
+            target: Some(TARGET),
+            creates: false,
+            base_clippy: 0,
+            log_root,
+        };
+        measure(wt, "candidate", &t).expect("worktree under test must not look live")
+    }
+
+    // ---- clause 1: an answer with a list is the list, in git's order ----
+
+    #[test]
+    fn a_list_comes_back_observed_in_the_order_git_printed_it() {
+        let tmp = scratch("list");
+        let repo = new_repo(&tmp, "r");
+        fs::remove_file(repo.join(TARGET)).expect("rm the target");
+        fs::remove_file(repo.join(FOREIGN)).expect("rm the foreign file");
+        let got = deleted_paths(&repo, &base_of(&repo));
+        // git prints paths sorted (demo sorts before other); the measurement
+        // keeps that order verbatim.
+        assert_eq!(
+            got,
+            Measurement::Observed(vec![TARGET.to_string(), FOREIGN.to_string()]),
+        );
+    }
+
+    #[test]
+    fn a_path_with_a_space_is_taken_verbatim_one_path_per_line() {
+        let tmp = scratch("space");
+        let repo = new_repo(&tmp, "r");
+        fs::remove_file(repo.join("crates/other/src/has space.rs")).expect("rm the spaced path");
+        let got = deleted_paths(&repo, &base_of(&repo));
+        // No -z parsing: the line is the path. A path containing a NEWLINE is
+        // therefore not representable -- a stated limit of this wire format,
+        // not a choice.
+        assert_eq!(
+            got,
+            Measurement::Observed(vec!["crates/other/src/has space.rs".to_string()]),
+        );
+    }
+
+    // ---- clauses 2, 3 and 4: an empty answer and a refusal are different ----
+
+    #[test]
+    fn zero_deletions_is_an_observed_empty_answer_not_a_refusal() {
+        let tmp = scratch("zero");
+        let repo = new_repo(&tmp, "r");
+        let got = deleted_paths(&repo, &base_of(&repo));
+        assert_eq!(got, Measurement::Observed(Vec::<String>::new()));
+        assert!(got.is_observed());
+    }
+
+    #[test]
+    fn a_refusal_is_missing_with_a_reason_that_names_git() {
+        // Never a repository at all.
+        let tmp = scratch("refused-plain");
+        let plain = tmp.join("plain");
+        fs::create_dir_all(&plain).expect("plain dir");
+        let got = deleted_paths(&plain, "HEAD");
+        assert!(!got.is_observed(), "a refusal is never an observed list");
+        assert_eq!(got.value(), None);
+        let reason = absent_reason(&got);
+        assert!(!reason.trim().is_empty(), "the reason is stated, not blank");
+        assert!(
+            reason.to_lowercase().contains("git"),
+            "the reason names git: {reason}"
+        );
+    }
+
+    #[test]
+    fn files_on_disk_are_not_evidence_git_could_read_them() {
+        // The pruned-worktree shape: the work survives, the admin directory
+        // does not. The list is Missing anyway -- inferring "nothing deleted"
+        // from the files still on disk is the original defect.
+        let tmp = scratch("refused-pruned");
+        let repo = new_repo(&tmp, "r");
+        fs::remove_dir_all(repo.join(".git")).expect("prune the admin directory");
+        assert!(repo.join(TARGET).exists(), "fixture: the files survive");
+        let got = deleted_paths(&repo, "HEAD");
+        assert!(!got.is_observed(), "the surviving files prove nothing");
+        let reason = absent_reason(&got);
+        assert!(!reason.trim().is_empty());
+        assert!(reason.to_lowercase().contains("git"), "reason: {reason}");
+    }
+
+    /// Clauses 2 and 3 pinned as a PAIR, in one test. Separately, each passes
+    /// against an implementation that returns an empty vector for both -- which
+    /// is the code this task replaces; only the comparison falsifies it.
+    #[test]
+    fn an_empty_answer_and_a_refusal_are_different_values() {
+        let tmp = scratch("pair");
+        let answers = new_repo(&tmp, "answers");
+        let empty = deleted_paths(&answers, &base_of(&answers));
+        assert!(empty.is_observed(), "clause 2: git answered: nothing deleted");
+        assert_eq!(empty.value(), Some(&Vec::<String>::new()));
+
+        let refuses = tmp.join("refuses");
+        fs::create_dir_all(&refuses).expect("plain dir");
+        let missing = deleted_paths(&refuses, "HEAD");
+        assert!(!missing.is_observed(), "clause 3: git refused");
+        assert!(
+            absent_reason(&missing)
+                .to_lowercase()
+                .contains("git"),
+            "clause 3: the refusal names git"
+        );
+        assert_ne!(
+            empty, missing,
+            "clause 4: an empty list is not a refusal, and must never read as one"
+        );
+    }
+
+    // ---- clause 6: an observed list marks deletions in the scope verdict ----
+
+    #[test]
+    fn deleting_the_declared_target_is_the_deleted_departure() {
+        // The in-scope side, with the deletion COMMITTED: the merge-base base
+        // is what lets a deletion made in a commit be listed as changed AND
+        // told apart as deleted. The verdict is farmerbob_core::scope's
+        // `Departure::Deleted`; asserted, not re-derived.
+        let tmp = scratch("committed-target");
+        let repo = new_repo(&tmp, "r");
+        // The arm works on a branch, as the harness dispatches it: committing
+        // on master would move the merge-base past the deletion.
+        git_ok(&repo, &["checkout", "-q", "-b", "work"]);
+        fs::remove_file(repo.join(TARGET)).expect("rm the target");
+        git_ok(&repo, &["add", "-A"]);
+        git_ok(&repo, &["commit", "-q", "-m", "delete the target"]);
+        let r = run_measure(&repo, &tmp.join("logs"));
+        let sc = r
+            .scope
+            .value()
+            .expect("the deletion list was observed, so scope is observed");
+        assert!(!sc.target_changed, "deleting the target is not producing it");
+        assert_eq!(
+            sc.departures,
+            vec![Departure::Deleted {
+                path: TARGET.to_string(),
+            }],
+        );
+        assert!(!is_clean(sc));
+    }
+
+    #[test]
+    fn deleting_the_module_declaration_is_the_deleted_departure() {
+        // ONE deleted path and it is the module declaration (the crate root
+        // beside the target). Also `Departure::Deleted` per core: an allowed
+        // file deleted is a violation like any other deletion, not an
+        // exercised allowance.
+        let tmp = scratch("declaration");
+        let repo = new_repo(&tmp, "r");
+        fs::remove_file(repo.join(DECLARATION)).expect("rm lib.rs");
+        let r = run_measure(&repo, &tmp.join("logs"));
+        let sc = r.scope.value().expect("scope is observed");
+        assert!(sc.allowed.is_empty(), "a deleted allowance is not granted");
+        assert_eq!(
+            sc.departures,
+            vec![Departure::Deleted {
+                path: DECLARATION.to_string(),
+            }],
+        );
+    }
+
+    #[test]
+    fn deleting_a_foreign_file_is_a_deleted_departure_not_a_foreign_one() {
+        // The out-of-scope side: the scope gate reads the deletion list, so a
+        // deletion outside the target must arrive as Deleted -- never as
+        // Foreign, and never as absent.
+        let tmp = scratch("foreign-del");
+        let repo = new_repo(&tmp, "r");
+        fs::remove_file(repo.join(FOREIGN)).expect("rm the foreign file");
+        let r = run_measure(&repo, &tmp.join("logs"));
+        let sc = r.scope.value().expect("scope is observed");
+        assert!(!sc.target_changed);
+        assert_eq!(
+            sc.departures,
+            vec![Departure::Deleted {
+                path: FOREIGN.to_string(),
+            }],
+        );
+        assert!(!is_clean(sc));
+    }
+
+    #[test]
+    fn the_deleted_flag_comes_from_the_deletion_list_not_from_the_path_list() {
+        // The same foreign path in two arrangements: modified, it is Foreign;
+        // deleted, it is Deleted. An implementation that marks nothing deleted
+        // -- the empty-vector defect -- passes the first and fails the second.
+        let tmp = scratch("contrast");
+        let logs = tmp.join("logs");
+        let modified_repo = new_repo(&tmp, "modified");
+        fs::write(modified_repo.join(FOREIGN), "x\n").expect("rewrite the foreign file");
+        let m = run_measure(&modified_repo, &logs);
+        assert_eq!(
+            m.scope.value().expect("scope is observed").departures,
+            vec![Departure::Foreign {
+                path: FOREIGN.to_string(),
+            }],
+        );
+
+        let deleted_repo = new_repo(&tmp, "deleted");
+        fs::remove_file(deleted_repo.join(FOREIGN)).expect("delete the foreign file");
+        let d = run_measure(&deleted_repo, &logs);
+        assert_eq!(
+            d.scope.value().expect("scope is observed").departures,
+            vec![Departure::Deleted {
+                path: FOREIGN.to_string(),
+            }],
+        );
+    }
+
+    // ---- clauses 5 and 7: a refusal reaches scope and nothing else ----
+
+    #[test]
+    fn a_refused_deletion_list_leaves_scope_missing_and_lines_observed() {
+        // The worktree still holds the deliverable on disk, but git is gone:
+        // the on-disk files are not evidence git could read them, so the
+        // deletion list is Missing and scope is Missing with it -- never
+        // Observed with every path marked not-deleted. The refusal does not
+        // cascade: the line count is still observed (the creates recovery
+        // needs no git).
+        let tmp = scratch("refused-scope");
+        let repo = new_repo(&tmp, "r");
+        fs::remove_dir_all(repo.join(".git")).expect("prune the admin directory");
+        let t = Task {
+            bead: "deleted-list-spec",
+            krate: "demo",
+            target: Some(TARGET),
+            creates: true,
+            base_clippy: 0,
+            log_root: &tmp.join("logs"),
+        };
+        let r = measure(&repo, "candidate", &t).expect("worktree under test must not look live");
+        assert!(!r.scope.is_observed(), "clause 5: scope is Missing");
+        assert_eq!(r.scope.value(), None, "never Observed-all-not-deleted");
+        let reason = absent_reason(&r.scope);
+        assert!(!reason.trim().is_empty());
+        assert!(reason.to_lowercase().contains("git"), "reason: {reason}");
+        let lines = r
+            .lines
+            .value()
+            .copied()
+            .expect("clause 7: the line count survives the refusal");
+        assert!(lines > 0, "the deliverable's own lines are a real count");
     }
 }
