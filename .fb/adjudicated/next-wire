@@ -1,0 +1,13 @@
+MERGED glm-53-flash
+Single arm, 173 lines, clippy 0, scope clean: main.rs and nothing else, and it
+added no logic -- zero references to attention::, board:: or Item:: in main.rs.
+
+`fb next` exists. Running it for the first time was the point of wiring it, and it
+failed usefully: its first thirty entries were tasks already MERGED, because
+board::observe read `adjudicated` from the record file alone while fb status also
+infers a merge for a CREATES task whose declared file exists. gather now applies
+both rules through farmerbob_core::target_decl. 57 items became 5, then 2 once
+three older two-declaration specs got the explicit records they should always have
+had.
+
+`fb next` is now the orchestrator's state check instead of grepping fb-status prose.

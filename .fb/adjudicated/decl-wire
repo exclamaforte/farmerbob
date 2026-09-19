@@ -1,0 +1,19 @@
+MERGED gemini-38-flash
+Single arm, 228 lines, clippy 0, scope clean: main.rs and nothing else.
+
+`fb decl` now exists and the whole chain runs. Verified against the spec that
+started it: `fb decl .fb/prompts/target-decl.md` answers
+`creates crates/farmerbob-core/src/target_decl.rs`. That file carries two fenced
+EXAMPLE markers naming window.rs and status.rs, and it is the spec fb-dispatch
+killed as TASK-INVALID for declaring window.rs. Every exit path checked against the
+real binary: no marker 2, unreadable 4, directory 4, conflicting flags clap's 2
+with empty stdout.
+
+SPEC DEFECT, found in the spec critique before implementation and credited: the
+Exact API pinned the clap variant VERBATIM without conflicts_with while clause 3
+required using clap's conflicts_with. Both could not be obeyed. The arm
+implemented the conflict, which is what the clauses describe, and said so.
+
+fb-target.sh now delegates to this, so all seven shell consumers read the marker
+through the same code as the Rust side. Four readers became one. Closed
+farmerbob-051y.
