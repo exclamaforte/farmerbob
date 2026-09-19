@@ -102,7 +102,7 @@ fn render(
 /// grep/sed/sort. `Missing` only when systemctl itself could not be asked (not installed, or
 /// exits non-zero, e.g. no session bus) -- never for "asked, and none are running", which is
 /// `Observed(vec![])`.
-fn observe_live_agents() -> Measurement<Vec<String>> {
+pub(crate) fn observe_live_agents() -> Measurement<Vec<String>> {
     match Command::new("systemctl")
         .args(["--user", "list-units", "--type=scope", "--no-legend"])
         .output()

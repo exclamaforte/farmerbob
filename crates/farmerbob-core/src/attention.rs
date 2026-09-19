@@ -19,6 +19,13 @@ use crate::measurement::{Absent, Measurement};
 /// Exactly these variants and no others.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
+    /// The runs finished and nothing has measured them.
+    ScoreIt {
+        /// The task name.
+        task: String,
+        /// How many worktrees are waiting to be measured.
+        worktrees: usize,
+    },
     /// A task whose runs are finished and which has not been adjudicated.
     Adjudicate {
         /// The task name.
@@ -76,10 +83,11 @@ pub struct Attention {
 fn variant_order(item: &Item) -> u8 {
     match item {
         Item::PipelineFailed { .. } => 0,
-        Item::Adjudicate { .. } => 1,
-        Item::RunPipeline { .. } => 2,
-        Item::LaunchWave { .. } => 3,
-        Item::QueueEmpty => 4,
+        Item::ScoreIt { .. } => 1,
+        Item::Adjudicate { .. } => 2,
+        Item::RunPipeline { .. } => 3,
+        Item::LaunchWave { .. } => 4,
+        Item::QueueEmpty => 5,
     }
 }
 
@@ -87,7 +95,8 @@ fn variant_order(item: &Item) -> u8 {
 /// none, and no tie to break: two `QueueEmpty` items carry the same fact.
 fn own_name(item: &Item) -> Option<&str> {
     match item {
-        Item::Adjudicate { task, .. }
+        Item::ScoreIt { task, .. }
+        | Item::Adjudicate { task, .. }
         | Item::RunPipeline { task, .. }
         | Item::PipelineFailed { task, .. } => Some(task),
         Item::LaunchWave { matrix, .. } => Some(matrix),
@@ -117,6 +126,13 @@ fn attention_for(item: &Item) -> Attention {
             };
             (why, true)
         }
+        Item::ScoreIt { task, worktrees } => (
+            format!(
+                "task {task} finished its runs with {worktrees} worktree(s) \
+                waiting to be measured"
+            ),
+            true,
+        ),
         Item::Adjudicate { task, passing } => (
             format!(
                 "task {task} finished its runs with {passing} passing candidate(s) \
@@ -250,6 +266,14 @@ mod tests {
         }
     }
 
+    /// A task whose runs finished, unscored.
+    fn score(task: &str, worktrees: usize) -> Item {
+        Item::ScoreIt {
+            task: task.to_string(),
+            worktrees,
+        }
+    }
+
     /// Facts with the machine observed idle.
     fn idle(items: Vec<Item>) -> Facts {
         Facts {
@@ -269,7 +293,8 @@ mod tests {
     /// The item's own name, as the spec's tie-break defines it.
     fn own_name(item: &Item) -> Option<&str> {
         match item {
-            Item::Adjudicate { task, .. }
+            Item::ScoreIt { task, .. }
+            | Item::Adjudicate { task, .. }
             | Item::RunPipeline { task, .. }
             | Item::PipelineFailed { task, .. } => Some(task),
             Item::LaunchWave { matrix, .. } => Some(matrix),
@@ -394,6 +419,7 @@ mod tests {
             assert!(!a.why.is_empty(), "empty why for {:?}", a.item);
             match &a.item {
                 Item::PipelineFailed { task, .. }
+                | Item::ScoreIt { task, .. }
                 | Item::Adjudicate { task, .. }
                 | Item::RunPipeline { task, .. } => assert!(
                     a.why.contains(task.as_str()),
@@ -577,5 +603,121 @@ mod tests {
         assert!(matches!(got.item, Item::QueueEmpty));
         assert!(got.safe_while_busy);
         assert!(!got.why.is_empty());
+    }
+
+    #[test]
+    fn scoreit_ranks_between_pipeline_failed_and_adjudicate() {
+        let f = idle(vec![
+            adj("t-adj", 1),
+            rp("t-rp", "stage"),
+            score("t-score", 2),
+            pf("t-pf", &["build"]),
+        ]);
+        let ranked = rank(&f);
+        let items: Vec<Item> = ranked.into_iter().map(|a| a.item).collect();
+        assert_eq!(
+            items,
+            vec![
+                pf("t-pf", &["build"]),
+                score("t-score", 2),
+                adj("t-adj", 1),
+                rp("t-rp", "stage"),
+            ]
+        );
+    }
+
+    #[test]
+    fn scoreit_why_names_task_and_safe_while_busy_is_pinned_against_adjudicate() {
+        let score_item = score("task-123", 3);
+        let adj_item = adj("task-123", 1);
+        let f = idle(vec![score_item.clone(), adj_item.clone()]);
+        let ranked = rank(&f);
+
+        let score_attn = ranked.iter().find(|a| a.item == score_item).unwrap();
+        let adj_attn = ranked.iter().find(|a| a.item == adj_item).unwrap();
+
+        assert!(!score_attn.why.is_empty(), "why must be non-empty");
+        assert!(
+            score_attn.why.contains("task-123"),
+            "why prose must mention task name"
+        );
+        assert!(
+            score_attn.safe_while_busy,
+            "ScoreIt must be safe_while_busy"
+        );
+        assert!(
+            !adj_attn.safe_while_busy,
+            "Adjudicate must not be safe_while_busy"
+        );
+    }
+
+    #[test]
+    fn next_prefers_scoreit_over_adjudicate_and_run_pipeline() {
+        let f_idle = idle(vec![adj("t-adj", 1), rp("t-rp", "s"), score("t-sc", 2)]);
+        assert_eq!(observed(next(&f_idle)).item, score("t-sc", 2));
+
+        let f_busy = busy(vec![adj("t-adj", 1), rp("t-rp", "s"), score("t-sc", 2)], 2);
+        assert_eq!(observed(next(&f_busy)).item, score("t-sc", 2));
+    }
+
+    #[test]
+    fn next_prefers_pipeline_failed_over_scoreit() {
+        let f_idle = idle(vec![score("t-sc", 2), pf("t-pf", &["s"])]);
+        assert_eq!(observed(next(&f_idle)).item, pf("t-pf", &["s"]));
+
+        let f_busy = busy(vec![score("t-sc", 2), pf("t-pf", &["s"])], 1);
+        assert_eq!(observed(next(&f_busy)).item, pf("t-pf", &["s"]));
+    }
+
+    #[test]
+    fn scoreit_ties_break_by_task_name_and_preserve_input_order() {
+        // Different names break ties by name ascending
+        let f_names = idle(vec![score("zebra", 1), score("apple", 2)]);
+        let ranked_names = rank(&f_names);
+        assert_eq!(
+            ranked_names.into_iter().map(|a| a.item).collect::<Vec<_>>(),
+            vec![score("apple", 2), score("zebra", 1)]
+        );
+
+        // Identical names preserve input order stably
+        let f_stable = idle(vec![score("same", 1), score("same", 2)]);
+        let ranked_stable = rank(&f_stable);
+        assert_eq!(
+            ranked_stable.into_iter().map(|a| a.item).collect::<Vec<_>>(),
+            vec![score("same", 1), score("same", 2)]
+        );
+    }
+
+    #[test]
+    fn scoreit_boundaries_at_zero_and_alone() {
+        // worktrees: 0 ranks normally
+        let f_zero = idle(vec![score("zero-wt", 0), adj("other", 1)]);
+        let ranked_zero = rank(&f_zero);
+        assert_eq!(ranked_zero[0].item, score("zero-wt", 0));
+
+        // Facts whose ONLY item is a ScoreIt: next returns it, not QueueEmpty
+        let f_only = idle(vec![score("sole", 1)]);
+        assert_eq!(observed(next(&f_only)).item, score("sole", 1));
+
+        // Facts with ScoreIt and QueueEmpty: ScoreIt wins
+        let f_qe = idle(vec![Item::QueueEmpty, score("winner", 1)]);
+        assert_eq!(observed(next(&f_qe)).item, score("winner", 1));
+    }
+
+    #[test]
+    fn scoreit_aggregate_and_agreement() {
+        // rank returns 4 items on a Facts of four items containing one ScoreIt
+        let f_four = idle(vec![
+            score("sc", 1),
+            adj("a", 1),
+            rp("r", "s"),
+            Item::QueueEmpty,
+        ]);
+        assert_eq!(rank(&f_four).len(), 4);
+
+        // next and rank().first() agree on an input containing a ScoreIt
+        let f_input = idle(vec![adj("a", 1), score("sc", 2)]);
+        let first_ranked = rank(&f_input)[0].clone();
+        assert_eq!(observed(next(&f_input)), first_ranked);
     }
 }

@@ -105,11 +105,19 @@ pub fn observe(
         }
 
         // The shared run-state classifier distinguishes a finished, unscored
-        // task from a live or unknown one. The `Item` surface in this crate
-        // does not currently expose the specified ScoreIt variant, so leave
-        // the task without a fabricated tier item rather than claim a score
-        // was observed or invent a different action.
-        if matches!(state, RunState::FinishedUnscored { .. }) {
+        // task from a live or unknown one, and `Item::ScoreIt` is the word for
+        // it. This is the item the board could compute and could not say:
+        // until the variant existed, a finished task yielded nothing and the
+        // orchestrator was told the board was empty.
+        //
+        // It REPLACES the tier items rather than joining them. Both of those
+        // hang off an observed passing count, and there is none yet -- that is
+        // the whole point. Scoring it is what produces one.
+        if let RunState::FinishedUnscored { worktrees } = state {
+            items.push(Item::ScoreIt {
+                task: task.name.clone(),
+                worktrees,
+            });
             continue;
         }
 

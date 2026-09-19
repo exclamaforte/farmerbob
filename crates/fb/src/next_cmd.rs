@@ -81,7 +81,24 @@ fn worktree_count(task: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// How many agents for `task` are live, from the scope listing.
+///
+/// Scope names arrive as `<task>--<arm>`; `crate::status::observe_live_agents`
+/// is the ONE reader of systemd's output and this counts within its answer
+/// rather than asking again. A `Missing` listing yields a `Missing` count: the
+/// question was not answerable, which is not the same as "none are running".
+fn live_for(scopes: &Measurement<Vec<String>>, task: &str) -> Measurement<usize> {
+    match scopes.value() {
+        Some(names) => {
+            let prefix = format!("{task}--");
+            Measurement::observed(names.iter().filter(|n| n.starts_with(&prefix)).count())
+        }
+        None => Measurement::Missing(Absent::NotAttempted),
+    }
+}
+
 pub fn gather(p: &Paths, live_agents: Measurement<usize>) -> Facts {
+    let scopes = crate::status::observe_live_agents();
     let tasks = prompt_names(&p.repo)
         .into_iter()
         .map(|name| TaskFiles {
@@ -94,10 +111,17 @@ pub fn gather(p: &Paths, live_agents: Measurement<usize>) -> Facts {
             // run_state_view whether a task's runs have FINISHED, and a
             // fabricated zero would read as "nothing was ever dispatched".
             worktrees: worktree_count(&name),
-            // NOT substituted with 0. The caller of `gather` supplies the
-            // machine-wide live count; a per-task count is a different
-            // question and this layer has not asked it, so it says so.
-            live: Measurement::Missing(Absent::NotAttempted),
+            // The PER-TASK live count, which is a different question from the
+            // machine-wide one the caller passes in. It has to be asked: while
+            // this said Missing, run_state_view answered Unknown for every
+            // task and no ScoreIt item could ever be produced -- the whole
+            // chain was inert and `fb next` went on reporting QueueEmpty over
+            // finished work.
+            //
+            // Missing PROPAGATES: if systemctl could not be asked at all, this
+            // stays Missing and run_state_view says Unknown, which is right.
+            // An unasked question is still not a negative answer.
+            live: live_for(&scopes, &name),
             name,
         })
         .collect::<Vec<_>>();

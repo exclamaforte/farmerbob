@@ -1,0 +1,27 @@
+MERGED gemini-38-flash
+Single arm, 148 lines, clippy 0.
+
+Item gains ScoreIt at priority 1, between PipelineFailed and Adjudicate, exactly
+as pinned: a finished-unscored task BLOCKS the two beneath it, since nothing can
+be adjudicated until it has been measured, and only a broken instrument outranks
+it. safe_while_busy is TRUE, unlike every other tier item -- scoring reads
+finished worktrees and does not touch a live run -- which matters more than the
+spec knew: attention::next has busy/idle behaviour, so ScoreIt is the one tier
+item `fb next` can return while agents are up.
+
+My spec warned that adding a variant would break an exhaustive match in board.rs.
+It did not; there is no such match. Harmless, but it was an assertion I had not
+checked.
+
+Completed at merge, because leaving the chain half-wired is the failure this whole
+sequence is about:
+  - board.rs now EMITS ScoreIt where it previously skipped the task.
+  - next_cmd::gather now asks the PER-TASK live count. I had set it to
+    Missing(NotAttempted) at the previous merge, which was safe and made the whole
+    chain inert: run_state_view answered Unknown for every task, no ScoreIt could
+    ever be produced, and fb next went on reporting QueueEmpty over finished work.
+    It reuses crate::status::observe_live_agents rather than asking systemd a
+    second time, and a Missing listing still propagates as Missing.
+
+First run found three tasks nobody had scored: backfill-plan, deleted-missing and
+repro-graft, dispatched hours earlier and forgotten. Closes farmerbob-ervw.
