@@ -30,6 +30,7 @@ mod status;
 mod trial;
 
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 /// farmerbob: orchestrate AI coding agents at scale.
 #[derive(Parser)]
@@ -369,6 +370,17 @@ enum Command {
         /// Include arms that are refused, with the reason.
         #[arg(long)]
         all: bool,
+    },
+    /// Print what a spec declares: its verb and the file it names.
+    Decl {
+        /// Path to the spec file.
+        spec: PathBuf,
+        /// Print only the path.
+        #[arg(long, conflicts_with = "verb_only")]
+        path_only: bool,
+        /// Print only the verb.
+        #[arg(long, conflicts_with = "path_only")]
+        verb_only: bool,
     },
 }
 
@@ -736,10 +748,226 @@ fn main() {
             }
             .run(stage),
         },
+        Some(Command::Decl {
+            spec,
+            path_only,
+            verb_only,
+        }) => {
+            let format = if path_only {
+                decl_cmd::Format::PathOnly
+            } else if verb_only {
+                decl_cmd::Format::VerbOnly
+            } else {
+                decl_cmd::Format::Line
+            };
+            decl_cmd::run(&spec, format, &mut std::io::stdout())
+        }
         None => {
             println!("fb — farmerbob. Try `fb --help`.");
             exit::OK
         }
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TempSpec {
+        path: PathBuf,
+    }
+
+    impl TempSpec {
+        fn new(name: &str, contents: &str) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("fb_decl_wire_test_{}_{}", std::process::id(), name));
+            std::fs::write(&path, contents).expect("write temp spec");
+            TempSpec { path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempSpec {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    fn run_decl_from_args(args: &[&str]) -> Result<(i32, Vec<u8>), clap::Error> {
+        let mut full_args = vec!["fb", "decl"];
+        full_args.extend_from_slice(args);
+        let cli = Cli::try_parse_from(full_args)?;
+        match cli.command {
+            Some(Command::Decl {
+                spec,
+                path_only,
+                verb_only,
+            }) => {
+                let format = if path_only {
+                    decl_cmd::Format::PathOnly
+                } else if verb_only {
+                    decl_cmd::Format::VerbOnly
+                } else {
+                    decl_cmd::Format::Line
+                };
+                let mut out = Vec::new();
+                let code = decl_cmd::run(&spec, format, &mut out);
+                Ok((code, out))
+            }
+            _ => panic!("expected Decl command"),
+        }
+    }
+
+    #[test]
+    fn clause_1_decl_one_marker_prints_line_and_exits_0() {
+        let spec = TempSpec::new("c1", "<!-- fb:modifies crates/fb/src/main.rs -->\n");
+        let (rc, stdout) =
+            run_decl_from_args(&[spec.path().to_str().unwrap()]).expect("run decl");
+        assert_eq!(rc, 0);
+        assert_eq!(stdout, b"modifies crates/fb/src/main.rs\n");
+    }
+
+    #[test]
+    fn clause_2_path_only_and_verb_only_flags() {
+        let spec = TempSpec::new("c2", "<!-- fb:creates crates/fb/src/new.rs -->\n");
+
+        let (rc_path, stdout_path) =
+            run_decl_from_args(&[spec.path().to_str().unwrap(), "--path-only"])
+                .expect("run decl path-only");
+        assert_eq!(rc_path, 0);
+        assert_eq!(stdout_path, b"crates/fb/src/new.rs\n");
+
+        let (rc_verb, stdout_verb) =
+            run_decl_from_args(&[spec.path().to_str().unwrap(), "--verb-only"])
+                .expect("run decl verb-only");
+        assert_eq!(rc_verb, 0);
+        assert_eq!(stdout_verb, b"creates\n");
+    }
+
+    #[test]
+    fn clause_3_conflicting_flags_exit_2_nothing_on_stdout() {
+        let spec = TempSpec::new("c3", "<!-- fb:modifies crates/fb/src/main.rs -->\n");
+
+        let err1 = match run_decl_from_args(&[
+            spec.path().to_str().unwrap(),
+            "--path-only",
+            "--verb-only",
+        ]) {
+            Err(e) => e,
+            Ok(_) => panic!("expected argument conflict error"),
+        };
+        assert_eq!(err1.exit_code(), 2);
+        assert_eq!(err1.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        let err2 = match run_decl_from_args(&[
+            spec.path().to_str().unwrap(),
+            "--verb-only",
+            "--path-only",
+        ]) {
+            Err(e) => e,
+            Ok(_) => panic!("expected argument conflict error"),
+        };
+        assert_eq!(err2.exit_code(), 2);
+        assert_eq!(err2.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn clause_4_and_5_exit_codes_and_empty_stdout() {
+        let markerless = TempSpec::new("c4_none", "no markers in this file\n");
+        let (rc_none, stdout_none) =
+            run_decl_from_args(&[markerless.path().to_str().unwrap()]).expect("run markerless");
+        assert_eq!(rc_none, 2);
+        assert!(stdout_none.is_empty(), "exit 2 must print nothing on stdout");
+
+        let ambiguous = TempSpec::new(
+            "c4_ambig",
+            "<!-- fb:creates a.rs -->\n<!-- fb:modifies b.rs -->\n",
+        );
+        let (rc_ambig, stdout_ambig) =
+            run_decl_from_args(&[ambiguous.path().to_str().unwrap()]).expect("run ambiguous");
+        assert_eq!(rc_ambig, 3);
+        assert!(stdout_ambig.is_empty(), "exit 3 must print nothing on stdout");
+
+        let nonexistent = std::env::temp_dir()
+            .join(format!("fb_decl_nonexistent_{}.md", std::process::id()));
+        let (rc_missing, stdout_missing) =
+            run_decl_from_args(&[nonexistent.to_str().unwrap()]).expect("run nonexistent");
+        assert_eq!(rc_missing, 4);
+        assert!(stdout_missing.is_empty(), "exit 4 must print nothing on stdout");
+    }
+
+    #[test]
+    fn clause_6_slots_subcommand_unchanged() {
+        let parsed = match Cli::try_parse_from([
+            "fb",
+            "slots",
+            "--available-mb",
+            "1000",
+            "--headroom-mb",
+            "200",
+            "--memory-mb",
+            "300",
+            "--plan",
+        ]) {
+            Ok(c) => c,
+            Err(e) => panic!("failed to parse slots: {e}"),
+        };
+        match parsed.command {
+            Some(Command::Slots {
+                available_mb,
+                headroom_mb,
+                memory_mb,
+                plan,
+            }) => {
+                assert_eq!(available_mb, 1000);
+                assert_eq!(headroom_mb, 200);
+                assert_eq!(memory_mb, 300);
+                assert!(plan);
+                let rc = slots_cmd::run_cmd(available_mb, headroom_mb, memory_mb, plan);
+                assert_eq!(rc, 0);
+            }
+            _ => panic!("expected Slots command"),
+        }
+    }
+
+    #[test]
+    fn boundary_missing_spec_argument_exits_2() {
+        let err = match run_decl_from_args(&[]) {
+            Err(e) => e,
+            Ok(_) => panic!("expected missing argument error"),
+        };
+        assert_eq!(err.exit_code(), 2);
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn boundary_directory_spec_exits_4() {
+        let dir = std::env::temp_dir();
+        let (rc, stdout) =
+            run_decl_from_args(&[dir.to_str().unwrap()]).expect("run directory spec");
+        assert_eq!(rc, 4);
+        assert!(stdout.is_empty(), "directory spec must produce empty stdout");
+    }
+
+    #[test]
+    fn boundary_empty_file_declares_nothing_exits_2() {
+        let empty = TempSpec::new("empty", "");
+        let (rc, stdout) =
+            run_decl_from_args(&[empty.path().to_str().unwrap()]).expect("run empty spec");
+        assert_eq!(rc, 2);
+        assert!(stdout.is_empty(), "empty spec must produce empty stdout");
+    }
+
+    #[test]
+    fn boundary_neither_flag_defaults_to_line_format() {
+        let spec = TempSpec::new("default_format", "<!-- fb:creates crates/x.rs -->\n");
+        let (rc, stdout) =
+            run_decl_from_args(&[spec.path().to_str().unwrap()]).expect("run default format");
+        assert_eq!(rc, 0);
+        assert_eq!(stdout, b"creates crates/x.rs\n");
+    }
 }
