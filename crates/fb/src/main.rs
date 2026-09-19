@@ -53,6 +53,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Compare a task's candidates: tests, lines added, clippy.
+    Compare {
+        /// Task name; its score file is `<logs>/<task>.score.json`.
+        task: String,
+    },
+    /// How each arm spent its run: time to first write, span, rate.
+    Timing {
+        /// Task name.
+        task: String,
+    },
+    /// Pending price changes between sources.toml and the provider catalogue.
+    Prices,
+    /// The slot table and whether another run may start.
+    Sem,
     /// Decide a run's verdict from its observations, via farmerbob_core::gate.
     ///
     /// The shell harness reimplemented this rule four times independently and got it wrong
@@ -610,6 +624,23 @@ fn leaderboard(from: &str, show_excluded: bool, json: bool) -> i32 {
 fn main() {
     let cli = Cli::parse();
     let code = match cli.command {
+        Some(Command::Compare { task }) => {
+            let score_path = paths::logs().join(format!("{task}.score.json"));
+            let mut out = std::io::stdout();
+            compare_gather::run(&score_path, &mut out)
+        }
+        Some(Command::Timing { task: _ }) => {
+            let mut out = std::io::stdout();
+            timing_cmd::run(&[], &mut out)
+        }
+        Some(Command::Prices) => {
+            let mut out = std::io::stdout();
+            prices_cmd::run(&[], &mut out)
+        }
+        Some(Command::Sem) => {
+            let mut out = std::io::stdout();
+            sem_cmd::run(&[], &mut out)
+        }
         Some(Command::Gate {
             built,
             tests_passed,

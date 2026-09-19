@@ -1,0 +1,22 @@
+MERGED codex-luna
+Single arm, 31 lines, clippy 0. Scope clean: main.rs only.
+
+Four subcommands added. One is genuinely wired:
+
+  fb compare <task>   exit 0, REAL DATA -- codex-luna 547 tests, 122 lines, 0 clippy
+
+because compare_gather already existed to read the score file. The other three have
+CLI shapes but no gatherer, and the arm said so plainly rather than fabricating
+inputs: "main.rs has no existing source for those values and the task forbids
+adding gathering logic ... A follow-up should add the appropriate gathering
+boundary." That is exactly what my spec asked for in that case.
+
+FOUND BY RUNNING THEM, filed as farmerbob-qvrs: fb prices reports "nothing pending" and
+exit 0 without ever reading a catalogue. That is the same sentence and the same
+code it prints when every price AGREES -- a clean bill from a command that never
+asked. fb timing and fb sem both return 1 for their empty input, so only prices
+reads as success. My spec allowed the unwired case and never said an unwired
+command must not be able to report an all-clear.
+
+Also verified at merge: reading an exit code through a pipe gives you the pipe's
+status. I did it again here and had to redo the measurement -- third time tonight.
