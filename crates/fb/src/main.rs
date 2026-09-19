@@ -1,4 +1,5 @@
 mod adjudicate_cmd;
+mod admit_cmd;
 mod archive_cmd;
 mod backfill_cmd;
 mod bench_cmd;
@@ -124,6 +125,8 @@ enum Command {
         #[arg(long)]
         allow_missing_critique: bool,
     },
+    /// Run a dispatch matrix with admission control.
+    Admit { matrix: String },
     /// Run every stage for one task, in order, skipping what is already fresh.
     Pipeline {
         task: String,
@@ -892,6 +895,7 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Admit { matrix }) => admit_cmd::run(std::path::Path::new(&matrix)),
         Some(Command::Pipeline {
             task,
             krate,
