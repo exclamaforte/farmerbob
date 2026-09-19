@@ -1,0 +1,21 @@
+MERGED codex-luna
+Single arm, 94 lines, clippy 0.
+
+    before:  codex-luna: failed -- the suite ran no tests
+    after:   codex-luna: measurable, 547 tests passed
+
+for an arm that wrote six passing tests. verify_gather now synthesises a log that
+build_verdict::read parses into the verdict the scorer already recorded, instead
+of handing it the `err` field, which is empty on success.
+
+Its clause-6 test asserts through verify_cmd's FATE rather than stopping at
+rows_for, which is the only way this defect is visible: every layer was
+individually correct and the composition was not.
+
+The arm also answered the design question the spec asked: it says in its handoff
+that making Raw carry a BuildVerdict directly "would remove" the synthetic log
+entirely. That is the better shape and it is a separate task.
+
+FOUND WHILE VERIFYING THE FIX, filed separately: `fb verify` exits 1 -- "failed" --
+for a ONE-ARM field whose candidate is measurable. Multi-arm fields exit 0.
+Under one-arm-per-task that is every current task.

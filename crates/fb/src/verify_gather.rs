@@ -52,12 +52,6 @@ pub fn rows_for(score_path: &Path) -> Result<Vec<Raw>, GatherError> {
             )));
         };
 
-        // `test` is part of the score-file schema, but Raw intentionally has
-        // no test-status field. The test value therefore has no independent
-        // observation to preserve; the scorer's `err` is the test log fed to
-        // verify_cmd's core decision.
-        let _test = object.get("test").and_then(serde_json::Value::as_str);
-
         let arm = object
             .get("source")
             .and_then(serde_json::Value::as_str)
@@ -69,11 +63,7 @@ pub fn rows_for(score_path: &Path) -> Result<Vec<Raw>, GatherError> {
             Some("FAIL") => Some(false),
             _ => None,
         };
-        let test_log = object
-            .get("err")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let test_log = synthetic_test_log(object, build);
 
         rows.push(Raw {
             arm,
@@ -85,6 +75,32 @@ pub fn rows_for(score_path: &Path) -> Result<Vec<Raw>, GatherError> {
     }
 
     Ok(rows)
+}
+
+fn synthetic_test_log(
+    object: &serde_json::Map<String, serde_json::Value>,
+    build: Option<bool>,
+) -> String {
+    match (
+        build,
+        object.get("test").and_then(serde_json::Value::as_str),
+    ) {
+        (Some(true), Some("pass")) => object
+            .get("tests_run")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|count| u32::try_from(count).ok())
+            .map(|count| {
+                format!(
+                    "test result: ok. {count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out"
+                )
+            })
+            .unwrap_or_default(),
+        (Some(true), Some("FAIL")) => {
+            "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out"
+                .to_string()
+        }
+        _ => String::new(),
+    }
 }
 
 /// Read and render. Returns the exit code the caller should use.
@@ -158,7 +174,7 @@ mod tests {
     fn rows_map_pinned_fields_and_preserve_order() {
         let fixture = Fixture::new(
             r#"[
-                {"source":"alpha","build":"pass","test":"pass","verdict":"PASS","err":"kept"},
+                {"source":"alpha","build":"pass","test":"pass","tests_run":3,"verdict":"PASS","err":"ignored"},
                 {"source":"beta","build":"unknown","test":"FAIL","verdict":"INDETERMINATE"},
                 {"source":"gamma","verdict":"NO-OP","err":""}
             ]"#,
@@ -169,7 +185,10 @@ mod tests {
         assert_eq!(rows[0].arm, "alpha");
         assert!(rows[0].deliverable);
         assert_eq!(rows[0].built, Some(true));
-        assert_eq!(rows[0].test_log, "kept");
+        assert_eq!(
+            farmerbob_core::build_verdict::read(rows[0].built.unwrap(), &rows[0].test_log),
+            farmerbob_core::build_verdict::BuildVerdict::Passed { passed: 3 }
+        );
         assert!(!rows[0].timed_out);
         assert_eq!(rows[1].arm, "beta");
         assert_eq!(rows[1].built, None);
@@ -177,6 +196,68 @@ mod tests {
         assert_eq!(rows[2].arm, "gamma");
         assert!(!rows[2].deliverable);
         assert_eq!(rows[2].test_log, "");
+    }
+
+    #[test]
+    fn synthetic_logs_reproduce_passing_and_failing_score_results() {
+        let fixture = Fixture::new(
+            r#"[
+                {"source":"pass","build":"pass","test":"pass","tests_run":6,"verdict":"PASS"},
+                {"source":"zero","build":"pass","test":"pass","tests_run":0,"verdict":"PASS"},
+                {"source":"fail","build":"pass","test":"FAIL","tests_run":6,"verdict":"FAIL"},
+                {"source":"broken","build":"FAIL","test":"pass","tests_run":6,"verdict":"FAIL","err":"must not be used"},
+                {"source":"unknown","build":"maybe","test":"pass","tests_run":6,"verdict":"PASS"}
+            ]"#,
+        );
+
+        let rows = rows_for(&fixture.path).expect("read score fixture");
+        assert_eq!(
+            farmerbob_core::build_verdict::read(rows[0].built.unwrap(), &rows[0].test_log),
+            farmerbob_core::build_verdict::BuildVerdict::Passed { passed: 6 }
+        );
+        assert_eq!(
+            farmerbob_core::build_verdict::read(rows[1].built.unwrap(), &rows[1].test_log),
+            farmerbob_core::build_verdict::BuildVerdict::NoTests
+        );
+        assert_eq!(
+            farmerbob_core::build_verdict::read(rows[2].built.unwrap(), &rows[2].test_log),
+            farmerbob_core::build_verdict::BuildVerdict::Failed { failed: 1 }
+        );
+        assert_eq!(rows[3].built, Some(false));
+        assert_eq!(
+            farmerbob_core::build_verdict::read(rows[3].built.unwrap(), &rows[3].test_log),
+            farmerbob_core::build_verdict::BuildVerdict::BuildFailed
+        );
+        assert_eq!(rows[4].built, None);
+        assert!(rows[4].test_log.is_empty());
+    }
+
+    #[test]
+    fn passing_score_reaches_measure_fate() {
+        let fixture = Fixture::new(
+            r#"[{"source":"sem-port","build":"pass","test":"pass","tests_run":547,"verdict":"PASS"}]"#,
+        );
+
+        let rows = rows_for(&fixture.path).expect("read score fixture");
+        let line = verify_cmd::assess(&rows[0]);
+        assert_eq!(line.code, 0);
+        assert!(line.text.contains("547"));
+    }
+
+    #[test]
+    fn verdict_fields_keep_their_existing_mappings() {
+        let fixture = Fixture::new(
+            r#"[
+                {"source":"noop","build":"pass","test":"pass","tests_run":4,"verdict":"NO-OP"},
+                {"source":"cut","build":"pass","test":"pass","tests_run":4,"verdict":"INDETERMINATE"}
+            ]"#,
+        );
+
+        let rows = rows_for(&fixture.path).expect("read score fixture");
+        assert!(!rows[0].deliverable);
+        assert!(rows[1].deliverable);
+        assert!(!rows[0].timed_out);
+        assert!(rows[1].timed_out);
     }
 
     #[test]
