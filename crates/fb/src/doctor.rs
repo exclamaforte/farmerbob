@@ -18,6 +18,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use farmerbob_core::orphan_check::{self, CrateSources};
 use serde::Serialize;
 
 /// Outcome of a single environment check.
@@ -100,7 +101,116 @@ fn run_all() -> Vec<Check> {
         check_rustfmt(&repo),
         check_launcher_coverage(&repo),
         check_spec_targets(&repo),
+        check_orphaned_modules(&repo),
     ]
+}
+
+/// Check that every directly-listed Rust source file belongs to the crate's module tree.
+fn check_orphaned_modules(repo: &Path) -> Check {
+    let crates = scan_crate_sources(&repo.join("crates"));
+    decide_orphaned_modules(&crates)
+}
+
+/// Turn core's orphan decisions into the doctor report without scanning the filesystem.
+fn decide_orphaned_modules(crates: &[CrateSources]) -> Check {
+    let orphans = orphan_check::orphans(crates);
+    if orphans.is_empty() {
+        let message = if crates.is_empty() {
+            "no crates were examined".to_string()
+        } else {
+            format!(
+                "no orphaned modules found across {}",
+                count_noun(crates.len(), "crate")
+            )
+        };
+        return Check::new("orphaned modules", Status::Ok, message, None);
+    }
+
+    let details = orphans
+        .iter()
+        .map(|orphan| format!("{}:{}", orphan.krate, orphan.stem))
+        .collect::<Vec<_>>();
+    let fixes = orphans
+        .iter()
+        .map(|orphan| format!("{}: mod {};", orphan.krate, orphan.stem))
+        .collect::<Vec<_>>();
+    Check::new(
+        "orphaned modules",
+        Status::Fail,
+        format!("orphaned modules: {}", details.join(", ")),
+        Some(format!("add module declarations: {}", fixes.join(", "))),
+    )
+}
+
+/// Read the source facts needed by `farmerbob_core::orphan_check`.
+///
+/// Only immediate children of `crates/` are crate candidates. A candidate without `src/`, a
+/// directory that cannot be read, a non-UTF-8 crate name, or an unreadable root is skipped because
+/// the core API has no representation for an unreadable source listing.
+fn scan_crate_sources(crates_dir: &Path) -> Vec<CrateSources> {
+    let Ok(entries) = fs::read_dir(crates_dir) else {
+        return Vec::new();
+    };
+    let mut crates = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let crate_dir = entry.path();
+        if !crate_dir.is_dir() {
+            continue;
+        }
+        let src_dir = crate_dir.join("src");
+        if !src_dir.is_dir() {
+            continue;
+        }
+        let Some(name) = crate_dir.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(stems) = source_stems(&src_dir) else {
+            continue;
+        };
+        let Some(lib_rs) = root_source(&src_dir.join("lib.rs")) else {
+            continue;
+        };
+        let Some(main_rs) = root_source(&src_dir.join("main.rs")) else {
+            continue;
+        };
+        crates.push(CrateSources {
+            name: name.to_string(),
+            stems,
+            lib_rs,
+            main_rs,
+        });
+    }
+    crates.sort_by(|left, right| left.name.cmp(&right.name));
+    crates
+}
+
+/// Return the stems of `.rs` files directly inside one `src/` directory.
+fn source_stems(src_dir: &Path) -> Option<Vec<String>> {
+    let entries = fs::read_dir(src_dir).ok()?;
+    let mut stems = Vec::new();
+    for entry in entries {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+        let stem = path.file_stem()?.to_str()?.to_string();
+        stems.push(stem);
+    }
+    stems.sort();
+    Some(stems)
+}
+
+/// Read an optional crate root, distinguishing a missing root from an unreadable one.
+fn root_source(path: &Path) -> Option<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Some(Some(contents)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(_) => None,
+    }
 }
 
 /// Print the checks as a human-readable table.
@@ -1625,5 +1735,57 @@ esac
         let dir = std::env::temp_dir().join("fb-doctor-test-spec-md-does-not-exist");
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(spec_md_files(&dir), Vec::<PathBuf>::new());
+    }
+
+    // ---- orphaned modules -------------------------------------------------------------
+
+    #[test]
+    fn orphan_decision_uses_core_and_reports_all_orphans() {
+        let crates = vec![CrateSources {
+            name: "fixture".to_string(),
+            stems: vec![
+                "lib".to_string(),
+                "declared".to_string(),
+                "missing".to_string(),
+                "also_missing".to_string(),
+            ],
+            lib_rs: Some("mod declared;\n".to_string()),
+            main_rs: None,
+        }];
+        let check = decide_orphaned_modules(&crates);
+        assert_eq!(check.name, "orphaned modules");
+        assert_eq!(check.status, Status::Fail);
+        assert!(check.message.contains("fixture:missing"));
+        assert!(check.message.contains("fixture:also_missing"));
+        assert!(check.fix.is_some());
+    }
+
+    #[test]
+    fn orphan_scan_handles_binary_roots_and_ignores_nested_non_rs_files() {
+        let dir = fixture_dir("orphan-scan");
+        write_fixture(&dir, "crates/bin/src/main.rs", "mod declared;\n");
+        write_fixture(&dir, "crates/bin/src/declared.rs", "");
+        write_fixture(&dir, "crates/bin/src/orphan.rs", "");
+        write_fixture(&dir, "crates/bin/src/notes.txt", "");
+        write_fixture(&dir, "crates/bin/src/nested/ignored.rs", "");
+        write_fixture(&dir, "crates/no-src/README.md", "");
+        let check = check_orphaned_modules(&dir);
+        assert_eq!(check.status, Status::Fail);
+        assert!(check.message.contains("bin:orphan"));
+        assert!(!check.message.contains("notes"));
+        assert!(!check.message.contains("ignored"));
+        assert!(!check.message.contains("no-src"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn orphan_check_with_no_crates_says_nothing_was_examined() {
+        let dir = fixture_dir("orphan-zero");
+        let check = check_orphaned_modules(&dir);
+        assert_eq!(check.status, Status::Ok);
+        assert!(!check.message.is_empty());
+        assert!(check.message.contains("no crates were examined"));
+        assert_eq!(check.fix, None);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
