@@ -55,8 +55,75 @@ pub fn run_cmd() -> i32 {
     let live = observe_live_agents();
     let waves = observe_dispatcher_waves();
     let bd_ready = observe_bd_ready();
+    if let Ok(registry) = crate::sources::Registry::load(&repo.join("sources.toml")) {
+        let rows = time_boxed(&registry, Utc::now());
+        if !rows.is_empty() {
+            println!("== time-boxed arms ==");
+            for row in &rows {
+                println!("{row}");
+            }
+        }
+    }
     print!("{}", render(&repo, &logs, &live, &waves, &bd_ready.rows));
     bd_ready.exit_code
+}
+
+/// The `== time-boxed arms ==` section: every arm carrying an `expires_at`.
+///
+/// This was the one section `fb status` did not have, and it lived in 30 lines of embedded
+/// python inside fb-status.sh. The decision it needs already exists in Rust --
+/// `sources::Registry::eligible_at` runs `window_stop` and returns
+/// `Eligibility::WindowClosed` with the reason -- so this reads the registry rather than
+/// re-parsing the TOML and re-deriving the arithmetic.
+///
+/// An arm whose window has closed while it is still `verified` is the case worth shouting
+/// about: the registry says dispatchable and the clock says otherwise.
+///
+/// Returns an empty vector when no arm is time-boxed, which is the common case and prints
+/// no heading.
+pub fn time_boxed(registry: &crate::sources::Registry, now: DateTime<Utc>) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    for (name, source) in &registry.sources {
+        let Some(raw) = source.expires_at.as_deref() else {
+            continue;
+        };
+        let enabled = source.status == "verified";
+        let Ok(expires) = DateTime::parse_from_rfc3339(raw) else {
+            // Unreadable is not absent. An expiry nobody can read is treated as expired,
+            // because the alternative is dispatching past a window the registry was trying
+            // to close.
+            rows.push(format!(
+                "  {name}: expires_at is unreadable ({raw}) -- treat as EXPIRED"
+            ));
+            continue;
+        };
+        let left = expires.with_timezone(&Utc) - now;
+        let secs = left.num_seconds();
+        if secs > 0 {
+            rows.push(format!(
+                "  {name}: {}h{:02}m left (closes {raw})",
+                secs / 3600,
+                (secs % 3600) / 60
+            ));
+        } else {
+            // The case worth shouting about: the clock says closed and the registry still
+            // says dispatchable. `eligible_at` cannot report it, because `decide` tests
+            // `disabled` BEFORE the window and short-circuits -- so asking it would call an
+            // expired arm "window open".
+            let state = if enabled {
+                "STILL ENABLED -- DISABLE IT"
+            } else {
+                "expired, already disabled"
+            };
+            rows.push(format!(
+                "  {name}: window EXPIRED {}h{:02}m ago ({raw}) -- {state}",
+                -secs / 3600,
+                (-secs % 3600) / 60
+            ));
+        }
+    }
+    rows.sort();
+    rows
 }
 
 /// Plain-language reason, so no section ever prints a bare enum at a human.
@@ -1245,6 +1312,93 @@ mod tests {
         assert_eq!(
             out,
             "== bd ready (leaf tasks only) ==\n  farmerbob-abc P0 do a thing\n"
+        );
+    }
+}
+
+#[cfg(test)]
+mod time_boxed_tests {
+    use super::time_boxed;
+    use crate::sources::Registry;
+    use chrono::{DateTime, Utc};
+
+    fn reg(toml_src: &str) -> Registry {
+        toml::from_str(toml_src).expect("fixture parses")
+    }
+    fn at(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s)
+            .expect("fixture time")
+            .with_timezone(&Utc)
+    }
+
+    /// The case the section exists for: the clock says closed and the registry still says
+    /// verified. `eligible_at` cannot report this -- `decide` tests `disabled` before the
+    /// window and short-circuits -- so asking it would call an expired arm "window open".
+    #[test]
+    fn an_expired_window_on_a_verified_arm_shouts() {
+        let r = reg("[source.a]\nstatus = \"verified\"\nexpires_at = \"2026-01-01T00:00:00Z\"\n");
+        let rows = time_boxed(&r, at("2026-01-01T02:30:00Z"));
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].contains("EXPIRED"), "{}", rows[0]);
+        assert!(rows[0].contains("STILL ENABLED"), "{}", rows[0]);
+        assert!(rows[0].contains("2h30m"), "{}", rows[0]);
+    }
+
+    /// Same instant, same expiry, one field different: an arm already disabled is reported
+    /// calmly. The pair is the point -- the difference is what the operator must act on.
+    #[test]
+    fn an_expired_window_on_a_disabled_arm_is_calm() {
+        let r = reg("[source.a]\nstatus = \"disabled\"\nexpires_at = \"2026-01-01T00:00:00Z\"\n");
+        let rows = time_boxed(&r, at("2026-01-01T02:30:00Z"));
+        assert!(rows[0].contains("already disabled"), "{}", rows[0]);
+        assert!(!rows[0].contains("STILL ENABLED"), "{}", rows[0]);
+    }
+
+    /// A window still open reports what is left, not an expiry.
+    #[test]
+    fn an_open_window_reports_the_time_left() {
+        let r = reg("[source.a]\nstatus = \"verified\"\nexpires_at = \"2026-01-01T05:00:00Z\"\n");
+        let rows = time_boxed(&r, at("2026-01-01T00:30:00Z"));
+        assert!(rows[0].contains("4h30m left"), "{}", rows[0]);
+        assert!(!rows[0].contains("EXPIRED"), "{}", rows[0]);
+    }
+
+    /// Exactly at the boundary the window is closed, not open. A window that expires at
+    /// noon is not usable at noon.
+    #[test]
+    fn at_the_instant_of_expiry_the_window_is_closed() {
+        let r = reg("[source.a]\nstatus = \"verified\"\nexpires_at = \"2026-01-01T00:00:00Z\"\n");
+        let rows = time_boxed(&r, at("2026-01-01T00:00:00Z"));
+        assert!(rows[0].contains("EXPIRED"), "{}", rows[0]);
+    }
+
+    /// An unreadable expiry is treated as EXPIRED, never skipped. The alternative is
+    /// dispatching past a window the registry was trying to close.
+    #[test]
+    fn an_unreadable_expiry_is_treated_as_expired() {
+        let r = reg("[source.a]\nstatus = \"verified\"\nexpires_at = \"soon\"\n");
+        let rows = time_boxed(&r, at("2026-01-01T00:00:00Z"));
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].contains("unreadable"), "{}", rows[0]);
+        assert!(rows[0].contains("EXPIRED"), "{}", rows[0]);
+    }
+
+    /// An arm with no expires_at is not time-boxed and contributes no row. With none at
+    /// all the section is empty and prints no heading.
+    #[test]
+    fn arms_without_an_expiry_are_not_listed() {
+        let r = reg(
+            "[source.a]\nstatus = \"verified\"\n[source.b]\nstatus = \"verified\"\nexpires_at = \"2026-01-01T05:00:00Z\"\n",
+        );
+        let rows = time_boxed(&r, at("2026-01-01T00:00:00Z"));
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].contains("b:"), "{}", rows[0]);
+        assert!(
+            time_boxed(
+                &reg("[source.a]\nstatus = \"verified\"\n"),
+                at("2026-01-01T00:00:00Z")
+            )
+            .is_empty()
         );
     }
 }
