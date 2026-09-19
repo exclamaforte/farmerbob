@@ -1,0 +1,13 @@
+MERGED codex-luna
+Single arm, 122 lines, 6 tests, clippy 0 -- the first arm since the rubric change
+to ship clippy-clean TEST code without a fix at merge.
+
+semaphore::census and ::grant own both answers and this renders them. Verified
+rather than assumed: the production code contains no filter, no len(), and no
+match on Slot. The only two .len() calls are inside mod tests, asserting the row
+count, which is test arithmetic and not the module counting slots for itself.
+
+Clause 6 is the one that carries it -- the exit code comes from grant, pinned
+against inputs differing in ONE slot's state, so an implementation keying off the
+slot count fails -- and clause 4's held-slots case still renders every row,
+because an operator refused a slot needs to see who holds them.

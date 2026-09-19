@@ -24,6 +24,7 @@ mod reap_cmd;
 mod scope_cmd;
 mod score;
 mod select;
+mod sem_cmd;
 mod slots_cmd;
 mod sources;
 mod stage_cmd;
