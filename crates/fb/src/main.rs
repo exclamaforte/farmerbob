@@ -123,6 +123,8 @@ enum Command {
         #[arg(long)]
         allow_missing_critique: bool,
     },
+    /// Count agent processes whose working directory is inside a candidate worktree.
+    Live { args: Vec<String> },
     /// Run the subjective tier over tasks that never got one.
     Backfill { tasks: Vec<String> },
     /// Run one arm's test suite against another arm's implementation -- one crossx cell,
@@ -882,6 +884,7 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Live { args }) => live_cmd::run(&args),
         Some(Command::Backfill { tasks }) => backfill_cmd::run(&tasks),
         Some(Command::Repro {
             task,
