@@ -753,6 +753,13 @@ pub fn run_cmd(bead: &str, krate: &str, json_only: bool) -> i32 {
     for wt in &dirs {
         let name = wt.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         let src = name.strip_prefix(&prefix).unwrap_or(name);
+        // `<task>--critic--<arm>` is a reviewer's scratch checkout of HEAD, not a candidate.
+        // It matches the same prefix, and scoring it put a second "arm" in the field that had
+        // written nothing -- cost-honesty's record carried `critic--gemini-38-flash NO-OP`
+        // beside the real candidate, which is a fabricated rival.
+        if src.starts_with("critic--") {
+            continue;
+        }
         let task = Task {
             bead,
             krate,

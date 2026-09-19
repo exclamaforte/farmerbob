@@ -181,6 +181,25 @@ fn outside_files(worktree: &Path, target: &str) -> Measurement<Vec<String>> {
 /// its review over the prompt it had just been given. They did. The harness then
 /// looked for `.fb/critique.md`, found nothing, and printed "(no critique written)"
 /// -- while the review sat in the .prompt.md file, complete and unread. Every
+/// The first `limit` characters, and when there are more, a marker saying so.
+///
+/// The marker is the whole point: a reviewer that cannot see the end of a patch must not
+/// conclude the end is missing.
+fn truncated(text: &str, limit: usize) -> String {
+    let head: String = text.chars().take(limit).collect();
+    let total = text.chars().count();
+    if total <= limit {
+        return head;
+    }
+    format!(
+        "{head}\n\n=== PATCH TRUNCATED: you have been shown the first {limit} of {total} \
+characters. {} characters were NOT shown. Do NOT conclude that anything is absent from this \
+patch -- tests, functions or otherwise. If a claim would depend on what is missing, say that \
+you could not see it.",
+        total - limit
+    )
+}
+
 /// critique this stage has ever run was reported as absent.
 fn prompt(
     template: &Path,
@@ -194,7 +213,12 @@ fn prompt(
         Measurement::Missing(reason) => return Measurement::Missing(reason),
     };
     let text = template
-        .replace("{PATCH}", &patch.chars().take(60_000).collect::<String>())
+        // A SILENT truncation makes the harness manufacture false accusations. cost-honesty's
+        // patch was 76,372 chars; the critic saw the first 60,000, could not see the tests in
+        // the last 16KB, and reported them "absent from the patch diff". It was not wrong
+        // about what it was shown -- nothing told it there was more. An arm was accused of
+        // claiming tests it had in fact written.
+        .replace("{PATCH}", &truncated(patch, 60_000))
         .replace(
             "{HANDOFF}",
             &handoff.chars().take(4_000).collect::<String>(),

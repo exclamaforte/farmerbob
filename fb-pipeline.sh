@@ -44,13 +44,47 @@ echo "== pipeline $T ($CRATE, $TARGET)"
 # trigger a re-run. Every task whose whole field failed was therefore frozen at whatever it
 # was first scored as -- gpu-lease sat at four stale NO-OPs while eight worktrees existed.
 # Same failure as always: "nothing passed" and "nothing was measured" produced one value.
+#
+# IT CARRIES THE SAME CONTENT HASH `wtfield` DOES, and for the same reason. Naming the
+# passing arms is not enough: a follow-up turn edits a candidate without changing which
+# candidates pass, so a names-only key reports "already done" for critique, promote and
+# prove while the reviewed code has moved underneath them.
+#
+# That is not hypothetical. On 2026-09-19 `wtfield` was taught to hash content and this one
+# was not, on my assertion that score's change would cascade. The very next run printed
+#
+#     score: field changed -> re-running
+#     critique: already done
+#     promote:  already done
+#     prove:    already done
+#
+# and served a critique of code that no longer existed. Half a fix is its own bug.
 field() {
-  python3 -c "
+  local names h out="" arm
+  names="$(python3 -c "
 import json,sys
 try: d=json.load(open('$LOGS/$T.score.json'))
 except Exception: print('UNSCORED'); sys.exit(0)
 p=sorted(r['source'] for r in d if r.get('verdict')=='PASS')
-print(','.join(p) if p else 'NONE')" 2>/dev/null
+print(' '.join(p))" 2>/dev/null)"
+  case "$names" in UNSCORED) printf 'UNSCORED'; return 0 ;; "") printf 'NONE'; return 0 ;; esac
+  for arm in $names; do
+    h="$(wt_hash "$arm")"
+    out="$out,$arm:$h"
+  done
+  printf '%s' "${out#,}"
+}
+
+# One candidate's content, as a short hash: tracked edits plus anything it created
+# untracked. A created deliverable is invisible to `git diff HEAD`, which is most of this
+# project's tasks. No `git add` -- a freshness check must not mutate what it measures.
+wt_hash() {
+  local d="$HOME/.local/share/farmerbob/worktrees/$T--$1"
+  [ -d "$d" ] || { printf 'GONE'; return 0; }
+  { git -C "$d" diff HEAD 2>/dev/null
+    git -C "$d" ls-files --others --exclude-standard 2>/dev/null \
+      | while read -r f; do [ -f "$d/$f" ] && cat "$d/$f"; done
+  } | sha1sum | cut -c1-12
 }
 
 # The set of CANDIDATES on disk. This is what the score stage must be keyed on.
@@ -87,10 +121,7 @@ wtfield() {
     # second "arm" in the field's fingerprint and invalidate every artefact the moment a
     # critique ran.
     case "$arm" in critic--*) continue ;; esac
-    h="$( { git -C "$d" diff HEAD 2>/dev/null
-            git -C "$d" ls-files --others --exclude-standard 2>/dev/null \
-              | while read -r f; do [ -f "$d/$f" ] && cat "$d/$f"; done
-          } | sha1sum | cut -c1-12 )"
+    h="$(wt_hash "$arm")"
     out="$out,$arm:$h"
   done
   printf '%s' "${out#,}" | sed 's/^$/NOCANDIDATES/'
