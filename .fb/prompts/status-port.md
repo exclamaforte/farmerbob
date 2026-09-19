@@ -1,3 +1,105 @@
+<!-- fb:modifies crates/fb/src/status.rs -->
+# Task: the expiry rule lives in a shell heredoc and the Rust reader does not have it
+
+Rust workspace, already builds. Work only inside `crates/fb`.
+Modify `crates/fb/src/status.rs`. Do not change any other file.
+
+## Why this exists
+
+`fb-status.sh` opens with a Python heredoc that reads every arm's `expires_at` out of
+`sources.toml` and prints a `== time-boxed arms ==` block: window open with time remaining,
+window expired and still enabled, or an unparseable stamp treated as expired. It exists because
+one arm ran **one hour and forty-seven minutes** past its window with nothing noticing.
+
+`farmerbob_core::window` now holds that rule -- `read`, `must_disable`, `report` -- merged and
+tested. `crates/fb/src/status.rs` renders every other section of that output in Rust and does
+not contain the string `expires_at` anywhere, so the one section that exists because a failure
+went unseen is the one section still written in a shell heredoc.
+
+This task moves it. The shell keeps printing until a later task deletes its copy; that is not
+yours.
+
+## Exact API
+
+One public function is added. Nothing existing changes signature.
+
+```rust
+use chrono::{DateTime, Utc};
+use farmerbob_core::window::Boxed;
+
+/// The `== time-boxed arms ==` section, or `None` when no arm has a window.
+///
+/// `now` is the caller's clock; this module has none. Returns the whole
+/// section including its heading, with no trailing newline.
+pub fn render_time_boxed(boxed: &[Boxed], now: DateTime<Utc>) -> Option<String>;
+```
+
+It calls `farmerbob_core::window::report` for the per-arm lines and
+`farmerbob_core::window::must_disable` for the decision. It must not re-derive either: the
+boundary at the instant, the fail-closed rule for an unreadable stamp, and the seconds
+arithmetic are all settled in core and duplicating them is the defect this task removes.
+
+## Falsifiable clauses
+
+1. `boxed` EMPTY: `None`. A machine with no time-boxed arm prints no section, not an empty one.
+2. `boxed` non-empty: `Some(section)` whose first line is the heading `== time-boxed arms ==`
+   exactly, and which then carries one line per arm, in the order given.
+3. Every arm line contains that arm's name. What else it says is prose from
+   `window::report` and is not pinned here.
+4. An arm for which `must_disable` is TRUE has its line marked so a reader scanning the block
+   cannot miss it. Assert that the line differs from the same arm's line when `must_disable` is
+   false; do not assert the marker's text.
+5. `render_time_boxed` never returns `Some("")` and never returns a section with a trailing
+   newline. Pin both.
+6. The function calls no clock and reads no file. Pin that two calls with the same arguments
+   return the same string.
+7. No existing public function in this module changes signature or behaviour. Pin one existing
+   renderer's output before and after.
+
+## Boundaries, at N and at zero
+
+- ZERO arms: `None`. Clause 1.
+- ONE arm, window open: `Some`, one arm line.
+- ONE arm, window expired and `enabled` true: `Some`, and clause 4's marking applies.
+- ONE arm, window expired and `enabled` FALSE: `Some`, and clause 4's marking does NOT apply.
+  An arm already disabled needs no action however long ago its window closed, which is
+  `window::must_disable`'s rule and this is where it shows.
+- An arm whose `expires_at` is unparseable and which is enabled: `must_disable` is true, so
+  clause 4. Do not re-implement the parse to decide this; ask core.
+- An arm whose `arm` name is the empty string: degenerate, not invalid. Its line still appears
+  and the section is still well-formed.
+
+## Superset status on every enumerated list
+
+`window::State`'s variants are a CLOSED set of exactly three -- `Open`, `Expired`,
+`Unparseable` -- and they are core's. You define none, you match on them only through the
+functions core exposes, and your tests may not assert on any state outside them.
+
+`Boxed` is `farmerbob_core::window::Boxed`. `DateTime<Utc>` is chrono's, already a dependency
+of this crate.
+
+## Composition of aggregate returns
+
+The section is the heading followed by exactly one line per element of `boxed`, in the order
+given, joined by newlines, with no trailing newline. No arm is dropped, none is added, and the
+order is the caller's -- sorting is the caller's business and doing it here would put two
+orderings in two places.
+
+Say why clauses 1 and 5 must be tested together: clause 1 alone passes against an
+implementation that returns `Some("")` for an empty slice, and clause 5 alone passes against
+one that never handles the empty case. Between them there is no gap, and the gap is where an
+empty section header would print over a machine that has no time-boxed arms at all.
+
+## Rules
+
+- No `unwrap()`, `expect()`, `panic!`, `todo!` or `unimplemented!` reachable from input, outside
+  `#[cfg(test)]`.
+- Add no dependencies, no I/O and no clock. Reading `sources.toml` is the caller's job and is a
+  later task.
+- `cargo test -p fb` and `cargo clippy -p fb -- -D warnings` must pass. Both are clean on HEAD
+  as of this task, so any failure is yours.
+- `render_time_boxed` has no caller when you are done. Say so in your handoff; wiring it into
+  the status output is a separate task and is not yours.
 
 ## How this will be scored
 
