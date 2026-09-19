@@ -62,6 +62,29 @@ git -C "$REPO" worktree prune >/dev/null 2>&1
 git -C "$REPO" branch -D "$BRANCH" >/dev/null 2>&1
 git -C "$REPO" worktree add -q -b "$BRANCH" "$WT" "$BASE" || { echo "$SRC: worktree failed"; exit 1; }
 
+# SAY WHEN A TASK ALREADY HAS ANOTHER ARM'S WORKTREE.
+#
+# Dispatch is one arm per task. Scoring is not: fb-score measures EVERY directory matching
+# <task>--*, so re-dispatching a task with a different arm in a later wave silently builds a
+# multi-arm field out of runs that were never launched together.
+#
+# Measured: status-port was dispatched with glm-53-flash (wave101), or-nex-n25-pro (wave104,
+# again in wave105), and carried a third gemini-38-flash worktree from a hand-launched run in
+# no manifest at all. It was then adjudicated as "3 passing candidates". Every wave was one
+# arm; the FIELD was three. launcher-agy the same. Across the repository verify-router has 21
+# worktrees and port-status 8.
+#
+# This does not reap and does not refuse -- 264 of those directories hold real candidate work,
+# and destroying evidence is how fnd-store became VOID. It makes the accumulation VISIBLE at
+# the moment it happens, so an adjudicator reporting an N-arm field knows the arms did not run
+# together and says so.
+others=$(ls -d "$WT_ROOT/$BEAD--"*/ 2>/dev/null | sed "s|.*/$BEAD--||; s|/$||" | grep -vx "$SRC" | tr '\n' ' ')
+if [ -n "${others// /}" ]; then
+  echo "$SRC: NOTE -- $BEAD already has worktrees for: ${others% }"
+  echo "$SRC:         fb-score will measure all of them as one field. They were not launched"
+  echo "$SRC:         together. Reap them first for a one-arm field, or say so when adjudicating."
+fi
+
 # --- preconditions -------------------------------------------------------
 # A task spec is authored against a base commit. Merging a winner can create the very file
 # a queued task was told to create, at which point every arm correctly no-ops and the
