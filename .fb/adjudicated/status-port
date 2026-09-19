@@ -1,0 +1,28 @@
+MERGED gemini-38-flash
+3/3 PASS. The crossx matrix was all-pass on the diagonal with no off-diagonal
+failure, so it ranked nobody; the critiques and one objective lint did.
+
+glm-53-flash, reviewing or-nex-n25-pro: "The fixture ... is ["first", "second"] --
+already alphabetical. An implementation that sorts arms produces a byte-identical
+section and passes every assertion. The spec pins 'the order is the caller's'
+explicitly, and this is the one clause the suite cannot falsify." Correct.
+
+gemini-38-flash, reviewing glm-53-flash: no material defects, but two coverage
+omissions, the first being clause 7 -- the spec required pinning an existing
+renderer's output before and after, and glm's suite has no such test.
+
+or-nex-n25-pro's review of gemini-38-flash was never written: the pipeline was
+killed mid-critique. So the winner is the one arm no critic examined, and I
+checked it myself on exactly the weakness glm found in or-nex. gemini's ordering
+test REVERSES its input and asserts the reversed order survives, which a sorting
+implementation fails. It is the strongest of the three on that clause, and it is
+the only suite carrying clause 7 (render_time_boxed_existing_renderer_unchanged).
+
+The objective separator: glm-53-flash scored clippy=2 against a clean baseline,
+both `function render_time_boxed is never used` -- a new pub fn in a BINARY crate
+trips dead_code under -D warnings. glm's own critique of or-nex names this exact
+trap: "#[allow(dead_code)] is required, not cosmetic". It identified the hazard
+and did not apply it. gemini and or-nex both did.
+
+Merged gemini-38-flash: clippy=0, 7 time-boxed tests, clause 7 covered, ordering
+falsifiable. 509 fb tests pass.

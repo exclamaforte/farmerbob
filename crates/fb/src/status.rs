@@ -30,7 +30,9 @@
 //! diff this port exists to satisfy, so both orderings are obtained from the same tools the
 //! script uses (`bash`'s glob, and `sort -u`) rather than reimplemented.
 
+use chrono::{DateTime, Utc};
 use farmerbob_core::measurement::{Absent, Measurement};
+use farmerbob_core::window::Boxed;
 use std::io::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -492,6 +494,33 @@ fn render_bd_ready(rows: &Measurement<Vec<String>>) -> String {
         }
     }
     s
+}
+
+// ---------------------------------------------------------------------------------------
+// == time-boxed arms ==
+// ---------------------------------------------------------------------------------------
+
+/// The `== time-boxed arms ==` section, or `None` when no arm has a window.
+///
+/// `now` is the caller's clock; this module has none. Returns the whole
+/// section including its heading, with no trailing newline.
+#[allow(dead_code)]
+pub fn render_time_boxed(boxed: &[Boxed], now: DateTime<Utc>) -> Option<String> {
+    if boxed.is_empty() {
+        return None;
+    }
+    let reports = farmerbob_core::window::report(boxed, now);
+    let mut lines = Vec::with_capacity(boxed.len() + 1);
+    lines.push("== time-boxed arms ==".to_string());
+    for (b, rep) in boxed.iter().zip(reports) {
+        let state = farmerbob_core::window::read(&b.expires_at, now);
+        if farmerbob_core::window::must_disable(&state, b.enabled) {
+            lines.push(format!("  {rep} -- STILL ENABLED -- DISABLE IT"));
+        } else {
+            lines.push(format!("  {rep}"));
+        }
+    }
+    Some(lines.join("\n"))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1019,5 +1048,203 @@ mod tests {
             );
         }
         fs::remove_dir_all(dir).ok();
+    }
+
+    // -- render_time_boxed ------------------------------------------------------------------
+
+    fn dt(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s)
+            .expect("valid RFC 3339 test timestamp")
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn render_time_boxed_empty_returns_none_and_non_empty_has_no_trailing_newline() {
+        // Clauses 1 and 5 must be tested together: clause 1 alone passes against
+        // an implementation that returns Some("") for an empty slice, and clause 5
+        // alone passes against one that never handles the empty case. Between them
+        // there is no gap, and the gap is where an empty section header would print
+        // over a machine that has no time-boxed arms at all.
+        let now = dt("2024-01-01T12:00:00Z");
+        let empty_result = render_time_boxed(&[], now);
+        assert_eq!(empty_result, None);
+        assert_ne!(empty_result, Some(String::new()));
+
+        let non_empty = vec![Boxed {
+            arm: "arm-a".to_string(),
+            expires_at: "2024-01-01T13:00:00Z".to_string(),
+            enabled: true,
+        }];
+        let res = render_time_boxed(&non_empty, now);
+        assert!(res.is_some());
+        let s = res.unwrap();
+        assert!(!s.is_empty());
+        assert!(!s.ends_with('\n'));
+    }
+
+    #[test]
+    fn render_time_boxed_heading_and_ordering() {
+        let now = dt("2024-01-01T12:00:00Z");
+        let boxed = vec![
+            Boxed {
+                arm: "first-arm".to_string(),
+                expires_at: "2024-01-01T13:00:00Z".to_string(),
+                enabled: true,
+            },
+            Boxed {
+                arm: "second-arm".to_string(),
+                expires_at: "2024-01-01T11:00:00Z".to_string(),
+                enabled: false,
+            },
+            Boxed {
+                arm: "third-arm".to_string(),
+                expires_at: "2024-01-01T14:00:00Z".to_string(),
+                enabled: true,
+            },
+        ];
+        let out = render_time_boxed(&boxed, now).expect("expected section for non-empty boxed");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[0], "== time-boxed arms ==");
+        assert!(lines[1].contains("first-arm"));
+        assert!(lines[2].contains("second-arm"));
+        assert!(lines[3].contains("third-arm"));
+
+        // Ordering is caller's: reversed input preserves reversed order without sorting
+        let reversed = vec![boxed[2].clone(), boxed[1].clone(), boxed[0].clone()];
+        let out_rev = render_time_boxed(&reversed, now).expect("expected section");
+        let lines_rev: Vec<&str> = out_rev.lines().collect();
+        assert_eq!(lines_rev.len(), 4);
+        assert_eq!(lines_rev[0], "== time-boxed arms ==");
+        assert!(lines_rev[1].contains("third-arm"));
+        assert!(lines_rev[2].contains("second-arm"));
+        assert!(lines_rev[3].contains("first-arm"));
+    }
+
+    #[test]
+    fn render_time_boxed_must_disable_marking_and_boundaries() {
+        let now = dt("2024-01-01T12:00:00Z");
+
+        // Expired arm: enabled true (must_disable true) vs enabled false (must_disable false)
+        let exp_enabled = vec![Boxed {
+            arm: "arm-exp".to_string(),
+            expires_at: "2024-01-01T10:00:00Z".to_string(),
+            enabled: true,
+        }];
+        let exp_disabled = vec![Boxed {
+            arm: "arm-exp".to_string(),
+            expires_at: "2024-01-01T10:00:00Z".to_string(),
+            enabled: false,
+        }];
+        let out_exp_en = render_time_boxed(&exp_enabled, now).unwrap();
+        let out_exp_dis = render_time_boxed(&exp_disabled, now).unwrap();
+        let line_exp_en = out_exp_en.lines().nth(1).unwrap();
+        let line_exp_dis = out_exp_dis.lines().nth(1).unwrap();
+        assert!(line_exp_en.contains("arm-exp"));
+        assert!(line_exp_dis.contains("arm-exp"));
+        assert_ne!(
+            line_exp_en, line_exp_dis,
+            "expired enabled arm line must differ from expired disabled arm line"
+        );
+
+        // Unparseable timestamp: enabled true (must_disable true) vs enabled false (must_disable false)
+        let unp_enabled = vec![Boxed {
+            arm: "arm-unp".to_string(),
+            expires_at: "not-a-timestamp".to_string(),
+            enabled: true,
+        }];
+        let unp_disabled = vec![Boxed {
+            arm: "arm-unp".to_string(),
+            expires_at: "not-a-timestamp".to_string(),
+            enabled: false,
+        }];
+        let out_unp_en = render_time_boxed(&unp_enabled, now).unwrap();
+        let out_unp_dis = render_time_boxed(&unp_disabled, now).unwrap();
+        let line_unp_en = out_unp_en.lines().nth(1).unwrap();
+        let line_unp_dis = out_unp_dis.lines().nth(1).unwrap();
+        assert!(line_unp_en.contains("arm-unp"));
+        assert!(line_unp_dis.contains("arm-unp"));
+        assert_ne!(
+            line_unp_en, line_unp_dis,
+            "unparseable enabled arm line must differ from unparseable disabled arm line"
+        );
+
+        // At the exact instant: enabled true (must_disable true) vs enabled false (must_disable false)
+        let inst_enabled = vec![Boxed {
+            arm: "arm-inst".to_string(),
+            expires_at: "2024-01-01T12:00:00Z".to_string(),
+            enabled: true,
+        }];
+        let inst_disabled = vec![Boxed {
+            arm: "arm-inst".to_string(),
+            expires_at: "2024-01-01T12:00:00Z".to_string(),
+            enabled: false,
+        }];
+        let out_inst_en = render_time_boxed(&inst_enabled, now).unwrap();
+        let out_inst_dis = render_time_boxed(&inst_disabled, now).unwrap();
+        let line_inst_en = out_inst_en.lines().nth(1).unwrap();
+        let line_inst_dis = out_inst_dis.lines().nth(1).unwrap();
+        assert!(line_inst_en.contains("arm-inst"));
+        assert!(line_inst_dis.contains("arm-inst"));
+        assert_ne!(
+            line_inst_en, line_inst_dis,
+            "at-instant enabled arm line must differ from at-instant disabled arm line"
+        );
+
+        // Window open: enabled true (must_disable false)
+        let open_arm = vec![Boxed {
+            arm: "arm-open".to_string(),
+            expires_at: "2024-01-01T13:00:00Z".to_string(),
+            enabled: true,
+        }];
+        let out_open = render_time_boxed(&open_arm, now).unwrap();
+        let line_open = out_open.lines().nth(1).unwrap();
+        assert!(line_open.contains("arm-open"));
+    }
+
+    #[test]
+    fn render_time_boxed_empty_arm_name() {
+        let now = dt("2024-01-01T12:00:00Z");
+        let boxed = vec![Boxed {
+            arm: String::new(),
+            expires_at: "2024-01-01T13:00:00Z".to_string(),
+            enabled: true,
+        }];
+        let out = render_time_boxed(&boxed, now).expect("empty arm name is degenerate but valid");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "== time-boxed arms ==");
+        assert!(!lines[1].is_empty());
+        assert!(!out.ends_with('\n'));
+    }
+
+    #[test]
+    fn render_time_boxed_deterministic_and_pure() {
+        let now = dt("2024-01-01T12:00:00Z");
+        let boxed = vec![
+            Boxed {
+                arm: "arm-1".to_string(),
+                expires_at: "2024-01-01T11:00:00Z".to_string(),
+                enabled: true,
+            },
+            Boxed {
+                arm: "arm-2".to_string(),
+                expires_at: "2024-01-01T13:00:00Z".to_string(),
+                enabled: false,
+            },
+        ];
+        let run1 = render_time_boxed(&boxed, now);
+        let run2 = render_time_boxed(&boxed, now);
+        assert_eq!(run1, run2);
+    }
+
+    #[test]
+    fn render_time_boxed_existing_renderer_unchanged() {
+        let rows = Measurement::observed(vec!["farmerbob-abc P0 do a thing".to_string()]);
+        let out = render_bd_ready(&rows);
+        assert_eq!(
+            out,
+            "== bd ready (leaf tasks only) ==\n  farmerbob-abc P0 do a thing\n"
+        );
     }
 }
