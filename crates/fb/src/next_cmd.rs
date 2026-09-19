@@ -2,6 +2,7 @@
 
 //! Gather the filesystem facts used by the orchestrator and render its attention list.
 
+use farmerbob_core::target_decl;
 use farmerbob_core::attention::{self, Facts, Item};
 use farmerbob_core::board::{self, QueuedMatrix, TaskFiles};
 use farmerbob_core::measurement::Measurement;
@@ -28,6 +29,36 @@ pub struct Paths {
 /// their UTF-8 byte order to make the input to `board::observe` deterministic.
 ///
 /// Every score that cannot be read or parsed is represented by `Missing`.
+/// Whether a task has been decided.
+///
+/// TWO ways, and the second is why `fb next` listed thirty finished tasks as
+/// needing adjudication on its first real run:
+///
+///  1. an explicit record at `.fb/adjudicated/<task>`, which is the only way a
+///     `modifies` task can say so -- its target existed before any work began;
+///  2. for a `creates` task, the declared file EXISTING on disk. That is a merge,
+///     and it is the rule `fb status` has always used.
+///
+/// Reading only (1) made this disagree with `fb status` about thirty tasks, and a
+/// list whose first thirty entries are finished work is not a list anyone reads.
+///
+/// The declaration is read through `farmerbob_core::target_decl`, which is THE
+/// reader -- fenced examples ignored, two declarations ambiguous. Not a fourth
+/// regex.
+fn is_adjudicated(repo: &Path, name: &str) -> bool {
+    if repo.join(".fb/adjudicated").join(name).is_file() {
+        return true;
+    }
+    let Ok(spec) = std::fs::read_to_string(repo.join(".fb/prompts").join(format!("{name}.md")))
+    else {
+        return false;
+    };
+    match target_decl::declared(&spec) {
+        Ok(d) if target_decl::requires_absent(&d) => repo.join(target_decl::path(&d)).is_file(),
+        _ => false,
+    }
+}
+
 pub fn gather(p: &Paths, live_agents: Measurement<usize>) -> Facts {
     let tasks = prompt_names(&p.repo)
         .into_iter()
@@ -35,11 +66,7 @@ pub fn gather(p: &Paths, live_agents: Measurement<usize>) -> Facts {
             has_spec: true,
             passing: passing_count(&p.logs.join(format!("{name}.score.json"))),
             has_claims: has_nonempty_claims(&p.logs.join(format!("{name}.claims.json"))),
-            adjudicated: p
-                .repo
-                .join(".fb/adjudicated")
-                .join(&name)
-                .is_file(),
+            adjudicated: is_adjudicated(&p.repo, &name),
             failed_stages: Vec::new(),
             name,
         })

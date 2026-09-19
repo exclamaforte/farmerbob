@@ -1,0 +1,11 @@
+MERGED (recorded late)
+Merged in an earlier session; verified at HEAD before recording.
+
+This spec declares TWO deliverables outside any fence -- crates/farmerbob-core/src/limit_signal.rs crates/farmerbob-core/src/quota.rs  -- which
+farmerbob_core::target_decl correctly reports as Ambiguous, so no single
+declaration can be inferred and `fb next` could not tell that the work was done.
+That rule is right: a spec declaring two files has no single deliverable, and
+picking the first silently is how a task gets scored against a file its author did
+not mean.
+
+The record is the fix, not a change to the reader.
