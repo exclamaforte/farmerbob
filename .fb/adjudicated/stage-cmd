@@ -1,0 +1,49 @@
+MERGED glm-53-flash
+4 dispatched, 3 scored. or-nemotron-ultra is out on the gate: TESTS-FAIL when the scorer
+re-ran its suite, whatever the wave log said.
+
+  arm                tests  asserts  lines  clippy  API-INCOMPAT
+  codex-luna             3       10    162       0             2
+  gemini-38-flash       15       75    515       3             2
+  glm-53-flash          19       40    596       0             0
+  or-nemotron-ultra     16       28    516       -   TESTS-FAIL
+
+THE MATRIX IS ALL nocomp EXCEPT ONE COLUMN, AND THAT IS THE RESULT. Both codex-luna and
+gemini-38-flash tied their suites to API a rival has no reason to have -- codex tests the
+private `parse_args` and `measure`, gemini tests its own `run_internal<WOut, WErr>` -- so each
+forfeits two cells. glm's suite compiles against every implementation in the field: API-INCOMPAT
+zero, the only one. That is the rubric rule with the longest record of costing signal, and this
+is the first wave where it decided the outcome outright.
+
+glm got there by answering, in code, the spec defect it had itself reported. Its critique of
+or-nemotron states the method: "the test binary can re-invoke itself (a child test calls `run`
+and exits with its status), capturing stdout, stderr and the status THROUGH THE PINNED SURFACE
+ALONE, as my own suite does." gemini's critique of glm confirms it independently -- "rather than
+pulling in third-party capture crates or mutating thread-global stdout locks, the author
+re-invokes the binary with a child runner environment variable". gemini solved the same problem
+by adding a generic-writer entry point, which works and costs two cells; glm solved it without
+adding anything.
+
+glm's critique of or-nemotron is the sharpest review of the wave and is scrupulous about its
+own limits:
+  - "No test asserts a byte of printed output ... the author's comment 'We can't easily capture
+    stdout in this test framework' is defeat, not fact." The three-facts collapse this command
+    exists to remove is invisible to exit codes, and so is clause 7's stdout-silence.
+  - `format_stage_line` hand-copies `stage_outcome::report`'s wording -- and glm explicitly
+    declines to call it a violation, because the spec's "must not re-implement either rule"
+    names only classify and may_sign. It argues the point on its merits instead: the wording
+    now lives in two places and a change to `report` silently diverges from what `fb stage`
+    prints.
+  - `stat_artefact`'s two identical `is_file()` branches, "an abandoned distinction left as a
+    skeleton", and five scattered `#[allow(dead_code)]` where one at the entry point would do.
+
+gemini-38-flash: clippy=3, now that the crate's own clippy debt is cleared and the criterion is
+measurable here for the first time. Its `run_internal` is the better-engineered answer in
+isolation and the worse one under cross-examination.
+
+REJECTED, or-nemotron on codex: "misclassifies broken symlinks". The spec was corrected before
+dispatch -- on or-nemotron's own speccheck finding -- to pin a dangling symlink as Observed(0),
+because fs::metadata follows symlinks and cannot tell it from a missing file. Following the
+corrected spec is conformance, not a defect.
+
+stage_outcome now has a caller. fb-pipeline.sh can stop deciding for itself.

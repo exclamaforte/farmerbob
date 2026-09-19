@@ -23,6 +23,7 @@ mod score;
 mod select;
 mod slots_cmd;
 mod sources;
+mod stage_cmd;
 mod status;
 mod trial;
 
