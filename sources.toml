@@ -609,14 +609,14 @@ quota_bucket = "nvidia-build"
 notes      = "Smoke-tested 2026-09-19: PONG, exit 0. NVIDIA build free tokens; limit not published to the CLI, so treat as unknown."
 
 [source.oc-kimi-k3]
-status     = "verified"
+status     = "untested"   # downgraded from "verified" 2026-09-19: PONG passed, a REAL TASK did not
 kind       = "opencode"
 launcher   = "opencode"
 model      = "nvidia/moonshotai/kimi-k3"
 provider   = "nvidia"
 quota      = "free"
 quota_bucket = "nvidia-build"
-notes      = "Smoke-tested 2026-09-19: PONG, exit 0."
+notes      = "PONG passed. First real task (doctor-reach) came back NO-OP rc=1 in 7s with the provider returning UnknownError. A PONG is not evidence that an arm can do work; this entry is the proof."
 
 [source.oc-deepseek-v4-pro]
 status     = "disabled"
@@ -730,3 +730,32 @@ provider   = "nvidia"
 quota      = "free"
 quota_bucket = "nvidia-build"
 notes      = "550B A55B. or-nemotron-ultra already runs a nemotron via OpenRouter and has merged work here; this is the same family on the free NVIDIA route."
+
+# ---------------------------------------------------------------------------------------------
+# FIRST REAL-TASK RESULTS for the oc-* family, 2026-09-19. Recorded here because the registry is
+# where the next person looks, and because "untested" without the attempt history invites a
+# second identical wave.
+#
+#   doctor-reach       oc-kimi-k3           NO-OP  rc=1   7s
+#   score-delta        oc-cerebras-gptoss   NO-OP  rc=1   8s
+#   eligibility-kinds  oc-cerebras-qwen     NO-OP  rc=1   4s
+#
+# All three, on TWO different providers, returned the identical provider payload:
+#
+#   Error: { "name": "UnknownError",
+#            "message": "Unexpected server error. Check server logs for details." }
+#
+# Three arms across two providers failing identically within 8 seconds is one cause, not three.
+# It is much more likely to be in OUR invocation than in nvidia and cerebras simultaneously.
+#
+# WHAT I DID NOT ESTABLISH. My leading hypothesis was that the per-run XDG_DATA_HOME isolation
+# added earlier today hides opencode's auth.json, which lives at $XDG_DATA_HOME/opencode/. The
+# ifm-* arms authenticate by environment variable from secrets.env and or-* goes through `ori`,
+# so neither would notice; oc-* is the first family to depend on auth.json. That fits, and I
+# could not confirm it: every control I ran timed out at rc=124, including one against a freshly
+# restarted opencode server, so I have no clean comparison. It is a hypothesis with a mechanism,
+# not a finding.
+#
+# NEXT STEP, for whoever picks this up: run one oc-* dispatch with the XDG redirection removed
+# from the oc-* branch only, and compare. That is the single decisive experiment and it takes
+# one wave.
