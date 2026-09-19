@@ -19,6 +19,7 @@ mod objective;
 mod pareto;
 mod park_cmd;
 mod paths;
+mod prices_cmd;
 mod promote;
 mod prove;
 mod reap_cmd;
