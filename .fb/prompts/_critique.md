@@ -97,9 +97,24 @@ Rules, because this section is easy to abuse:
   on the function that gates deletion across 327 directories" is.
 - Omit the section entirely if you have none. Empty is the common case and costs you nothing.
 
-The adjudicator rules each one Accepted, Rejected or Duplicate, and an accepted follow-up
-becomes a real task. Accepted and rejected counts are both recorded against you across tasks,
-so a speculative follow-up is not free.
+The adjudicator rules each one Accepted, Rejected or Duplicate. Accepted and rejected counts
+are both recorded against you across tasks, so a speculative follow-up is not free.
+
+**`SCOPE:` is load bearing -- it decides where the work goes.** An accepted follow-up whose
+scope names a file the task under review declared goes straight back to the arm that wrote
+that code: resumed in the worktree it still owns, with your finding quoted verbatim, usually
+within the hour. One naming different code is folded into the group that owns that code and
+dispatched with it later. A vague or missing scope cannot be routed at all.
+
+So a follow-up about the file in front of you is the most valuable kind you can write. It is
+the cheapest work this project can do -- the arm that wrote the code still has the file, the
+worktree and its own reasoning loaded -- and it is why the section exists at all.
+
+It also means an arm will be asked to ACT on what you write. State a change to make, and let
+WHY say what is wrong now and what it costs. This happened on 2026-09-19: a critic found that
+`cost::frontier` used a lower-is-better comparison on a completion rate, making rate dominance
+unsatisfiable; it went back to the implementing arm the same afternoon and never became a
+backlog item.
 
 ## Comparison to your own implementation
 
