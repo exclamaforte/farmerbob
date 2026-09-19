@@ -233,6 +233,11 @@ fn format_result(critic: &str, subject: &str, critique: &Path) -> Measurement<St
 }
 
 /// Run cross-review for `bead`, with `crate_name` retained for the script-compatible API.
+///
+/// Exit codes:
+/// - `0` — cross-review ran and its artefacts were written.
+/// - `1` — a genuine failure: the gate did not pass, or a stage could not run.
+/// - `4` — NOT APPLICABLE: fewer than two candidates. Nothing went wrong and nothing was written.
 pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
     let _ = crate_name;
     let arms = match candidates(bead, target) {
@@ -255,8 +260,12 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
         // here would turn a correct answer into a refusal to answer.
         scope_departures: Some(0),
     });
-    if arms.len() < 2 || !matches!(gate, Verdict::Pass) {
+    if arms.len() < 2 {
         println!("need >= 2 to cross-review");
+        return 4;
+    }
+    if !matches!(gate, Verdict::Pass) {
+        println!("gate did not pass: cannot cross-review");
         return 1;
     }
     let wt = crate::paths::worktrees();
@@ -359,9 +368,10 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::format_result;
+    use super::{format_result, run_cmd};
     use farmerbob_core::measurement::Measurement;
     use std::fs;
+    use std::path::PathBuf;
 
     #[test]
     fn output_format_matches_script() {
@@ -376,5 +386,129 @@ mod tests {
             )
         );
         let _ = fs::remove_file(path);
+    }
+
+    /// Fixture bead for tests whose candidate arm worktrees are created in
+    /// `crate::paths::worktrees()`. All directories created for the fixture are
+    /// removed on drop.
+    struct ScratchBead {
+        bead: String,
+        root: PathBuf,
+    }
+
+    impl ScratchBead {
+        fn new(tag: &str) -> Self {
+            let root = crate::paths::worktrees();
+            let bead = format!("fb-critique-na-{tag}-{}", std::process::id());
+            Self { bead, root }
+        }
+
+        fn arm(&self, name: &str, target: &str) -> PathBuf {
+            let dir = self.root.join(format!("{}--{name}", self.bead));
+            let target_path = dir.join(target);
+            if let Some(parent) = target_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = fs::write(&target_path, "pub fn dummy() {}\n");
+            dir
+        }
+
+        fn critiques_dir(&self) -> PathBuf {
+            crate::paths::logs().join("critiques").join(&self.bead)
+        }
+    }
+
+    impl Drop for ScratchBead {
+        fn drop(&mut self) {
+            let prefix = format!("{}--", self.bead);
+            if let Ok(entries) = fs::read_dir(&self.root) {
+                for entry in entries.flatten() {
+                    if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                        let _ = fs::remove_dir_all(entry.path());
+                    }
+                }
+            }
+            let dir = self.critiques_dir();
+            let _ = fs::remove_dir_all(&dir);
+            let _ = fs::remove_file(&dir);
+        }
+    }
+
+    /// Clause 1 and clause 7: zero candidates returns 4, and nothing is written
+    /// to the critiques directory.
+    #[test]
+    fn zero_candidates_returns_not_applicable_and_writes_nothing() {
+        let field = ScratchBead::new("zero");
+        let dir = field.critiques_dir();
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(run_cmd(&field.bead, "fb", "crates/fb/src/critique.rs"), 4);
+        assert!(
+            !dir.exists(),
+            "a 4 return must not write to the critiques directory"
+        );
+    }
+
+    /// Clause 2 and clause 7: one candidate returns 4, and nothing is written
+    /// to the critiques directory.
+    #[test]
+    fn one_candidate_returns_not_applicable_and_writes_nothing() {
+        let field = ScratchBead::new("one");
+        field.arm("codex-luna", "crates/fb/src/critique.rs");
+        let dir = field.critiques_dir();
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(run_cmd(&field.bead, "fb", "crates/fb/src/critique.rs"), 4);
+        assert!(
+            !dir.exists(),
+            "a 4 return must not write to the critiques directory"
+        );
+    }
+
+    /// Clause 5 and boundary: two candidates with a passing gate does not return 4.
+    #[test]
+    fn two_candidates_passing_gate_does_not_return_not_applicable() {
+        let field = ScratchBead::new("two-pass");
+        field.arm("codex-luna", "crates/fb/src/critique.rs");
+        field.arm("glm-53-flash", "crates/fb/src/critique.rs");
+        let code = run_cmd(&field.bead, "fb", "crates/fb/src/critique.rs");
+        assert_ne!(code, 4, "two candidates with passing gate must not return 4");
+        assert_eq!(code, 0);
+    }
+
+    /// Clause 4: 4 and 1 are distinct codes. Short field returns 4, while a stage failure
+    /// returns 1.
+    #[test]
+    fn not_applicable_and_failure_are_different_codes() {
+        let short = ScratchBead::new("short");
+        short.arm("codex-luna", "crates/fb/src/critique.rs");
+        let code_na = run_cmd(&short.bead, "fb", "crates/fb/src/critique.rs");
+        assert_eq!(code_na, 4);
+
+        let broken = ScratchBead::new("broken");
+        broken.arm("codex-luna", "crates/fb/src/critique.rs");
+        broken.arm("glm-53-flash", "crates/fb/src/critique.rs");
+        let dir = broken.critiques_dir();
+        if let Some(parent) = dir.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::write(&dir, "blocking file");
+        let code_fail = run_cmd(&broken.bead, "fb", "crates/fb/src/critique.rs");
+        let _ = fs::remove_file(&dir);
+        assert_eq!(code_fail, 1);
+        assert_ne!(code_na, code_fail);
+    }
+
+    /// Clause 8: the doc comment on `run_cmd` names all three codes (0, 1, 4).
+    #[test]
+    fn doc_comment_names_all_three_codes() {
+        let text = fs::read_to_string("crates/fb/src/critique.rs")
+            .or_else(|_| fs::read_to_string("src/critique.rs"))
+            .expect("critique.rs source text");
+        let doc_start = text.find("pub fn run_cmd").expect("run_cmd definition");
+        let doc_prefix = &text[..doc_start];
+        let doc_comment = doc_prefix.lines().rev().take(15).collect::<Vec<_>>().join("\n");
+        assert!(doc_comment.contains("0"), "doc comment must name exit code 0");
+        assert!(doc_comment.contains("1"), "doc comment must name exit code 1");
+        assert!(doc_comment.contains("4"), "doc comment must name exit code 4");
     }
 }

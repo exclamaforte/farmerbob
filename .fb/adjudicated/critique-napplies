@@ -1,0 +1,20 @@
+MERGED gemini-38-flash
+Single arm, 136 lines, 4 tests, clippy 0.
+
+The branch that folded three facts into one exit is split:
+
+  arms.len() < 2                 -> 4, "need >= 2 to cross-review"
+  !matches!(gate, Verdict::Pass) -> 1, "gate did not pass: cannot cross-review"
+
+Fewer than two candidates is not applicable; a failing gate is a genuine refusal,
+because there IS a field to review and the harness declined. Clause 4 is pinned as
+a pair, since an implementation that splits the branch and returns 4 for both
+passes the zero- and one-candidate clauses and fails only there.
+
+Wired at merge: fb-pipeline.sh now calls `fb critique` directly instead of
+fb-critique.sh, with the crossx treatment -- 4 continues, anything else fails.
+That also makes fb-critique.sh (172 lines of pure shell) redundant on the pipeline
+path.
+
+Measured on a real one-arm task: crossx and critique both report n/a and the
+pipeline carries on to promote.

@@ -204,11 +204,30 @@ run_crossx() {
   esac
 }
 
+# CRITIQUE, same shape as crossx: 4 means fewer than two candidates and is NOT a failure.
+#
+# It also separates a third fact that used to share the same exit: a FAILING GATE is a genuine
+# refusal -- there is a field to review and the harness declined -- and stays 1.
+run_critique() {
+  local artefact="$LOGS/critiques/$T" sig now
+  sig="$artefact.field"; now=$(field)
+  if have_artefact "$artefact" && [ "$now" = "$(cat "$sig" 2>/dev/null)" ]; then
+    echo "  critique: already done"; return 0
+  fi
+  echo "  critique: running"
+  ./target/debug/fb critique "$T" --crate "$CRATE" "$TARGET" >> "$LOGS/$T.pipeline.log" 2>&1
+  case "$?" in
+    0) echo "  critique: ok"; printf '%s' "$now" > "$sig" ;;
+    4) echo "  critique: n/a, fewer than two candidates -- nobody to cross-review" ;;
+    *) echo "  critique: FAILED (see $LOGS/$T.pipeline.log)"; return 1 ;;
+  esac
+}
+
 # score is keyed on the CANDIDATES ON DISK; everything downstream on who PASSED.
 stage score    "$LOGS/$T.score.json"    wtfield bash ./fb-score.sh   "$T" "$CRATE"
 run_differential || FAILED_STAGES="$FAILED_STAGES differential"
 run_crossx || FAILED_STAGES="$FAILED_STAGES crossx"
-stage critique "$LOGS/critiques/$T"     field   bash ./fb-critique.sh "$T" "$CRATE" "$TARGET"
+run_critique || FAILED_STAGES="$FAILED_STAGES critique"
 stage promote  "$LOGS/$T.promoted.json" field   bash ./fb-promote.sh "$T" "$CRATE" "$TARGET"
 stage prove    "$LOGS/$T.proved.json"   field   bash ./fb-prove.sh   "$T" "$CRATE" "$TARGET"
 
