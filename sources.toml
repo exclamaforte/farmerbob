@@ -609,14 +609,14 @@ quota_bucket = "nvidia-build"
 notes      = "Smoke-tested 2026-09-19: PONG, exit 0. NVIDIA build free tokens; limit not published to the CLI, so treat as unknown."
 
 [source.oc-kimi-k3]
-status     = "untested"   # downgraded from "verified" 2026-09-19: PONG passed, a REAL TASK did not
+status     = "verified"   # 2026-09-19: finished a real task -- doctor-reach, merged f6fc9d6
 kind       = "opencode"
 launcher   = "opencode"
 model      = "nvidia/moonshotai/kimi-k3"
 provider   = "nvidia"
 quota      = "free"
 quota_bucket = "nvidia-build"
-notes      = "PONG passed, then the first real task (doctor-reach) came back NO-OP rc=1 in 7s -- because dispatch hid opencode auth.json behind the per-run XDG_DATA_HOME, not because of the model. Fixed in fb-dispatch.sh; the arm PONGs through an isolated dir now. Still untested, and stays untested until it finishes a real task: a PONG is not evidence that an arm can do work."
+notes      = "Promoted to verified the way the entry said it would have to be: by finishing a real task, not by PONGing. doctor-reach, 332 lines, zero scope departures, tests_delta Added(11), merged f6fc9d6 -- and the check it wrote immediately found five unreachable modules in this workspace including two the tracker had been carrying by hand. It also wrote that task's spec critique in a separate run and found four unpinned boundaries in it. The earlier NO-OP was dispatch hiding opencode auth.json behind the per-run XDG_DATA_HOME, never the model. First oc-* arm to complete a real task."
 
 [source.oc-deepseek-v4-pro]
 status     = "disabled"

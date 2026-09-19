@@ -1,0 +1,1 @@
+doctor-reach MERGED oc-kimi-k3 -- first oc-* arm to finish a real task. Spec critic (same arm, separate run) found 4 unpinned boundaries; implementation named 3 and resolved them conservatively. Found farmerbob-649f's modules on first run.
