@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# pre-commit — keep the workspace rustfmt-clean, mechanically.
+#
+# WHY. rustfmt.toml has demanded "keep this repo rustfmt-clean, permanently" since
+# 2026-09-17. It drifted dirty twice in the two days after, for one reason: every merge
+# takes ONE file from ONE arm, written in that arm's style, and nothing normalised it
+# afterwards. That drift is not cosmetic here -- an arm handed a dirty base that then runs
+# `cargo fmt`, which is ordinary Rust, has every dirty file its build touched rewritten, and
+# the scope gate counts each one as a departure. One arm lost four runs that way.
+#
+# "Keep it clean" was a comment. This is the mechanism: it runs on the commit that would
+# introduce the drift, which is the merge commit, which is the leak.
+#
+# Install: ./hooks/install.sh
+set -uo pipefail
+export PATH="$HOME/.cargo/bin:$PATH"
+
+staged_rs=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^crates/.*\.rs$' || true)
+[ -z "$staged_rs" ] && exit 0
+
+command -v cargo >/dev/null 2>&1 || {
+  echo "pre-commit: cargo is not on PATH -- cannot verify formatting, refusing rather than guessing" >&2
+  exit 1
+}
+
+# Which files the formatter would rewrite, asked BEFORE rewriting them. This must not be
+# "every unstaged change": an unrelated edit in progress is not drift, and blocking on it
+# would make the hook something to disable rather than something to keep.
+# rustfmt prints "Diff in <absolute path>:<line>:" -- one line per hunk, so several per file.
+# It does NOT print "at line N", which an earlier version of this hook matched on: the sed
+# silently produced nothing, `dirty` was empty, the hook exited 0 and formatted nothing while
+# reporting success. A check whose failure looks exactly like its success, in the hook written
+# to stop exactly that. Caught by testing it against a deliberately misformatted file.
+dirty=$(cargo fmt --all -- --check 2>/dev/null \
+        | sed -n 's|^Diff in \(.*\):[0-9]*:$|\1|p' \
+        | sed "s|^$(git rev-parse --show-toplevel)/||" | sort -u)
+
+[ -z "$dirty" ] && exit 0
+
+cargo fmt --all || {
+  echo "pre-commit: cargo fmt failed" >&2
+  exit 1
+}
+
+# A rewritten file that was ALREADY staged is this commit's own work being normalised: stage
+# it and carry on. A rewritten file that was NOT staged means HEAD had already drifted, and
+# that belongs in its own normalisation commit rather than smuggled into this one -- so say
+# which files, and stop. Silently widening a merge commit to touch files it never meant to is
+# how the drift got invisible in the first place.
+unstaged_drift=""
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  if printf '%s\n' "$staged_rs" | grep -qxF "$f"; then
+    git add -- "$f"
+  else
+    unstaged_drift="$unstaged_drift  $f"$'\n'
+  fi
+done <<< "$dirty"
+
+if [ -n "$unstaged_drift" ]; then
+  echo "pre-commit: HEAD had drifted rustfmt-dirty in files this commit does not touch:" >&2
+  printf '%s' "$unstaged_drift" >&2
+  echo "They are now formatted in your working tree. Commit them on their own:" >&2
+  echo "    git add -u && git commit -m 'Format the workspace'" >&2
+  echo "then repeat this commit. Drift belongs in its own commit, not inside a merge." >&2
+  exit 1
+fi
+exit 0
