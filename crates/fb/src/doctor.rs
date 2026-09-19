@@ -810,8 +810,25 @@ fn check_launcher_coverage(repo: &Path) -> Check {
     };
 
     let dispatchable = dispatchable_arms(&doc);
-    let rules = classify_patterns(&dispatch_case_patterns(&dispatch_text));
-    let missing = uncovered_arms(&dispatchable, &rules);
+    // ASK THE TABLE, DO NOT PARSE IT. This used to scan for shell `case` patterns, which is
+    // what the table looked like when it lived in fb-dispatch.sh. It is Rust now, so the
+    // scan matched nothing, every rule was absent and all 26 dispatchable arms were reported
+    // as having no launcher -- a check that could not find its own subject, announcing a
+    // definite failure about the arms instead of about itself.
+    //
+    // `launch::argv_for` IS the table, and it refuses an unknown arm by name rather than
+    // guessing a default: a wrong launcher runs the wrong model and bills the wrong account.
+    let _ = &dispatch_text;
+    let missing: Vec<String> = dispatchable
+        .iter()
+        .filter(|arm| {
+            matches!(
+                crate::launch::argv_for(arm, "m", Path::new("/tmp"), "p", false),
+                Err(crate::launch::NoLauncher::UnknownArm(_))
+            )
+        })
+        .cloned()
+        .collect();
 
     if missing.is_empty() {
         Check::new(
@@ -828,7 +845,7 @@ fn check_launcher_coverage(repo: &Path) -> Check {
             "launcher coverage",
             Status::Fail,
             format!(
-                "{} dispatchable but missing a launcher branch in fb-dispatch.sh: {}",
+                "{} dispatchable but unknown to the launcher table in launch.rs: {}",
                 count_noun(missing.len(), "arm"),
                 missing.join(", ")
             ),
@@ -1097,108 +1114,6 @@ fn dispatchable_arms(doc: &toml::Value) -> Vec<String> {
         .collect();
     names.sort();
     names
-}
-
-/// Extract the raw `case` patterns from the `case "$SRC" in ... esac` block in
-/// `fb-dispatch.sh` that decides how each arm is launched.
-///
-/// A pattern group like `ifm-*)` or `codex-luna)` is recognized only at the start of a
-/// (trimmed) line, immediately followed by `)`, which is how bash `case` arms are written and
-/// is what keeps this from matching `)` characters that show up inside the launcher commands
-/// themselves. Each group is split on `|` and every non-empty token is returned, in source
-/// order. Returns an empty vec if no `case "$SRC" in` block is found -- `check_launcher_coverage`
-/// treats that as "no arm has launcher coverage", not as "every arm is covered".
-fn dispatch_case_patterns(script: &str) -> Vec<String> {
-    const HEADER: &str = "case \"$SRC\" in";
-    let mut patterns = Vec::new();
-    let mut in_block = false;
-    for line in script.lines() {
-        let trimmed = line.trim();
-        if !in_block {
-            if trimmed == HEADER {
-                in_block = true;
-            }
-            continue;
-        }
-        if trimmed == "esac" {
-            break;
-        }
-        let Some(paren) = trimmed.find(')') else {
-            continue;
-        };
-        let head = &trimmed[..paren];
-        let is_pattern_charset = !head.is_empty()
-            && head
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '*' | '|'));
-        if !is_pattern_charset {
-            continue;
-        }
-        patterns.extend(
-            head.split('|')
-                .filter(|t| !t.is_empty())
-                .map(str::to_string),
-        );
-    }
-    patterns
-}
-
-/// Coverage rules a `case` pattern set resolves to: which arm names it matches.
-struct CoverageRules {
-    /// Patterns that must match an arm name exactly.
-    exact: Vec<String>,
-    /// Patterns that match any arm name starting with this (non-empty) prefix.
-    prefix: Vec<String>,
-}
-
-/// Classify raw `case` patterns into exact-match and prefix-match coverage rules.
-///
-/// This recognizes a KNOWN SUBSET of bash glob syntax: a literal token becomes an exact-match
-/// rule, and a token ending in `*` (e.g. `"ifm-*"`) becomes a prefix-match rule on everything
-/// before the `*`. The bare catch-all `"*"` is dropped rather than turned into an
-/// empty-string prefix that would match anything -- in `fb-dispatch.sh` it is the "unknown
-/// source" error branch, so treating it as coverage would recreate exactly the bug this check
-/// exists to catch. Any other shape (`*` embedded or leading, a character class, ...) is
-/// outside this subset and is also dropped: an arm only reachable through such a pattern is
-/// reported as uncovered by `uncovered_arms`, never silently assumed covered.
-fn classify_patterns(patterns: &[String]) -> CoverageRules {
-    let mut exact = Vec::new();
-    let mut prefix = Vec::new();
-    for p in patterns {
-        if p == "*" {
-            continue;
-        }
-        if let Some(stripped) = p.strip_suffix('*') {
-            if !stripped.is_empty() && !stripped.contains('*') {
-                prefix.push(stripped.to_string());
-            }
-            continue;
-        }
-        if !p.contains('*') {
-            exact.push(p.clone());
-        }
-    }
-    CoverageRules { exact, prefix }
-}
-
-/// Whether `arm` is matched by an exact or prefix rule in `rules`.
-fn is_covered(arm: &str, rules: &CoverageRules) -> bool {
-    rules.exact.iter().any(|e| e == arm) || rules.prefix.iter().any(|p| arm.starts_with(p.as_str()))
-}
-
-/// Dispatchable arms matched by neither an exact nor a prefix coverage rule.
-///
-/// Returned sorted lexicographically. An empty `dispatchable` slice always yields an empty
-/// vec -- meaning "nothing to check", not "everything covered". `check_launcher_coverage`
-/// tells the two apart itself, by looking at whether `dispatchable` was empty to begin with.
-fn uncovered_arms(dispatchable: &[String], rules: &CoverageRules) -> Vec<String> {
-    let mut out: Vec<String> = dispatchable
-        .iter()
-        .filter(|a| !is_covered(a, rules))
-        .cloned()
-        .collect();
-    out.sort();
-    out
 }
 
 /// What one `.fb/prompts/*.md` spec declares about its own deliverable.
@@ -1575,13 +1490,16 @@ esac
     #[test]
     fn coverage_missing_arm_is_fail_and_names_it() {
         let dir = fixture_dir("coverage-missing");
-        let extra = "[source.gemini-38-flash]\nstatus = \"verified\"\n";
+        // An arm no launcher knows. It cannot be a real one any more: the check consults
+        // the COMPILED table rather than a text of it, so a registered arm is covered here
+        // whatever a fixture file says.
+        let extra = "[source.no-such-arm-anywhere]\nstatus = \"verified\"\n";
         write_fixture(&dir, "sources.toml", &sources_fixture(extra));
         write_fixture(&dir, "crates/fb/src/launch.rs", DISPATCH_FIXTURE);
         let check = check_launcher_coverage(&dir);
         assert_eq!(check.status, Status::Fail);
         assert!(
-            check.message.contains("gemini-38-flash"),
+            check.message.contains("no-such-arm-anywhere"),
             "message was: {}",
             check.message
         );
@@ -1638,66 +1556,57 @@ esac
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// THE CHECK MUST ASK THE TABLE, NOT PARSE A RENDERING OF IT. It scanned for shell
+    /// `case` patterns, which is what the launcher table looked like while it lived in
+    /// fb-dispatch.sh. Once the table became Rust the scan matched nothing, so every rule
+    /// was absent and all 26 dispatchable arms were reported as having no launcher --
+    /// a check that could not find its own subject announcing a definite failure about
+    /// the arms rather than about itself.
     #[test]
-    fn classify_patterns_excludes_bare_wildcard() {
-        let patterns = vec![
-            "claude-sonnet".to_string(),
-            "ifm-*".to_string(),
-            "*".to_string(),
-        ];
-        let rules = classify_patterns(&patterns);
-        assert_eq!(rules.exact, vec!["claude-sonnet".to_string()]);
-        assert_eq!(rules.prefix, vec!["ifm-".to_string()]);
-        // The bare "*" must not have become an empty-string prefix: that would match
-        // everything, silently granting coverage to any arm at all.
-        assert!(!is_covered("literally-anything", &rules));
-    }
-
-    #[test]
-    fn is_covered_matches_exact_and_prefix() {
-        let rules = classify_patterns(&["claude-sonnet".to_string(), "or-*".to_string()]);
-        assert!(is_covered("claude-sonnet", &rules));
-        assert!(is_covered("or-hy3", &rules));
-        assert!(!is_covered("gemini-38-flash", &rules));
-        assert!(!is_covered("claude-sonnet-2", &rules)); // exact match, not a prefix match
-    }
-
-    #[test]
-    fn uncovered_arms_empty_input_yields_empty_output() {
-        let rules = classify_patterns(&["or-*".to_string()]);
-        assert_eq!(uncovered_arms(&[], &rules), Vec::<String>::new());
-    }
-
-    #[test]
-    fn uncovered_arms_is_sorted() {
-        let rules = classify_patterns(&["or-*".to_string()]);
-        let dispatchable = vec!["zzz-arm".to_string(), "aaa-arm".to_string()];
-        assert_eq!(
-            uncovered_arms(&dispatchable, &rules),
-            vec!["aaa-arm".to_string(), "zzz-arm".to_string()]
+    fn a_known_arm_is_covered_and_an_invented_one_is_not() {
+        use crate::launch::{NoLauncher, argv_for};
+        let wd = Path::new("/tmp");
+        assert!(
+            !matches!(
+                argv_for("claude-sonnet", "m", wd, "p", false),
+                Err(NoLauncher::UnknownArm(_))
+            ),
+            "a registered arm must resolve to a launcher"
+        );
+        assert!(
+            matches!(
+                argv_for("no-such-arm-anywhere", "m", wd, "p", false),
+                Err(NoLauncher::UnknownArm(_))
+            ),
+            "an unknown arm must be REFUSED by name, never given a default launcher: a wrong \
+             launcher runs the wrong model and bills the wrong account"
         );
     }
 
+    /// Every arm sources.toml marks dispatchable resolves to a launcher. This is the check
+    /// itself, run against the real registry, so a table that silently stops covering the
+    /// roster fails here rather than at dispatch time.
     #[test]
-    fn dispatch_case_patterns_extracts_and_splits_on_pipe() {
-        let script =
-            "case \"$SRC\" in\n  a|b)   run a ;;\n  c-*)   run c ;;\n  *)     fail ;;\nesac\n";
-        assert_eq!(
-            dispatch_case_patterns(script),
-            vec![
-                "a".to_string(),
-                "b".to_string(),
-                "c-*".to_string(),
-                "*".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn dispatch_case_patterns_empty_when_no_block_found() {
-        assert_eq!(
-            dispatch_case_patterns("#!/bin/bash\necho hi\n"),
-            Vec::<String>::new()
+    fn every_dispatchable_arm_in_the_real_registry_has_a_launcher() {
+        let text = match fs::read_to_string(crate::paths::repo().join("sources.toml")) {
+            Ok(t) => t,
+            // No registry to check against is not a passing registry, but it is also not
+            // this test's subject; it is `check_launcher_coverage`'s own Warn branch.
+            Err(_) => return,
+        };
+        let doc: toml::Value = toml::from_str(&text).expect("sources.toml is valid TOML");
+        let missing: Vec<String> = dispatchable_arms(&doc)
+            .into_iter()
+            .filter(|a| {
+                matches!(
+                    crate::launch::argv_for(a, "m", Path::new("/tmp"), "p", false),
+                    Err(crate::launch::NoLauncher::UnknownArm(_))
+                )
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "dispatchable but unlaunchable: {missing:?}"
         );
     }
 

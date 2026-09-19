@@ -129,8 +129,11 @@ pub fn run(wt: &Path, cmd: &[String]) -> i32 {
 mod tests {
     use super::*;
 
-    fn dirs() -> (PathBuf, PathBuf, PathBuf) {
-        let base = std::env::temp_dir().join(format!("fb-isolated-{}", std::process::id()));
+    /// Each test gets its OWN base directory. One shared path was racy: these run in
+    /// parallel and each `remove_dir_all` pulled the ground out from under the others,
+    /// which failed one test at random rather than the test whose fixtures went missing.
+    fn dirs(who: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("fb-isolated-{who}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let repo = base.join("repo");
         let admin = repo.join(".git/worktrees");
@@ -152,7 +155,7 @@ mod tests {
     /// into the orchestrator's tree, scored NO-OP, and reported success.
     #[test]
     fn the_orchestrators_tree_is_read_only() {
-        let (repo, admin, root) = dirs();
+        let (repo, admin, root) = dirs("ro");
         let a = bwrap_argv(
             &root.join("task--arm"),
             &root,
@@ -170,7 +173,7 @@ mod tests {
     /// commits on its own branch writes there. The scorer measures committed work.
     #[test]
     fn the_object_store_stays_writable_inside_the_read_only_repo() {
-        let (repo, admin, root) = dirs();
+        let (repo, admin, root) = dirs("git");
         let a = bwrap_argv(
             &root.join("task--arm"),
             &root,
@@ -199,7 +202,7 @@ mod tests {
     /// after, which the scorer reads as the arm having written nothing.
     #[test]
     fn the_worktree_admin_directory_is_protected() {
-        let (repo, admin, root) = dirs();
+        let (repo, admin, root) = dirs("admin");
         let wt = root.join("task--arm");
         let a = bwrap_argv(&wt, &root, &admin, &repo, &["true".into()]);
         assert!(
@@ -211,7 +214,7 @@ mod tests {
     /// THIS run's own admin entry is bound back writable, or its own git stops working.
     #[test]
     fn this_runs_own_admin_entry_stays_writable() {
-        let (repo, admin, root) = dirs();
+        let (repo, admin, root) = dirs("own");
         let wt = root.join("task--arm");
         let a = bwrap_argv(&wt, &root, &admin, &repo, &["true".into()]);
         let own = admin.join("task--arm").to_string_lossy().into_owned();
@@ -231,7 +234,7 @@ mod tests {
     /// its siblings.
     #[test]
     fn the_worktree_is_writable_over_a_tmpfs_that_hides_its_siblings() {
-        let (repo, admin, root) = dirs();
+        let (repo, admin, root) = dirs("wt");
         let wt = root.join("task--arm");
         let a = bwrap_argv(&wt, &root, &admin, &repo, &["true".into()]);
         assert!(
@@ -260,7 +263,7 @@ mod tests {
     /// is passed to the arm rather than to bwrap.
     #[test]
     fn the_command_is_passed_through_after_the_separator() {
-        let (repo, admin, root) = dirs();
+        let (repo, admin, root) = dirs("cmd");
         let cmd: Vec<String> = ["opencode", "run", "--ro-bind", "-m", "x"]
             .iter()
             .map(|s| s.to_string())
