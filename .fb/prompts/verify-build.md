@@ -1,3 +1,152 @@
+<!-- fb:creates crates/farmerbob-core/src/verify_plan.rs -->
+# Task: fb-verify decides four things in shell and reports three of them as one
+
+Rust workspace, already builds. Work only inside `crates/farmerbob-core`.
+Create `crates/farmerbob-core/src/verify_plan.rs`. Declare it in `lib.rs` with one
+`pub mod verify_plan;` line and change nothing else.
+
+## Why this exists
+
+`fb-verify.sh` is 107 lines of pure shell with nothing in Rust behind it. It decides whether a
+candidate worktree is worth measuring at all, and the decision has four inputs that it collapses
+into a pass/fail: whether the crate BUILDS, whether its tests RUN, whether the run was cut short
+by a timeout, and whether the arm produced the declared deliverable at all.
+
+Three of those four failures print the same thing. A candidate that never wrote the file, one
+whose build broke, and one whose suite was killed at the timeout all surface as "did not pass
+the gate" -- and the first is a no-op by the arm, the second is a defect in the arm's code, and
+the third is a property of the MACHINE. Treating a harness timeout as a candidate's failure is
+how an arm loses a run it did not lose.
+
+`farmerbob_core::build_verdict` already decides build-versus-test from compiler output and is
+merged. This module is the layer above it: given that verdict plus the other three facts, what
+should happen to the candidate.
+
+## Exact API
+
+```rust
+/// What the harness observed about one candidate worktree.
+pub struct Observed {
+    /// Whether the declared deliverable exists and is non-empty.
+    pub deliverable: bool,
+    /// The build-or-test verdict, already decided by `build_verdict`.
+    /// `None` when the build was never attempted.
+    pub build: Option<BuildVerdict>,
+    /// Whether the run was cut short by the harness's own timeout.
+    pub timed_out: bool,
+}
+
+/// What should happen to a candidate.
+pub enum Fate {
+    /// Measure it: it built, its suite ran, and it wrote the deliverable.
+    Measure { tests_passed: u32 },
+    /// The arm wrote nothing. This is a no-op BY THE ARM.
+    NoOp,
+    /// The arm's code does not build or its suite fails. A defect IN THE ARM.
+    Failed(String),
+    /// The harness cut the run short. NOT the arm's failure, and it must never
+    /// be reported as one. Carries what was observed before the cut.
+    Cut { had_deliverable: bool },
+}
+
+/// Decide one candidate's fate.
+pub fn fate(o: &Observed) -> Fate;
+
+/// How many candidates of each fate a field contains.
+pub struct Field {
+    pub measurable: usize,
+    pub no_op: usize,
+    pub failed: usize,
+    pub cut: usize,
+}
+
+/// Tally a field.
+pub fn field(fates: &[Fate]) -> Field;
+
+/// Whether a field can be ranked at all.
+///
+/// Ranking needs at least two measurable candidates: one candidate is not a
+/// comparison, and zero is not a field.
+pub fn rankable(f: &Field) -> bool;
+```
+
+`BuildVerdict` is `farmerbob_core::build_verdict`'s, and it is exactly:
+
+```rust
+pub enum BuildVerdict {
+    Passed { passed: u32 },   // built, at least one test ran and passed
+    Failed { failed: u32 },   // built, tests ran, at least one failed
+    NoTests,                  // built, no test executed
+    BuildFailed,              // did not build
+}
+```
+
+You do not define it and you do not re-derive it. The passing count comes from
+`Passed { passed }`; there is no second count anywhere in this module.
+
+## Falsifiable clauses
+
+1. `timed_out: true` yields `Cut`, WHATEVER else is observed. Pin it against an observation that
+   would otherwise be `Measure` and against one that would otherwise be `Failed`. A timeout is
+   the machine's, and the two cases must not collapse.
+2. `Cut { had_deliverable }` reports whether the deliverable existed at the moment of the cut.
+   Pin both values.
+3. `deliverable: false`, not timed out, no build attempted: `NoOp`.
+4. `deliverable: false` while the build SUCCEEDED and tests passed: still `NoOp`. Writing tests
+   without the deliverable is not a deliverable. Pin it — this is the case an implementation
+   keyed on the build verdict alone gets wrong.
+5. A build failure: `Failed`, with a non-empty reason. Assert the reason is non-empty and that it
+   mentions building, case-insensitively; do NOT assert the sentence.
+6. A test failure: `Failed`, non-empty reason mentioning tests, case-insensitively.
+7. Clauses 5 and 6 must produce DIFFERENT reasons. Pin that they differ, not their wording:
+   build-broken and tests-failing need different fixes and the shell prints one line for both.
+8. `Measure` only when the deliverable exists and the build is `Passed { passed }`. It carries
+   that same `passed` count, unchanged.
+9. `BuildVerdict::NoTests` with an otherwise perfect observation is `Failed`, NOT
+   `Measure { tests_passed: 0 }`. A suite that executed nothing is not a suite that passed
+   nothing, and the rubric's gate requires "at least one test that actually executes". Pin
+   clauses 8 and 9 as a PAIR, because an implementation mapping NoTests to a zero count passes
+   clause 8 alone.
+10. `field` counts each fate in exactly one bucket and the four fields sum to the input length.
+
+## Boundaries, at N and at zero
+
+- ZERO candidates: `field(&[])` is all-zero and `rankable` is FALSE.
+- ONE measurable candidate: `rankable` is FALSE. One candidate is not a comparison.
+- TWO measurable: `rankable` is TRUE. This is the boundary and both sides must be pinned.
+- TWO candidates of which one is `Cut`: `rankable` is FALSE, because only one is measurable.
+  Pin it — a field that looks like two is not two.
+- `BuildVerdict::Passed { passed: 0 }` — built, the suite ran, and zero tests passed: NOT
+  pinned by this spec. `build_verdict` documents `Passed` as "at least one test ran and
+  passed", so the value may be unreachable. Say in your handoff which fate you return and do
+  NOT assert on it.
+- `BuildVerdict::Failed { failed: 0 }`: same instruction. Not pinned, not asserted.
+- `timed_out: true` with `deliverable: false` and no build: `Cut { had_deliverable: false }`,
+  not `NoOp`. Clause 1 is unconditional.
+
+## Superset status on every enumerated list
+
+`Fate` has EXACTLY four variants and `Field` exactly four counters. Closed sets.
+
+This module does NOT decide build-versus-test from compiler output. `build_verdict` does that
+and is already merged; re-deriving it here is a defect. This module consumes its answer.
+
+## Composition of aggregate returns
+
+`Field`'s four counters partition the input — clause 10 — and `rankable` reads ONLY
+`measurable`. Pin that a field with many failures and two measurable candidates is rankable, so
+that `rankable` is not accidentally implemented as "nothing went wrong".
+
+## Rules
+
+- No `unwrap()`, `expect()`, `panic!`, `todo!` or `unimplemented!` reachable from input, outside
+  `#[cfg(test)]`.
+- Add no dependencies. No filesystem, no `std::process`: every observation arrives as a value.
+- Derive `Debug, Clone, PartialEq, Eq` on every type in the Exact API. This is pinned because a
+  suite asserting with `assert_eq!`/`assert_ne!` fails to COMPILE against a rival that omits
+  them, which forfeits the cross-examination cell. (bead farmerbob-9ci5)
+- `cargo test -p farmerbob-core` and `cargo clippy -p farmerbob-core -- -D warnings` must pass.
+  Both are clean on HEAD as of this task, so any failure is yours.
 
 ## How this will be scored
 
@@ -177,3 +326,22 @@ summary and any failures, which is the entire signal.
 **Not scored:** wallclock. Taking longer to produce better work is the preferred trade.
 There is a generous resource budget; a run is cut early only if it stops making progress or
 regresses past its own best error count.
+
+## Handoff (required)
+
+When you are done, write `.fb/handoff.md` in the repository root. Keep it under 300 words.
+
+**Do not state anything the harness can check.** No test counts, no "all tests pass", no "this
+handles empty input", no performance claims. Those are measured independently and a claim
+about them adds nothing — the harness has already run them by the time anyone reads this.
+
+Write only what cannot be measured:
+
+- **Approach.** The shape of the solution and why this shape rather than an obvious alternative.
+- **Trade-offs.** What you chose against, and what it would cost to choose differently.
+- **Risk.** Where you think this is most likely to be wrong, or hardest to change later.
+- **Deliberate omissions.** What the spec allows that you did not do, and why.
+
+If you found the specification ambiguous or underdetermined, say exactly where. That is the
+most valuable thing this file can contain: it routes back to the task author instead of
+becoming a defect argued about later.
