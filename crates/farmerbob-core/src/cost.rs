@@ -252,8 +252,25 @@ pub enum Launcher {
     /// `zcode`: prints no token count. Recognised so the reason can say so
     /// precisely.
     Zcode,
+    /// `agy`: the Google-OAuth CLI. Prints no token count today.
+    Agy,
+    /// `opencode`, including every `or-*` arm that runs through it.
+    /// Prints no token count today.
+    Opencode,
     /// Anything else.
     Unknown,
+}
+
+/// The launcher a run went through, from its registry name.
+/// Unrecognised names are `Unknown`, which is a fact and not a failure.
+pub fn launcher_from_name(name: &str) -> Launcher {
+    match name {
+        "codex" => Launcher::Codex,
+        "zcode" => Launcher::Zcode,
+        "agy" => Launcher::Agy,
+        "opencode" => Launcher::Opencode,
+        _ => Launcher::Unknown,
+    }
 }
 
 /// Total tokens a run reported, read from its own log.
@@ -274,6 +291,12 @@ pub fn tokens_from_log(launcher: Launcher, log: &str) -> Measurement<u64> {
     match launcher {
         Launcher::Zcode => Measurement::nothing_to_measure(
             "zcode does not report a token count, so there is no count in its log to read",
+        ),
+        Launcher::Agy => Measurement::nothing_to_measure(
+            "agy does not report a token count, so there is no count in its log to read",
+        ),
+        Launcher::Opencode => Measurement::nothing_to_measure(
+            "opencode does not report a token count, so there is no count in its log to read",
         ),
         Launcher::Unknown => unknown_tokens(log),
         Launcher::Codex => codex_tokens(log),
@@ -930,6 +953,88 @@ mod token_scrape {
                 Measurement::Missing(_)
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod launcher_name {
+    use super::*;
+
+    #[test]
+    fn codex_maps_to_codex() {
+        assert_eq!(launcher_from_name("codex"), Launcher::Codex);
+    }
+
+    #[test]
+    fn zcode_maps_to_zcode() {
+        assert_eq!(launcher_from_name("zcode"), Launcher::Zcode);
+    }
+
+    #[test]
+    fn agy_maps_to_agy() {
+        assert_eq!(launcher_from_name("agy"), Launcher::Agy);
+    }
+
+    #[test]
+    fn opencode_maps_to_opencode() {
+        assert_eq!(launcher_from_name("opencode"), Launcher::Opencode);
+    }
+
+    #[test]
+    fn empty_string_is_unknown() {
+        assert_eq!(launcher_from_name(""), Launcher::Unknown);
+    }
+
+    #[test]
+    fn unrecognised_name_is_unknown() {
+        assert_eq!(launcher_from_name("claude"), Launcher::Unknown);
+        assert_eq!(launcher_from_name("other"), Launcher::Unknown);
+        assert_eq!(launcher_from_name("AGY"), Launcher::Unknown);
+        assert_eq!(launcher_from_name("Codex"), Launcher::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod agy_opencode_missing {
+    use super::*;
+
+    fn reason_of(m: Measurement<u64>) -> String {
+        match m {
+            Measurement::Missing(absent) => match absent {
+                crate::measurement::Absent::NothingToMeasure { reason } => reason,
+                crate::measurement::Absent::InstrumentFailed { reason } => reason,
+                crate::measurement::Absent::Untrusted { reason } => reason,
+                crate::measurement::Absent::NotAttempted => "not attempted".to_string(),
+            },
+            other => panic!("expected Missing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agy_is_missing_on_any_log() {
+        for log in ["step 1 done\n", "", "tokens used\n130,826\n"] {
+            let m = tokens_from_log(Launcher::Agy, log);
+            assert!(matches!(m, Measurement::Missing(_)));
+            let reason = reason_of(m);
+            assert!(reason.to_lowercase().contains("agy"), "reason must mention agy: {reason}");
+        }
+    }
+
+    #[test]
+    fn opencode_is_missing_on_any_log() {
+        for log in ["step 1 done\n", "", "tokens used\n130,826\n"] {
+            let m = tokens_from_log(Launcher::Opencode, log);
+            assert!(matches!(m, Measurement::Missing(_)));
+            let reason = reason_of(m);
+            assert!(reason.to_lowercase().contains("opencode"), "reason must mention opencode: {reason}");
+        }
+    }
+
+    #[test]
+    fn agy_and_opencode_reasons_are_different() {
+        let agy_reason = reason_of(tokens_from_log(Launcher::Agy, ""));
+        let opencode_reason = reason_of(tokens_from_log(Launcher::Opencode, ""));
+        assert_ne!(agy_reason, opencode_reason, "reasons must be different facts");
     }
 }
 

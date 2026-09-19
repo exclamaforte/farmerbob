@@ -66,11 +66,24 @@ wtfield() {
     | sed "s|.*/$T--||; s|/$||" | sort | paste -sd, - | sed 's/^$/NOCANDIDATES/'
 }
 
+# An artefact is either a non-empty FILE or a directory holding at least one entry.
+#
+# fb-critique.sh writes a DIRECTORY, logs/critiques/<task>/, one .md per review. The pipeline
+# declared its artefact as <task>.claims.json, which fb-critique has never written -- `fb
+# promote` does. So critique reported "RAN BUT PRODUCED NOTHING" on every run where it had in
+# fact written every review asked of it, and the pipeline then refused to call the task ready.
+# Exactly the defect the comment below records for `promote`, left in place one stage over.
+have_artefact() {
+  [ -s "$1" ] && return 0
+  [ -d "$1" ] && [ -n "$(ls -A "$1" 2>/dev/null)" ] && return 0
+  return 1
+}
+
 run_stage() { # run_stage <name> <artefact> <keyfn> <command...>
   local name="$1" artefact="$2" keyfn="$3"; shift 3
   local now sig="$artefact.field"
   now=$($keyfn)
-  if [ -s "$artefact" ]; then
+  if have_artefact "$artefact"; then
     if [ "$now" != "$(cat "$sig" 2>/dev/null)" ]; then
       echo "  $name: field changed -> re-running"
       echo "     was: $(cat "$sig" 2>/dev/null || echo '<unrecorded>')"
@@ -98,7 +111,7 @@ run_stage() { # run_stage <name> <artefact> <keyfn> <command...>
   if ! "$@" >> "$LOGS/$T.pipeline.log" 2>&1; then
     echo "  $name: FAILED (see $LOGS/$T.pipeline.log)"; return 1
   fi
-  if [ ! -s "$artefact" ]; then
+  if ! have_artefact "$artefact"; then
     echo "  $name: RAN BUT PRODUCED NOTHING at $artefact"
     echo "     the command exited 0 and the artefact is missing or empty."
     echo "     Either the stage is broken or the pipeline names the wrong file."
@@ -170,7 +183,7 @@ stage() { # stage <name> <artefact> <keyfn> <command...>
 stage score    "$LOGS/$T.score.json"    wtfield bash ./fb-score.sh   "$T" "$CRATE"
 run_differential || FAILED_STAGES="$FAILED_STAGES differential"
 stage crossx   "$LOGS/$T.crossx.json"   field   bash ./fb-crossx.sh  "$T" "$CRATE" "$TARGET"
-stage critique "$LOGS/$T.claims.json"   field   bash ./fb-critique.sh "$T" "$CRATE" "$TARGET"
+stage critique "$LOGS/critiques/$T"     field   bash ./fb-critique.sh "$T" "$CRATE" "$TARGET"
 stage promote  "$LOGS/$T.promoted.json" field   bash ./fb-promote.sh "$T" "$CRATE" "$TARGET"
 stage prove    "$LOGS/$T.proved.json"   field   bash ./fb-prove.sh   "$T" "$CRATE" "$TARGET"
 
