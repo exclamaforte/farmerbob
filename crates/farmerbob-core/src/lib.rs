@@ -99,6 +99,7 @@ pub mod taskid;
 pub mod test_delta;
 pub mod testout;
 pub mod timing;
+pub mod toolchain;
 pub mod trial_plan;
 pub mod verifier;
 pub mod verify_plan;
