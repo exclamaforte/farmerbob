@@ -1,5 +1,10 @@
 mod adjudicate_cmd;
 mod cmd;
+mod compare_gather;
+mod compare_cmd;
+mod prices_cmd;
+mod timing_cmd;
+mod verify_cmd;
 mod critique;
 mod crossx;
 mod decl_cmd;

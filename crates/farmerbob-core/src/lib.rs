@@ -69,6 +69,7 @@ pub mod roster;
 pub mod router;
 pub mod rubric_carry;
 pub mod run;
+pub mod run_state_view;
 pub mod run_timing;
 pub mod runstate;
 pub mod scope;

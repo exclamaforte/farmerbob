@@ -1,0 +1,12 @@
+MERGED gemini-38-flash
+Single arm, 530 lines, clippy 0.
+
+Builds compare_cmd::Row from a task's score.json, honouring the scorer's
+*_measured flags: a figure whose flag is false or ABSENT is Missing, never the
+number sitting beside it. That is farmerbob-qv6u -- twelve candidates that wrote
+working code recorded as having written none.
+
+Merged together with run-state, and the merge exposed a regression of MY OWN:
+copying next-wire's main.rs wholesale had orphaned compare_cmd, prices_cmd,
+timing_cmd and verify_cmd. This task's import of crate::compare_cmd is what
+finally made the build complain. See farmerbob-0m34.

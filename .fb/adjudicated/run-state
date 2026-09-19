@@ -1,0 +1,14 @@
+MERGED glm-53-flash
+Single arm, 317 lines, 8 tests, clippy 0.
+
+Every clause has a test named for it, including the three that carry it:
+running_versus_finished_turns_only_on_the_live_count (clauses 2 and 3 pinned
+against sightings differing ONLY in the live count -- the two the board confuses,
+and opposite instructions), missing_live_is_unknown_with_a_non_empty_reason
+(clause 6: an unasked question is not a negative answer, and guessing there is how
+a live run gets scored out from under itself), and
+never_dispatched_does_not_need_the_live_count (clause 7: an implementation that
+checks live first returns Unknown where the answer is NeverDispatched).
+
+Wiring it into board::observe is the next task; until then farmerbob-ervw stays
+open and `fb next` stays blind to finished-but-unscored runs.
