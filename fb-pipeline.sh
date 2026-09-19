@@ -21,6 +21,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 cd /home/gabe/Documents/farmerbob
 T="${1:?task}"; CRATE="${2:-farmerbob-core}"; TARGET="${3:-}"
 LOGS="$HOME/.local/share/farmerbob/logs"
+FB_BIN="${FB_BIN:-/home/gabe/Documents/farmerbob/target/debug/fb}"
 
 # Infer the target from the spec's own declaration rather than making the caller repeat it.
 # BOTH verbs, not just fb:creates. Specs declare `fb:modifies` when the deliverable is an
@@ -95,16 +96,31 @@ run_stage() { # run_stage <name> <artefact> <keyfn> <command...>
   # The two failures are now reported apart, because they need different fixes: a command that
   # fails is a bug in the stage, and a command that succeeds without writing is a bug in what
   # the pipeline believes the stage produces.
-  if ! "$@" >> "$LOGS/$T.pipeline.log" 2>&1; then
-    echo "  $name: FAILED (see $LOGS/$T.pipeline.log)"; return 1
-  fi
-  if [ ! -s "$artefact" ]; then
-    echo "  $name: RAN BUT PRODUCED NOTHING at $artefact"
-    echo "     the command exited 0 and the artefact is missing or empty."
-    echo "     Either the stage is broken or the pipeline names the wrong file."
+  # ASK, DO NOT DECIDE.
+  #
+  # This block used to be `[ ! -s "$artefact" ]`, which is true when the file is missing, when
+  # it is empty, and when the shell cannot stat it at all. Three facts, one branch -- under a
+  # comment saying the cases need different fixes. `fb stage` asks
+  # farmerbob_core::stage_outcome, which has the third answer the shell cannot express:
+  #
+  #     score: ran
+  #     score: produced nothing
+  #     score: could not be checked: ... Permission denied (os error 13)
+  #     score: failed with rc 1
+  #
+  # `$?` here follows a command substitution, not a pipe, so it is `fb stage`'s own status.
+  # (bead farmerbob-7i30's sibling; stage_outcome merged with no caller until now)
+  "$@" >> "$LOGS/$T.pipeline.log" 2>&1
+  local rc=$?
+  local line verdict
+  line=$("$FB_BIN" stage "$name" --rc "$rc" --artefact "$artefact" 2>&1)
+  verdict=$?
+  echo "  $line"
+  if [ "$verdict" -ne 0 ]; then
+    [ "$rc" -ne 0 ] && echo "     see $LOGS/$T.pipeline.log"
     return 1
   fi
-  echo "  $name: ok"; printf '%s' "$now" > "$sig"
+  printf '%s' "$now" > "$sig"
 }
 
 # DIFFERENTIAL. The only stage here that is not a gate on form.
@@ -167,11 +183,11 @@ stage() { # stage <name> <artefact> <keyfn> <command...>
 }
 
 # score is keyed on the CANDIDATES ON DISK; everything downstream on who PASSED.
-stage score    "$LOGS/$T.score.json"    wtfield bash ./fb-score.sh   "$T" "$CRATE"
+stage score    "$LOGS/$T.score.json"    wtfield "$FB_BIN" score  "$T" --crate "$CRATE"
 run_differential || FAILED_STAGES="$FAILED_STAGES differential"
-stage crossx   "$LOGS/$T.crossx.json"   field   bash ./fb-crossx.sh  "$T" "$CRATE" "$TARGET"
+stage crossx   "$LOGS/$T.crossx.json"   field   "$FB_BIN" crossx "$T" --crate "$CRATE" "$TARGET"
 stage critique "$LOGS/$T.claims.json"   field   bash ./fb-critique.sh "$T" "$CRATE" "$TARGET"
-stage promote  "$LOGS/$T.promoted.json" field   bash ./fb-promote.sh "$T" "$CRATE" "$TARGET"
+stage promote  "$LOGS/$T.promoted.json" field   "$FB_BIN" promote "$T"
 stage prove    "$LOGS/$T.proved.json"   field   bash ./fb-prove.sh   "$T" "$CRATE" "$TARGET"
 
 # ESCALATE. A confirmed finding should sharpen the gate for every future candidate on this
