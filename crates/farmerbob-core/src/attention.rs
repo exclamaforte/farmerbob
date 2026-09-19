@@ -683,7 +683,10 @@ mod tests {
         let f_stable = idle(vec![score("same", 1), score("same", 2)]);
         let ranked_stable = rank(&f_stable);
         assert_eq!(
-            ranked_stable.into_iter().map(|a| a.item).collect::<Vec<_>>(),
+            ranked_stable
+                .into_iter()
+                .map(|a| a.item)
+                .collect::<Vec<_>>(),
             vec![score("same", 1), score("same", 2)]
         );
     }

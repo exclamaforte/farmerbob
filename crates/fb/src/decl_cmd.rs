@@ -86,8 +86,8 @@ mod tests {
 
     impl TempSpec {
         fn new(name: &str, contents: &str) -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("fb_decl_cmd_{}_{}", std::process::id(), name));
+            let path =
+                std::env::temp_dir().join(format!("fb_decl_cmd_{}_{}", std::process::id(), name));
             std::fs::write(&path, contents).unwrap();
             TempSpec { path }
         }
@@ -208,9 +208,11 @@ mod tests {
         let missing =
             std::env::temp_dir().join(format!("fb_decl_cmd_{}_clause9.md", std::process::id()));
 
-        for (expected, spec_path) in
-            [(2, none.path()), (3, ambiguous.path()), (4, missing.as_path())]
-        {
+        for (expected, spec_path) in [
+            (2, none.path()),
+            (3, ambiguous.path()),
+            (4, missing.as_path()),
+        ] {
             let mut out = Vec::new();
             assert_eq!(run(spec_path, Format::Line, &mut out), expected);
             assert!(out.is_empty(), "exit {expected} must leave out empty");

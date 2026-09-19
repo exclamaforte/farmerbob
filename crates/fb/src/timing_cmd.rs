@@ -73,17 +73,13 @@ pub fn table(rows: &[TimingRow]) -> String {
 pub fn run(rows: &[TimingRow], out: &mut dyn Write) -> i32 {
     let rendered = table(rows);
     let _ = out.write_all(rendered.as_bytes());
-    if rows.is_empty() {
-        1
-    } else {
-        0
-    }
+    if rows.is_empty() { 1 } else { 0 }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use farmerbob_core::run_timing::{derive, Wrote};
+    use farmerbob_core::run_timing::{Wrote, derive};
 
     #[test]
     fn clause_1_non_empty_row_matches_derive_output() {
@@ -210,19 +206,13 @@ mod tests {
         let mut out_non_empty = Vec::new();
         let code_non_empty = run(&rows, &mut out_non_empty);
         assert_eq!(code_non_empty, 0);
-        assert_eq!(
-            String::from_utf8(out_non_empty).unwrap(),
-            table(&rows)
-        );
+        assert_eq!(String::from_utf8(out_non_empty).unwrap(), table(&rows));
 
         // Empty rows: returns 1 and writes heading only
         let mut out_empty = Vec::new();
         let code_empty = run(&[], &mut out_empty);
         assert_eq!(code_empty, 1);
-        assert_eq!(
-            String::from_utf8(out_empty).unwrap(),
-            table(&[])
-        );
+        assert_eq!(String::from_utf8(out_empty).unwrap(), table(&[]));
     }
 
     #[test]

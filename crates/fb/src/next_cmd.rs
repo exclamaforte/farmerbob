@@ -2,10 +2,10 @@
 
 //! Gather the filesystem facts used by the orchestrator and render its attention list.
 
-use farmerbob_core::target_decl;
 use farmerbob_core::attention::{self, Facts, Item};
 use farmerbob_core::board::{self, QueuedMatrix, TaskFiles};
 use farmerbob_core::measurement::{Absent, Measurement};
+use farmerbob_core::target_decl;
 use farmerbob_core::wave_compose::{self, Row};
 use serde_json::Value;
 use std::fs;
@@ -163,12 +163,7 @@ pub fn render(facts: &Facts, limit: usize) -> String {
 }
 
 /// Gather, rank and render. Returns the exit code the caller should use.
-pub fn run(
-    p: &Paths,
-    live_agents: Measurement<usize>,
-    limit: usize,
-    out: &mut dyn Write,
-) -> i32 {
+pub fn run(p: &Paths, live_agents: Measurement<usize>, limit: usize, out: &mut dyn Write) -> i32 {
     if !directory_is_readable(&p.repo) || !directory_is_readable(&p.logs) {
         return 4;
     }
@@ -179,7 +174,8 @@ pub fn run(
     let _ = out.write_all(rendered.as_bytes());
 
     match ranked.first() {
-        None | Some(attention::Attention {
+        None
+        | Some(attention::Attention {
             item: Item::QueueEmpty,
             ..
         }) => 1,
@@ -241,7 +237,9 @@ fn passing_count(path: &Path) -> Measurement<usize> {
     };
     let value: Value = match serde_json::from_str(&text) {
         Ok(value) => value,
-        Err(error) => return Measurement::instrument_failed(&format!("invalid score JSON: {error}")),
+        Err(error) => {
+            return Measurement::instrument_failed(&format!("invalid score JSON: {error}"));
+        }
     };
     let Some(entries) = value.as_array() else {
         return Measurement::instrument_failed("score JSON is not an array");
@@ -336,10 +334,7 @@ mod tests {
 
         let missing_facts = gather(&missing, Measurement::not_attempted());
         let zero_facts = gather(&zero, Measurement::not_attempted());
-        assert!(matches!(
-            &missing_facts.items[0],
-            Item::QueueEmpty
-        ));
+        assert!(matches!(&missing_facts.items[0], Item::QueueEmpty));
         assert!(matches!(
             &zero_facts.items[0],
             Item::RunPipeline { task, .. } if task == "zero"
@@ -391,12 +386,7 @@ mod tests {
         let fixture = paths("run-codes");
         let mut output = Vec::new();
         assert_eq!(
-            run(
-                &fixture,
-                Measurement::not_attempted(),
-                0,
-                &mut output
-            ),
+            run(&fixture, Measurement::not_attempted(), 0, &mut output),
             1
         );
         remove(&fixture);
@@ -405,12 +395,7 @@ mod tests {
             logs: fixture.logs,
         };
         assert_eq!(
-            run(
-                &missing,
-                Measurement::not_attempted(),
-                0,
-                &mut output
-            ),
+            run(&missing, Measurement::not_attempted(), 0, &mut output),
             4
         );
     }

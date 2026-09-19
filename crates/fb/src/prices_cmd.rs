@@ -18,13 +18,19 @@ pub fn table(pending: &[(String, Change)]) -> String {
             Change::Agrees => {
                 // Skip agreed entries.
             }
-            Change::Differs { price_in, price_out } => {
+            Change::Differs {
+                price_in,
+                price_out,
+            } => {
                 lines.push(format!(
                     "{}: differs (in={}, out={})",
                     model, price_in, price_out
                 ));
             }
-            Change::Fills { price_in, price_out } => {
+            Change::Fills {
+                price_in,
+                price_out,
+            } => {
                 lines.push(format!(
                     "{}: fills (in={}, out={})",
                     model, price_in, price_out
@@ -32,10 +38,7 @@ pub fn table(pending: &[(String, Change)]) -> String {
             }
             Change::Unquoted => {
                 // Never treat an absent catalogue price as free (no `0` figure).
-                lines.push(format!(
-                    "{}: unquoted — price not listed",
-                    model
-                ));
+                lines.push(format!("{}: unquoted — price not listed", model));
             }
         }
     }
@@ -62,7 +65,9 @@ pub fn run(pending: &[(String, Change)], out: &mut dyn std::io::Write) -> i32 {
 /// Whether any pending change would OVERWRITE an existing figure, as opposed
 /// to filling a blank.
 pub fn has_overwrite(pending: &[(String, Change)]) -> bool {
-    pending.iter().any(|(_, c)| matches!(c, Change::Differs { .. }))
+    pending
+        .iter()
+        .any(|(_, c)| matches!(c, Change::Differs { .. }))
 }
 
 #[cfg(test)]
@@ -99,10 +104,7 @@ mod tests {
 
     #[test]
     fn clause_2_differs_line_and_exit_one() {
-        let pending = vec![(
-            "model-a".to_string(),
-            makes_differs(100, 200),
-        )];
+        let pending = vec![("model-a".to_string(), makes_differs(100, 200))];
         let out = table(&pending);
         assert!(out.contains("model-a"));
         assert!(out.contains("100"));
@@ -131,12 +133,12 @@ mod tests {
 
     #[test]
     fn clause_4_unquoted_renders_exit_one_no_zero_figure() {
-        let pending = vec![(
-            "missing-model".to_string(),
-            Change::Unquoted,
-        )];
+        let pending = vec![("missing-model".to_string(), Change::Unquoted)];
         let out = table(&pending);
-        assert!(!out.contains('0'), "unquoted line must not contain a zero price figure: {out:?}");
+        assert!(
+            !out.contains('0'),
+            "unquoted line must not contain a zero price figure: {out:?}"
+        );
         assert!(out.contains("missing-model"));
 
         let mut buf = Vec::new();
@@ -156,24 +158,16 @@ mod tests {
     #[test]
     fn clause_6_has_overwrite_true_for_differs_false_for_others() {
         // True when any Differs
-        assert!(has_overwrite(&[
-            ("a".to_string(), makes_differs(1, 2))
-        ]));
+        assert!(has_overwrite(&[("a".to_string(), makes_differs(1, 2))]));
 
         // False when every entry is Fills
-        assert!(!has_overwrite(&[
-            ("a".to_string(), makes_fills(1, 2))
-        ]));
+        assert!(!has_overwrite(&[("a".to_string(), makes_fills(1, 2))]));
 
         // False when catalogue-missing (Unquoted)
-        assert!(!has_overwrite(&[
-            ("a".to_string(), Change::Unquoted)
-        ]));
+        assert!(!has_overwrite(&[("a".to_string(), Change::Unquoted)]));
 
         // False when Agrees
-        assert!(!has_overwrite(&[
-            ("a".to_string(), Change::Agrees)
-        ]));
+        assert!(!has_overwrite(&[("a".to_string(), Change::Agrees)]));
 
         // False for mixed Fills + Unquoted
         assert!(!has_overwrite(&[
@@ -246,9 +240,7 @@ mod tests {
 
     #[test]
     fn boundary_max_u64_renders_as_number() {
-        let pending = vec![
-            ("max".to_string(), makes_differs(u64::MAX, u64::MAX)),
-        ];
+        let pending = vec![("max".to_string(), makes_differs(u64::MAX, u64::MAX))];
         let text = table(&pending);
         assert!(text.contains(&u64::MAX.to_string()));
     }

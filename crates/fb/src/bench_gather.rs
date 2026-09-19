@@ -219,10 +219,8 @@ mod tests {
 
     #[test]
     fn clause_3_invalid_or_wrong_shape_is_malformed_and_differs_from_unreadable() {
-        let nonexistent = std::env::temp_dir().join(format!(
-            "fb-nonexistent-gather-dir-{}",
-            std::process::id()
-        ));
+        let nonexistent =
+            std::env::temp_dir().join(format!("fb-nonexistent-gather-dir-{}", std::process::id()));
         let err_unreadable =
             manifest_in(&nonexistent).expect_err("nonexistent dir must be Unreadable");
         assert!(matches!(err_unreadable, GatherError::Unreadable(_)));
@@ -235,8 +233,8 @@ mod tests {
 
         let scratch_wrong_shape = ScratchDir::new("c3-wrong-shape");
         scratch_wrong_shape.write_file("manifest.json", "[1, 2, 3]");
-        let err_wrong_shape = manifest_in(&scratch_wrong_shape.path)
-            .expect_err("array shape must be Malformed");
+        let err_wrong_shape =
+            manifest_in(&scratch_wrong_shape.path).expect_err("array shape must be Malformed");
         assert!(matches!(err_wrong_shape, GatherError::Malformed(_)));
 
         assert_ne!(err_unreadable, err_bad_syntax);
@@ -251,11 +249,7 @@ mod tests {
         scratch.write_file("bench.sh", "echo '{\"ms\":12.5}'\n");
 
         let mut out = Vec::new();
-        let code = run(
-            &scratch.path,
-            &plan(&scratch.path, 0, 10, 2),
-            &mut out,
-        );
+        let code = run(&scratch.path, &plan(&scratch.path, 0, 10, 2), &mut out);
         assert_eq!(code, 0);
 
         let text = String::from_utf8_lossy(&out);
@@ -273,11 +267,7 @@ mod tests {
         scratch.write_file("bench.sh", "echo '{\"ms\":10}'\n");
 
         let mut out = Vec::new();
-        let code = run(
-            &scratch.path,
-            &plan(&scratch.path, 0, 10, 2),
-            &mut out,
-        );
+        let code = run(&scratch.path, &plan(&scratch.path, 0, 10, 2), &mut out);
         assert_eq!(code, 1);
 
         let text = String::from_utf8_lossy(&out);
@@ -292,11 +282,7 @@ mod tests {
         scratch.write_file("bench.sh", "echo '{\"ms\":10}'\n");
 
         let mut out = Vec::new();
-        let code = run(
-            &scratch.path,
-            &plan(&scratch.path, 0, 10, 2),
-            &mut out,
-        );
+        let code = run(&scratch.path, &plan(&scratch.path, 0, 10, 2), &mut out);
         assert_eq!(code, 4);
 
         let text = String::from_utf8_lossy(&out);
@@ -402,11 +388,7 @@ mod tests {
         scratch.write_file("bench.sh", "touch marker_must_not_run\n");
 
         let mut out = Vec::new();
-        let code = run(
-            &scratch.path,
-            &plan(&scratch.path, 0, 10, 2),
-            &mut out,
-        );
+        let code = run(&scratch.path, &plan(&scratch.path, 0, 10, 2), &mut out);
         assert_eq!(code, 0);
 
         let text = String::from_utf8_lossy(&out);
@@ -443,11 +425,7 @@ mod tests {
         // Note: NO manifest.json is created
 
         let mut out = Vec::new();
-        let code = run(
-            &scratch.path,
-            &plan(&scratch.path, 0, 10, 2),
-            &mut out,
-        );
+        let code = run(&scratch.path, &plan(&scratch.path, 0, 10, 2), &mut out);
         assert_eq!(code, 4);
         assert!(!scratch.path.join("verify_ran_marker").exists());
         assert!(!scratch.path.join("bench_ran_marker").exists());

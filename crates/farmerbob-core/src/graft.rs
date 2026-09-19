@@ -268,8 +268,14 @@ mod tests {
             has_tests: true,
         }];
 
-        let plan = plan_cell("impl-arm", "suite-arm", &impl_files, &suite_files, "src/lib.rs")
-            .expect("should produce plan");
+        let plan = plan_cell(
+            "impl-arm",
+            "suite-arm",
+            &impl_files,
+            &suite_files,
+            "src/lib.rs",
+        )
+        .expect("should produce plan");
 
         assert_eq!(plan.take, vec!["src/lib.rs".to_string()]);
         assert_eq!(plan.strip, vec!["src/lib.rs".to_string()]);
@@ -299,8 +305,14 @@ mod tests {
             has_tests: true,
         }];
 
-        let plan = plan_cell("impl-arm", "suite-arm", &impl_files, &suite_files, "src/target.rs")
-            .expect("should produce plan");
+        let plan = plan_cell(
+            "impl-arm",
+            "suite-arm",
+            &impl_files,
+            &suite_files,
+            "src/target.rs",
+        )
+        .expect("should produce plan");
 
         assert_eq!(plan.strip, plan.take);
         assert_eq!(
@@ -332,8 +344,14 @@ mod tests {
             has_tests: true,
         }];
 
-        let plan = plan_cell("impl-arm", "suite-arm", &impl_files, &suite_files, "src/target.rs")
-            .expect("should produce plan");
+        let plan = plan_cell(
+            "impl-arm",
+            "suite-arm",
+            &impl_files,
+            &suite_files,
+            "src/target.rs",
+        )
+        .expect("should produce plan");
 
         assert!(plan.strip.is_empty());
         assert!(!plan.take.is_empty());
@@ -362,8 +380,14 @@ mod tests {
             has_tests: true,
         }];
 
-        let plan = plan_cell("impl-arm", "suite-arm", &impl_files, &suite_files, "src/target.rs")
-            .expect("should produce plan");
+        let plan = plan_cell(
+            "impl-arm",
+            "suite-arm",
+            &impl_files,
+            &suite_files,
+            "src/target.rs",
+        )
+        .expect("should produce plan");
 
         assert!(plan.take.contains(&"src/target.rs".to_string()));
         assert!(plan.strip.contains(&"src/target.rs".to_string()));
@@ -404,8 +428,14 @@ mod tests {
             has_tests: true,
         }];
 
-        let plan = plan_cell("impl-arm", "suite-arm", &impl_files, &suite_files, "m/target.rs")
-            .expect("should produce plan");
+        let plan = plan_cell(
+            "impl-arm",
+            "suite-arm",
+            &impl_files,
+            &suite_files,
+            "m/target.rs",
+        )
+        .expect("should produce plan");
 
         // Verify take is sorted and deduplicated
         assert_eq!(

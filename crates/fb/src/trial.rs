@@ -105,11 +105,26 @@ impl Trial {
             .ok()
             .and_then(|s| s.code());
         match code {
-            Some(0) => { eprintln!("  all measured arms agree"); true }
-            Some(1) => { eprintln!("  DIVERGENCE FOUND -- a finding, and a successful measurement"); true }
-            Some(3) => { eprintln!("  n/a, this task declares no oracle"); true }
-            Some(2) => { eprintln!("  DECLARED BUT COULD NOT RUN -- a gap, not a pass"); false }
-            other => { eprintln!("  unexpected exit {other:?}"); false }
+            Some(0) => {
+                eprintln!("  all measured arms agree");
+                true
+            }
+            Some(1) => {
+                eprintln!("  DIVERGENCE FOUND -- a finding, and a successful measurement");
+                true
+            }
+            Some(3) => {
+                eprintln!("  n/a, this task declares no oracle");
+                true
+            }
+            Some(2) => {
+                eprintln!("  DECLARED BUT COULD NOT RUN -- a gap, not a pass");
+                false
+            }
+            other => {
+                eprintln!("  unexpected exit {other:?}");
+                false
+            }
         }
     }
 
@@ -128,11 +143,26 @@ impl Trial {
             .ok()
             .and_then(|s| s.code());
         match code {
-            Some(0) => { eprintln!("  matrix complete"); true }
-            Some(4) => { eprintln!("  n/a, fewer than two candidates -- no matrix to build"); true }
-            Some(3) => { eprintln!("  VOID: the diagonal invariant failed; scores deliberately not written"); false }
-            Some(1) => { eprintln!("  usage error"); false }
-            other => { eprintln!("  unexpected exit {other:?}"); false }
+            Some(0) => {
+                eprintln!("  matrix complete");
+                true
+            }
+            Some(4) => {
+                eprintln!("  n/a, fewer than two candidates -- no matrix to build");
+                true
+            }
+            Some(3) => {
+                eprintln!("  VOID: the diagonal invariant failed; scores deliberately not written");
+                false
+            }
+            Some(1) => {
+                eprintln!("  usage error");
+                false
+            }
+            other => {
+                eprintln!("  unexpected exit {other:?}");
+                false
+            }
         }
     }
 

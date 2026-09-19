@@ -1016,7 +1016,10 @@ mod agy_opencode_missing {
             let m = tokens_from_log(Launcher::Agy, log);
             assert!(matches!(m, Measurement::Missing(_)));
             let reason = reason_of(m);
-            assert!(reason.to_lowercase().contains("agy"), "reason must mention agy: {reason}");
+            assert!(
+                reason.to_lowercase().contains("agy"),
+                "reason must mention agy: {reason}"
+            );
         }
     }
 
@@ -1026,7 +1029,10 @@ mod agy_opencode_missing {
             let m = tokens_from_log(Launcher::Opencode, log);
             assert!(matches!(m, Measurement::Missing(_)));
             let reason = reason_of(m);
-            assert!(reason.to_lowercase().contains("opencode"), "reason must mention opencode: {reason}");
+            assert!(
+                reason.to_lowercase().contains("opencode"),
+                "reason must mention opencode: {reason}"
+            );
         }
     }
 
@@ -1034,7 +1040,10 @@ mod agy_opencode_missing {
     fn agy_and_opencode_reasons_are_different() {
         let agy_reason = reason_of(tokens_from_log(Launcher::Agy, ""));
         let opencode_reason = reason_of(tokens_from_log(Launcher::Opencode, ""));
-        assert_ne!(agy_reason, opencode_reason, "reasons must be different facts");
+        assert_ne!(
+            agy_reason, opencode_reason,
+            "reasons must be different facts"
+        );
     }
 }
 

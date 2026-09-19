@@ -50,9 +50,10 @@ pub fn carry(spec: &str, rubric: &str, anchor: &str) -> Carry {
             if spec_norm == rubric_norm {
                 Carry::Current
             } else if rubric_norm.len() >= spec_norm.len() {
-                let is_prefix = spec_norm.iter().enumerate().all(|(i, line)| {
-                    rubric_norm.get(i) == Some(line)
-                });
+                let is_prefix = spec_norm
+                    .iter()
+                    .enumerate()
+                    .all(|(i, line)| rubric_norm.get(i) == Some(line));
                 if is_prefix {
                     let missing = rubric_norm[spec_norm.len()..].to_vec();
                     Carry::Stale(missing)
@@ -90,7 +91,10 @@ mod tests {
     // Clause 1: spec text after anchor equals rubric -> Current.
     #[test]
     fn clause_1_current_exact() {
-        assert!(matches!(carry("body\nrubric\nline1", "rubric\nline1", "rubric"), Carry::Current));
+        assert!(matches!(
+            carry("body\nrubric\nline1", "rubric\nline1", "rubric"),
+            Carry::Current
+        ));
     }
 
     // Clause 2: normalisation (trailing spaces, blank lines) -> Current.
@@ -105,7 +109,11 @@ mod tests {
     #[test]
     fn clause_2_normalisation_blank_lines_inserted() {
         assert!(matches!(
-            carry("body\nrubric\nline1\n\nline2", "rubric\nline1\nline2", "rubric"),
+            carry(
+                "body\nrubric\nline1\n\nline2",
+                "rubric\nline1\nline2",
+                "rubric"
+            ),
             Carry::Current
         ));
     }
@@ -113,14 +121,22 @@ mod tests {
     // Clause 3: first K lines of rubric -> Stale with canonical missing lines.
     #[test]
     fn clause_3_stale_first_k_lines() {
-        let result = carry("body\nrubric\nline1", "rubric\nline1\nline2\nline3", "rubric");
+        let result = carry(
+            "body\nrubric\nline1",
+            "rubric\nline1\nline2\nline3",
+            "rubric",
+        );
         assert!(matches!(result, Carry::Stale(ref lines) if lines == &["line2", "line3"]));
     }
 
     // Clause 4: changed line in middle -> Foreign (not Stale).
     #[test]
     fn clause_4_changed_line_is_foreign() {
-        let result = carry("body\nrubric\nline1\nlineX\nline2", "rubric\nline1\nline2", "rubric");
+        let result = carry(
+            "body\nrubric\nline1\nlineX\nline2",
+            "rubric\nline1\nline2",
+            "rubric",
+        );
         assert!(matches!(result, Carry::Foreign));
     }
 
@@ -134,7 +150,10 @@ mod tests {
     // Clause 6: spec not containing anchor -> Absent.
     #[test]
     fn clause_6_no_anchor_absent() {
-        assert!(matches!(carry("body only", "rubric\nline1", "rubric"), Carry::Absent));
+        assert!(matches!(
+            carry("body only", "rubric\nline1", "rubric"),
+            Carry::Absent
+        ));
     }
 
     // Clause 7: missing_lines agrees with carry.
@@ -161,23 +180,34 @@ mod tests {
         let result = carry(
             "see rubric\nrubric\nfake line\nrubric\nline1",
             "rubric\nline1",
-            "rubric"
+            "rubric",
         );
-        assert!(matches!(result, Carry::Foreign),
-            "First-occurrence rule must make quoted-anchor specs Foreign");
+        assert!(
+            matches!(result, Carry::Foreign),
+            "First-occurrence rule must make quoted-anchor specs Foreign"
+        );
     }
 
     // Empty canonical rubric: every spec containing anchor is Current.
     #[test]
     fn empty_rubric_current() {
-        assert!(matches!(carry("body\nrubric", "", "rubric"), Carry::Current));
-        assert!(matches!(carry("body\nrubric\nextra", "", "rubric"), Carry::Current));
+        assert!(matches!(
+            carry("body\nrubric", "", "rubric"),
+            Carry::Current
+        ));
+        assert!(matches!(
+            carry("body\nrubric\nextra", "", "rubric"),
+            Carry::Current
+        ));
     }
 
     // Empty spec: Absent.
     #[test]
     fn empty_spec_absent() {
-        assert!(matches!(carry("", "rubric\nline1", "rubric"), Carry::Absent));
+        assert!(matches!(
+            carry("", "rubric\nline1", "rubric"),
+            Carry::Absent
+        ));
     }
 
     // Spec carrying zero rubric lines after anchor -> Stale with whole rubric missing.
@@ -190,7 +220,10 @@ mod tests {
     // One-line rubric, carried: Current.
     #[test]
     fn one_line_rubric_carried_current() {
-        assert!(matches!(carry("body\nrubric", "rubric", "rubric"), Carry::Current));
+        assert!(matches!(
+            carry("body\nrubric", "rubric", "rubric"),
+            Carry::Current
+        ));
     }
 
     // One-line rubric, not carried: anchor present but rubric line missing -> Stale.
@@ -206,7 +239,11 @@ mod tests {
     // Stale with at least four lines, missing last three.
     #[test]
     fn stale_order_pinned() {
-        let result = carry("body\nrubric\nline1", "rubric\nline1\nline2\nline3\nline4", "rubric");
+        let result = carry(
+            "body\nrubric\nline1",
+            "rubric\nline1\nline2\nline3\nline4",
+            "rubric",
+        );
         assert!(matches!(result, Carry::Stale(ref lines) if lines == &["line2", "line3", "line4"]));
     }
 
@@ -237,7 +274,11 @@ mod tests {
     // We document that we return Foreign.
     #[test]
     fn rubric_twice_not_pinned() {
-        let result = carry("body\nrubric\nline1\nrubric\nline1", "rubric\nline1", "rubric");
+        let result = carry(
+            "body\nrubric\nline1\nrubric\nline1",
+            "rubric\nline1",
+            "rubric",
+        );
         // Not pinned; we return Foreign.
         assert!(matches!(result, Carry::Foreign));
     }

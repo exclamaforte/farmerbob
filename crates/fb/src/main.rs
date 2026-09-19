@@ -1,13 +1,9 @@
 mod adjudicate_cmd;
-mod cmd;
-mod compare_gather;
 mod bench_cmd;
 mod bench_gather;
+mod cmd;
 mod compare_cmd;
-mod prices_cmd;
-mod timing_cmd;
-mod verify_cmd;
-mod verify_gather;
+mod compare_gather;
 mod critique;
 mod crossx;
 mod decl_cmd;
@@ -26,6 +22,7 @@ mod objective;
 mod pareto;
 mod park_cmd;
 mod paths;
+mod prices_cmd;
 mod prices_gather;
 mod promote;
 mod prove;
@@ -38,7 +35,10 @@ mod slots_cmd;
 mod sources;
 mod stage_cmd;
 mod status;
+mod timing_cmd;
 mod trial;
+mod verify_cmd;
+mod verify_gather;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -905,8 +905,11 @@ mod tests {
 
     impl TempSpec {
         fn new(name: &str, contents: &str) -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("fb_decl_wire_test_{}_{}", std::process::id(), name));
+            let path = std::env::temp_dir().join(format!(
+                "fb_decl_wire_test_{}_{}",
+                std::process::id(),
+                name
+            ));
             std::fs::write(&path, contents).expect("write temp spec");
             TempSpec { path }
         }
@@ -950,8 +953,7 @@ mod tests {
     #[test]
     fn clause_1_decl_one_marker_prints_line_and_exits_0() {
         let spec = TempSpec::new("c1", "<!-- fb:modifies crates/fb/src/main.rs -->\n");
-        let (rc, stdout) =
-            run_decl_from_args(&[spec.path().to_str().unwrap()]).expect("run decl");
+        let (rc, stdout) = run_decl_from_args(&[spec.path().to_str().unwrap()]).expect("run decl");
         assert_eq!(rc, 0);
         assert_eq!(stdout, b"modifies crates/fb/src/main.rs\n");
     }
@@ -1006,7 +1008,10 @@ mod tests {
         let (rc_none, stdout_none) =
             run_decl_from_args(&[markerless.path().to_str().unwrap()]).expect("run markerless");
         assert_eq!(rc_none, 2);
-        assert!(stdout_none.is_empty(), "exit 2 must print nothing on stdout");
+        assert!(
+            stdout_none.is_empty(),
+            "exit 2 must print nothing on stdout"
+        );
 
         let ambiguous = TempSpec::new(
             "c4_ambig",
@@ -1015,14 +1020,20 @@ mod tests {
         let (rc_ambig, stdout_ambig) =
             run_decl_from_args(&[ambiguous.path().to_str().unwrap()]).expect("run ambiguous");
         assert_eq!(rc_ambig, 3);
-        assert!(stdout_ambig.is_empty(), "exit 3 must print nothing on stdout");
+        assert!(
+            stdout_ambig.is_empty(),
+            "exit 3 must print nothing on stdout"
+        );
 
-        let nonexistent = std::env::temp_dir()
-            .join(format!("fb_decl_nonexistent_{}.md", std::process::id()));
+        let nonexistent =
+            std::env::temp_dir().join(format!("fb_decl_nonexistent_{}.md", std::process::id()));
         let (rc_missing, stdout_missing) =
             run_decl_from_args(&[nonexistent.to_str().unwrap()]).expect("run nonexistent");
         assert_eq!(rc_missing, 4);
-        assert!(stdout_missing.is_empty(), "exit 4 must print nothing on stdout");
+        assert!(
+            stdout_missing.is_empty(),
+            "exit 4 must print nothing on stdout"
+        );
     }
 
     #[test]
@@ -1075,7 +1086,10 @@ mod tests {
         let (rc, stdout) =
             run_decl_from_args(&[dir.to_str().unwrap()]).expect("run directory spec");
         assert_eq!(rc, 4);
-        assert!(stdout.is_empty(), "directory spec must produce empty stdout");
+        assert!(
+            stdout.is_empty(),
+            "directory spec must produce empty stdout"
+        );
     }
 
     #[test]
@@ -1111,8 +1125,11 @@ mod tests {
             let uniq = NEXT.fetch_add(1, Ordering::Relaxed);
             let repo =
                 std::env::temp_dir().join(format!("fb_next_wire_{label}_{}", std::process::id()));
-            let logs = std::env::temp_dir()
-                .join(format!("fb_next_wire_{label}_logs_{}_{}", std::process::id(), uniq));
+            let logs = std::env::temp_dir().join(format!(
+                "fb_next_wire_{label}_logs_{}_{}",
+                std::process::id(),
+                uniq
+            ));
             std::fs::create_dir_all(repo.join(".fb/prompts")).expect("create prompts dir");
             std::fs::create_dir_all(repo.join(".fb/queue")).expect("create queue dir");
             std::fs::create_dir_all(&logs).expect("create logs dir");
@@ -1172,7 +1189,10 @@ mod tests {
     fn clause_1_next_prints_ranked_items_and_exits_0_when_there_is_work() {
         let harness = TempHarness::actionable("clause1", 2);
         let limit = parse_next(&[]).expect("parse bare next");
-        assert_eq!(limit, 0, "no --limit flag must default to 0, which prints all");
+        assert_eq!(
+            limit, 0,
+            "no --limit flag must default to 0, which prints all"
+        );
         let (code, all) = run_next(&harness, limit);
         assert_eq!(code, 0);
         assert!(all.contains("task00"), "{all}");
@@ -1229,7 +1249,10 @@ mod tests {
             &mut out,
         );
         assert_eq!(code, 4);
-        assert_ne!(code, idle_code, "an idle harness and an unreadable one differ");
+        assert_ne!(
+            code, idle_code,
+            "an idle harness and an unreadable one differ"
+        );
     }
 
     #[test]
@@ -1300,9 +1323,8 @@ mod tests {
     #[test]
     fn clause_1_prices_runs_and_exits_with_gather_code_and_writes_output() {
         let cat = TempPricesFile::new("clause1_cat.json", "[]");
-        let (rc, stdout) =
-            run_prices_from_args(&["--catalogue", cat.path().to_str().unwrap()])
-                .expect("run prices");
+        let (rc, stdout) = run_prices_from_args(&["--catalogue", cat.path().to_str().unwrap()])
+            .expect("run prices");
         let reg = registry_path();
         let mut expected_out = Vec::new();
         let expected_code = prices_gather::run(&reg, cat.path(), &mut expected_out);
@@ -1337,7 +1359,10 @@ mod tests {
         let (rc, _) = run_prices_from_args(&["--catalogue", nonexistent.to_str().unwrap()])
             .expect("should run and return exit 4");
         assert_eq!(rc, 4);
-        assert_ne!(rc, 0, "an unreadable catalogue and an all-clear must differ");
+        assert_ne!(
+            rc, 0,
+            "an unreadable catalogue and an all-clear must differ"
+        );
     }
 
     #[test]
@@ -1377,14 +1402,10 @@ mod tests {
 
     #[test]
     fn boundary_neither_file_exists_exits_4() {
-        let nonexistent_src = std::env::temp_dir().join(format!(
-            "fb_prices_absent_src_{}.toml",
-            std::process::id()
-        ));
-        let nonexistent_cat = std::env::temp_dir().join(format!(
-            "fb_prices_absent_cat_{}.json",
-            std::process::id()
-        ));
+        let nonexistent_src =
+            std::env::temp_dir().join(format!("fb_prices_absent_src_{}.toml", std::process::id()));
+        let nonexistent_cat =
+            std::env::temp_dir().join(format!("fb_prices_absent_cat_{}.json", std::process::id()));
         let (rc, _) = run_prices_from_args(&[
             "--sources",
             nonexistent_src.to_str().unwrap(),
@@ -1398,9 +1419,8 @@ mod tests {
     #[test]
     fn boundary_empty_catalogue_valid_json_matches_prices_gather() {
         let cat = TempPricesFile::new("boundary_empty.json", "[]");
-        let (rc, stdout) =
-            run_prices_from_args(&["--catalogue", cat.path().to_str().unwrap()])
-                .expect("run prices with empty catalogue array");
+        let (rc, stdout) = run_prices_from_args(&["--catalogue", cat.path().to_str().unwrap()])
+            .expect("run prices with empty catalogue array");
         let reg = registry_path();
         let mut expected_out = Vec::new();
         let expected_code = prices_gather::run(&reg, cat.path(), &mut expected_out);
@@ -1495,7 +1515,8 @@ mod tests {
     }
 
     #[test]
-    fn clause_2_verify_missing_score_file_exits_with_unreadable_code_differing_from_present_and_zero() {
+    fn clause_2_verify_missing_score_file_exits_with_unreadable_code_differing_from_present_and_zero()
+     {
         let json = r#"[
             {"source":"arm_a","build":"pass","test":"pass","verdict":"PASS","err":"ok"},
             {"source":"arm_b","build":"pass","test":"pass","verdict":"PASS","err":"ok"}
@@ -1513,8 +1534,7 @@ mod tests {
         let missing_path = paths::logs().join(format!("{missing_task}.score.json"));
         assert!(!missing_path.exists());
 
-        let (missing_rc, _) =
-            run_verify_from_args(&[&missing_task]).expect("run verify missing");
+        let (missing_rc, _) = run_verify_from_args(&[&missing_task]).expect("run verify missing");
 
         let mut expected_unreadable_out = Vec::new();
         let expected_unreadable_code =
@@ -1703,16 +1723,16 @@ mod tests {
 
     #[test]
     fn clause_3_bench_missing_manifest_exits_4_differs_from_1() {
-        let nonexistent = std::env::temp_dir().join(format!(
-            "fb_bench_wire_nodir_{}",
-            std::process::id()
-        ));
+        let nonexistent =
+            std::env::temp_dir().join(format!("fb_bench_wire_nodir_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&nonexistent);
 
-        let (code, _) =
-            run_bench_args(&[nonexistent.to_str().unwrap()]).expect("parse bench args");
+        let (code, _) = run_bench_args(&[nonexistent.to_str().unwrap()]).expect("parse bench args");
         assert_eq!(code, 4);
-        assert_ne!(code, 1, "missing manifest (exit 4) must differ from incorrect (exit 1)");
+        assert_ne!(
+            code, 1,
+            "missing manifest (exit 4) must differ from incorrect (exit 1)"
+        );
     }
 
     #[test]
@@ -1800,9 +1820,8 @@ mod tests {
         scratch.write("bench.sh", "echo '{\"ms\":1.0}'\n");
 
         // --timeout-s 0 must parse without error and a clean single-trial run exits 0.
-        let (code, _) =
-            run_bench_args(&[scratch.path.to_str().unwrap(), "--timeout-s", "0"])
-                .expect("--timeout-s 0 must not be a clap error");
+        let (code, _) = run_bench_args(&[scratch.path.to_str().unwrap(), "--timeout-s", "0"])
+            .expect("--timeout-s 0 must not be a clap error");
         assert_eq!(code, 0);
     }
 
@@ -1815,9 +1834,8 @@ mod tests {
         scratch.write("verify.sh", "echo '{\"correct\":true,\"detail\":\"ok\"}'\n");
         scratch.write("bench.sh", "echo '{\"ms\":1.0}'\n");
 
-        let (code, _) =
-            run_bench_args(&[scratch.path.to_str().unwrap(), "--max-attempts", "0"])
-                .expect("--max-attempts 0 must not be a clap error");
+        let (code, _) = run_bench_args(&[scratch.path.to_str().unwrap(), "--max-attempts", "0"])
+            .expect("--max-attempts 0 must not be a clap error");
 
         let plan = bench_cmd::BenchPlan {
             dir: scratch.path.clone(),
@@ -1832,14 +1850,10 @@ mod tests {
 
     #[test]
     fn boundary_nonexistent_dir_exits_4() {
-        let gone = std::env::temp_dir().join(format!(
-            "fb_bench_wire_gone_{}",
-            std::process::id()
-        ));
+        let gone = std::env::temp_dir().join(format!("fb_bench_wire_gone_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&gone);
 
-        let (code, _) =
-            run_bench_args(&[gone.to_str().unwrap()]).expect("parse bench args");
+        let (code, _) = run_bench_args(&[gone.to_str().unwrap()]).expect("parse bench args");
         assert_eq!(code, 4);
     }
 }

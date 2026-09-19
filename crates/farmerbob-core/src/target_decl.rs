@@ -98,9 +98,7 @@ fn reason_for(rejected: precondition::Rejected) -> String {
         precondition::Rejected::NoSpaceAfterOpener => {
             "no whitespace between opener and fb:".to_string()
         }
-        precondition::Rejected::MultipleMarkers => {
-            "multiple markers on a single line".to_string()
-        }
+        precondition::Rejected::MultipleMarkers => "multiple markers on a single line".to_string(),
     }
 }
 
@@ -225,7 +223,8 @@ mod tests {
 
     #[test]
     fn boundary_three_markers_ambiguous() {
-        let spec = "<!-- fb:creates a.rs -->\n<!-- fb:modifies b.rs -->\n<!-- fb:creates c.rs -->\n";
+        let spec =
+            "<!-- fb:creates a.rs -->\n<!-- fb:modifies b.rs -->\n<!-- fb:creates c.rs -->\n";
         assert_eq!(
             declared(spec),
             Err(NoDeclaration::Ambiguous(vec![

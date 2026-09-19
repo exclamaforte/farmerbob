@@ -163,9 +163,15 @@ mod tests {
     fn clause1_three_enabled_arms_yield_three_runs_in_order() {
         let rows = vec![row("t1", "c1", &["a1", "a2", "a3"])];
         let lookup = |name: &str| match name {
-            "a1" => Registration::Enabled { bucket: "b1".into() },
-            "a2" => Registration::Enabled { bucket: "b2".into() },
-            "a3" => Registration::Enabled { bucket: "b3".into() },
+            "a1" => Registration::Enabled {
+                bucket: "b1".into(),
+            },
+            "a2" => Registration::Enabled {
+                bucket: "b2".into(),
+            },
+            "a3" => Registration::Enabled {
+                bucket: "b3".into(),
+            },
             _ => Registration::Unregistered,
         };
         let (runs, skipped) = queue(&rows, &lookup).unwrap();
@@ -186,9 +192,13 @@ mod tests {
     fn clause2_disabled_arm_is_skipped_with_reason_wave_continues() {
         let rows = vec![row("t1", "c1", &["a1", "a2", "a3"])];
         let lookup = |name: &str| match name {
-            "a1" => Registration::Enabled { bucket: "b1".into() },
+            "a1" => Registration::Enabled {
+                bucket: "b1".into(),
+            },
             "a2" => Registration::Disabled("quota exhausted".into()),
-            "a3" => Registration::Enabled { bucket: "b3".into() },
+            "a3" => Registration::Enabled {
+                bucket: "b3".into(),
+            },
             _ => Registration::Unregistered,
         };
         let (runs, skips) = queue(&rows, &lookup).unwrap();
@@ -204,9 +214,13 @@ mod tests {
     fn clause3_unregistered_arm_aborts_with_name_and_task() {
         let rows = vec![row("t1", "c1", &["a1", "a2", "a3"])];
         let lookup = |name: &str| match name {
-            "a1" => Registration::Enabled { bucket: "b1".into() },
+            "a1" => Registration::Enabled {
+                bucket: "b1".into(),
+            },
             "a2" => Registration::Unregistered,
-            "a3" => Registration::Enabled { bucket: "b3".into() },
+            "a3" => Registration::Enabled {
+                bucket: "b3".into(),
+            },
             _ => Registration::Unregistered,
         };
         let err = queue(&rows, &lookup).unwrap_err();
@@ -224,10 +238,12 @@ mod tests {
     #[test]
     fn clause4_disabled_versus_unregistered_same_manifest_different_lookup() {
         let rows = vec![row("t1", "c1", &["a1", "a2"])];
-        
+
         // Disabled: wave continues
         let lookup_disabled = |name: &str| match name {
-            "a1" => Registration::Enabled { bucket: "b1".into() },
+            "a1" => Registration::Enabled {
+                bucket: "b1".into(),
+            },
             "a2" => Registration::Disabled("reason".into()),
             _ => Registration::Unregistered,
         };
@@ -237,7 +253,9 @@ mod tests {
 
         // Unregistered: wave aborts
         let lookup_unreg = |name: &str| match name {
-            "a1" => Registration::Enabled { bucket: "b1".into() },
+            "a1" => Registration::Enabled {
+                bucket: "b1".into(),
+            },
             "a2" => Registration::Unregistered,
             _ => Registration::Unregistered,
         };
@@ -291,10 +309,7 @@ mod tests {
     // answer is 1, not None.
     #[test]
     fn clause8_next_dispatchable_skips_blocked_returns_later() {
-        let queue = vec![
-            run("a1", "t1", "c1", "b1"),
-            run("a2", "t1", "c1", "b2"),
-        ];
+        let queue = vec![run("a1", "t1", "c1", "b1"), run("a2", "t1", "c1", "b2")];
         let in_flight: BTreeMap<String, usize> = [("b1".into(), 1)].into_iter().collect();
         assert_eq!(next_dispatchable(&queue, &in_flight, 1), Some(1));
     }
@@ -302,11 +317,9 @@ mod tests {
     // Clause 9: next_dispatchable returns None when every remaining run's bucket is full.
     #[test]
     fn clause9_next_dispatchable_none_when_all_full() {
-        let queue = vec![
-            run("a1", "t1", "c1", "b1"),
-            run("a2", "t1", "c1", "b2"),
-        ];
-        let in_flight: BTreeMap<String, usize> = [("b1".into(), 1), ("b2".into(), 1)].into_iter().collect();
+        let queue = vec![run("a1", "t1", "c1", "b1"), run("a2", "t1", "c1", "b2")];
+        let in_flight: BTreeMap<String, usize> =
+            [("b1".into(), 1), ("b2".into(), 1)].into_iter().collect();
         assert_eq!(next_dispatchable(&queue, &in_flight, 1), None);
     }
 
@@ -318,10 +331,18 @@ mod tests {
             row("t2", "c2", &["a3", "a4"]),
         ];
         let lookup = |name: &str| match name {
-            "a1" => Registration::Enabled { bucket: "b1".into() },
-            "a2" => Registration::Enabled { bucket: "b2".into() },
-            "a3" => Registration::Enabled { bucket: "b3".into() },
-            "a4" => Registration::Enabled { bucket: "b4".into() },
+            "a1" => Registration::Enabled {
+                bucket: "b1".into(),
+            },
+            "a2" => Registration::Enabled {
+                bucket: "b2".into(),
+            },
+            "a3" => Registration::Enabled {
+                bucket: "b3".into(),
+            },
+            "a4" => Registration::Enabled {
+                bucket: "b4".into(),
+            },
             _ => Registration::Unregistered,
         };
         let (runs, _) = queue(&rows, &lookup).unwrap();
@@ -361,12 +382,11 @@ mod tests {
     // Boundary: A row with ZERO arms contributes nothing and is not an error by itself.
     #[test]
     fn boundary_row_with_zero_arms_contributes_nothing() {
-        let rows = vec![
-            row("t1", "c1", &[]),
-            row("t2", "c2", &["a1"]),
-        ];
+        let rows = vec![row("t1", "c1", &[]), row("t2", "c2", &["a1"])];
         let lookup = |name: &str| match name {
-            "a1" => Registration::Enabled { bucket: "b1".into() },
+            "a1" => Registration::Enabled {
+                bucket: "b1".into(),
+            },
             _ => Registration::Unregistered,
         };
         let (runs, skipped) = queue(&rows, &lookup).unwrap();
@@ -404,9 +424,13 @@ mod tests {
     fn composition_runs_and_skips_partition_arms() {
         let rows = vec![row("t1", "c1", &["a1", "a2", "a3", "a4"])];
         let lookup = |name: &str| match name {
-            "a1" => Registration::Enabled { bucket: "b1".into() },
+            "a1" => Registration::Enabled {
+                bucket: "b1".into(),
+            },
             "a2" => Registration::Disabled("reason".into()),
-            "a3" => Registration::Enabled { bucket: "b3".into() },
+            "a3" => Registration::Enabled {
+                bucket: "b3".into(),
+            },
             "a4" => Registration::Disabled("another".into()),
             _ => Registration::Unregistered,
         };
@@ -431,9 +455,13 @@ mod tests {
         let lookup = |name: &str| {
             examined.borrow_mut().push(name.to_string());
             match name {
-                "a1" => Registration::Enabled { bucket: "b1".into() },
+                "a1" => Registration::Enabled {
+                    bucket: "b1".into(),
+                },
                 "a2" => Registration::Unregistered,
-                "a3" => Registration::Enabled { bucket: "b3".into() },
+                "a3" => Registration::Enabled {
+                    bucket: "b3".into(),
+                },
                 _ => Registration::Unregistered,
             }
         };
@@ -446,7 +474,9 @@ mod tests {
     fn disabled_reason_carried_unchanged() {
         let rows = vec![row("t1", "c1", &["a1", "a2"])];
         let lookup = |name: &str| match name {
-            "a1" => Registration::Enabled { bucket: "b1".into() },
+            "a1" => Registration::Enabled {
+                bucket: "b1".into(),
+            },
             "a2" => Registration::Disabled("some reason".into()),
             _ => Registration::Unregistered,
         };
@@ -457,10 +487,7 @@ mod tests {
     // next_dispatchable returns index into queue, not a copy.
     #[test]
     fn next_dispatchable_returns_index_not_copy() {
-        let queue = vec![
-            run("a1", "t1", "c1", "b1"),
-            run("a2", "t1", "c1", "b2"),
-        ];
+        let queue = vec![run("a1", "t1", "c1", "b1"), run("a2", "t1", "c1", "b2")];
         let in_flight: BTreeMap<String, usize> = BTreeMap::new();
         let idx = next_dispatchable(&queue, &in_flight, 1).unwrap();
         assert_eq!(idx, 0);

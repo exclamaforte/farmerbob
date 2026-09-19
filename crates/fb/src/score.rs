@@ -170,7 +170,14 @@ fn measure_base(wt: &Path) -> Option<String> {
 fn deleted_paths(wt: &Path, base: &str) -> Measurement<Vec<String>> {
     match git(
         wt,
-        &["diff", "--name-only", "--diff-filter=D", base, "--", "crates/"],
+        &[
+            "diff",
+            "--name-only",
+            "--diff-filter=D",
+            base,
+            "--",
+            "crates/",
+        ],
     ) {
         Some(out) => Measurement::observed(out.lines().map(str::to_string).collect()),
         None => Measurement::instrument_failed(
@@ -824,14 +831,20 @@ mod tests {
 test result: ok. 12 passed; 0 failed; 0 ignored
 test result: ok. 7 passed; 0 failed; 0 ignored
 ";
-        assert_eq!(farmerbob_core::build_verdict::tests_run(log), Measurement::Observed(19));
+        assert_eq!(
+            farmerbob_core::build_verdict::tests_run(log),
+            Measurement::Observed(19)
+        );
     }
 
     #[test]
     fn a_filtered_run_that_matched_nothing_counts_zero_not_success() {
         // The first bug ever filed in this project: `ok. 0 passed` is a REAL zero.
         let log = "test result: ok. 0 passed; 0 failed; 0 ignored; 3 filtered out\n";
-        assert_eq!(farmerbob_core::build_verdict::tests_run(log), Measurement::Observed(0));
+        assert_eq!(
+            farmerbob_core::build_verdict::tests_run(log),
+            Measurement::Observed(0)
+        );
         assert_eq!(
             judge(&GateObs {
                 built: Some(true),
@@ -1592,7 +1605,10 @@ mod deleted_list {
         let tmp = scratch("pair");
         let answers = new_repo(&tmp, "answers");
         let empty = deleted_paths(&answers, &base_of(&answers));
-        assert!(empty.is_observed(), "clause 2: git answered: nothing deleted");
+        assert!(
+            empty.is_observed(),
+            "clause 2: git answered: nothing deleted"
+        );
         assert_eq!(empty.value(), Some(&Vec::<String>::new()));
 
         let refuses = tmp.join("refuses");
@@ -1600,9 +1616,7 @@ mod deleted_list {
         let missing = deleted_paths(&refuses, "HEAD");
         assert!(!missing.is_observed(), "clause 3: git refused");
         assert!(
-            absent_reason(&missing)
-                .to_lowercase()
-                .contains("git"),
+            absent_reason(&missing).to_lowercase().contains("git"),
             "clause 3: the refusal names git"
         );
         assert_ne!(
@@ -1632,7 +1646,10 @@ mod deleted_list {
             .scope
             .value()
             .expect("the deletion list was observed, so scope is observed");
-        assert!(!sc.target_changed, "deleting the target is not producing it");
+        assert!(
+            !sc.target_changed,
+            "deleting the target is not producing it"
+        );
         assert_eq!(
             sc.departures,
             vec![Departure::Deleted {

@@ -412,7 +412,9 @@ pub fn run_cmd(bead: &str, krate: &str, target: &str, prover: &str) -> i32 {
 fn run(bead: &str, krate: &str, target: &str, prover: &str) -> Result<i32> {
     let claims_path = logs_dir().join(format!("{bead}.claims.json"));
     if !is_non_empty_file(&claims_path) {
-        println!("prove: n/a, no claims file -- nothing was promoted, so there is nothing to prove");
+        println!(
+            "prove: n/a, no claims file -- nothing was promoted, so there is nothing to prove"
+        );
         return Ok(4);
     }
     let claims = load_claims(&claims_path)?;

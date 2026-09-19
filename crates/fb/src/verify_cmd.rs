@@ -185,7 +185,10 @@ mod tests {
         ];
         for (r, otherwise) in would_be {
             let line = assess(&r);
-            assert_eq!(line.code, 3, "timeout over a would-be-{otherwise} candidate");
+            assert_eq!(
+                line.code, 3,
+                "timeout over a would-be-{otherwise} candidate"
+            );
             assert!(line.text.contains(r.arm.as_str()));
         }
     }
@@ -197,7 +200,11 @@ mod tests {
         let line = assess(&r);
         assert_eq!(line.code, 0);
         assert!(line.text.contains("alpha"));
-        assert!(line.text.contains("7"), "must mention the passing count: {}", line.text);
+        assert!(
+            line.text.contains("7"),
+            "must mention the passing count: {}",
+            line.text
+        );
     }
 
     #[test]

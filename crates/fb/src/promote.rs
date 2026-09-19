@@ -2339,9 +2339,7 @@ mod tests {
 
     impl LogsSandbox {
         fn at(root: &Path) -> Self {
-            let _lock = RUN_CMD_LOCK
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let _lock = RUN_CMD_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
             let previous = std::env::var("FB_LOGS").ok();
             // `set_var` is `unsafe` in edition 2024 because the environment is
             // process-global; the lock above is what makes the window safe.
@@ -2484,7 +2482,9 @@ mod tests {
     #[test]
     fn the_exit_4_message_says_no_critiques_were_written() {
         let Some(binary) = built_binary() else {
-            println!("not exercised: the fb binary has not been built; run `cargo build -p fb` first");
+            println!(
+                "not exercised: the fb binary has not been built; run `cargo build -p fb` first"
+            );
             return;
         };
         let root = test_root("napplies-message");

@@ -76,11 +76,7 @@ fn format_measurement(m: &Measurement<u32>) -> String {
 pub fn run(rows: &[Row], out: &mut dyn Write) -> i32 {
     let rendered = table(rows);
     let _ = out.write_all(rendered.as_bytes());
-    if rows.is_empty() {
-        1
-    } else {
-        0
-    }
+    if rows.is_empty() { 1 } else { 0 }
 }
 
 #[cfg(test)]
@@ -106,8 +102,18 @@ mod tests {
         }
     }
 
-    fn row_with_mixed(arm: &str, tests: Measurement<u32>, lines: Measurement<u32>, clippy: Measurement<u32>) -> Row {
-        Row { arm: arm.to_string(), tests, lines, clippy }
+    fn row_with_mixed(
+        arm: &str,
+        tests: Measurement<u32>,
+        lines: Measurement<u32>,
+        clippy: Measurement<u32>,
+    ) -> Row {
+        Row {
+            arm: arm.to_string(),
+            tests,
+            lines,
+            clippy,
+        }
     }
 
     #[test]
@@ -225,10 +231,7 @@ mod tests {
 
     #[test]
     fn clause_8_duplicate_arm_names_both_appear() {
-        let rows = [
-            observed_row("same", 1, 1, 1),
-            observed_row("same", 2, 2, 2),
-        ];
+        let rows = [observed_row("same", 1, 1, 1), observed_row("same", 2, 2, 2)];
         let out = table(&rows);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 3); // heading + 2 rows
@@ -285,17 +288,40 @@ mod tests {
     #[test]
     fn measurement_variants_all_render_correctly() {
         let rows = [
-            row_with_mixed("not_attempted", Measurement::not_attempted(), Measurement::observed(1), Measurement::observed(2)),
-            row_with_mixed("instrument_failed", Measurement::instrument_failed("boom"), Measurement::observed(3), Measurement::observed(4)),
-            row_with_mixed("nothing_to_measure", Measurement::nothing_to_measure("none"), Measurement::observed(5), Measurement::observed(6)),
-            row_with_mixed("untrusted", Measurement::untrusted("bad"), Measurement::observed(7), Measurement::observed(8)),
+            row_with_mixed(
+                "not_attempted",
+                Measurement::not_attempted(),
+                Measurement::observed(1),
+                Measurement::observed(2),
+            ),
+            row_with_mixed(
+                "instrument_failed",
+                Measurement::instrument_failed("boom"),
+                Measurement::observed(3),
+                Measurement::observed(4),
+            ),
+            row_with_mixed(
+                "nothing_to_measure",
+                Measurement::nothing_to_measure("none"),
+                Measurement::observed(5),
+                Measurement::observed(6),
+            ),
+            row_with_mixed(
+                "untrusted",
+                Measurement::untrusted("bad"),
+                Measurement::observed(7),
+                Measurement::observed(8),
+            ),
         ];
         let out = table(&rows);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 5); // heading + 4 rows
         // First column (tests) should be ABSENT for all four
         for (i, line) in lines.iter().enumerate().take(5).skip(1) {
-            assert!(line.contains(ABSENT), "row {i} should contain ABSENT in tests column");
+            assert!(
+                line.contains(ABSENT),
+                "row {i} should contain ABSENT in tests column"
+            );
         }
     }
 }

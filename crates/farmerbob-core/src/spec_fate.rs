@@ -74,7 +74,10 @@ pub fn fate(spec: &str, base: &impl Base) -> Fate {
 /// is dropped, merged or reordered. Two specs with the same name produce two
 /// separate entries.
 pub fn survey<'a>(specs: &[(&'a str, &'a str)], base: &impl Base) -> Vec<(&'a str, Fate)> {
-    specs.iter().map(|(name, spec)| (*name, fate(spec, base))).collect()
+    specs
+        .iter()
+        .map(|(name, spec)| (*name, fate(spec, base)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -116,10 +119,7 @@ mod tests {
             Fate::Stale { path, grounds } => {
                 assert_eq!(path, "a/b.rs");
                 assert!(!grounds.is_empty(), "grounds must not be empty");
-                assert!(
-                    grounds.contains("a/b.rs"),
-                    "grounds must mention the path"
-                );
+                assert!(grounds.contains("a/b.rs"), "grounds must mention the path");
             }
             other => panic!("expected Stale, got {:?}", other),
         }
@@ -172,8 +172,7 @@ mod tests {
 
     #[test]
     fn clause_6_two_markers_undecidable_ambiguous_base_not_called() {
-        let spec =
-            "<!-- fb:creates a/b.rs -->\n<!-- fb:modifies c/d.rs -->\n";
+        let spec = "<!-- fb:creates a/b.rs -->\n<!-- fb:modifies c/d.rs -->\n";
         match fate(spec, &PanicBase) {
             Fate::Undecidable(NoDeclaration::Ambiguous(paths)) => {
                 assert!(paths.len() >= 2, "expected at least two paths in Ambiguous");
