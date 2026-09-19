@@ -67,8 +67,17 @@ is not tested; `count_live` and `unreadable` are pure and are.
 4. A process whose `cwd` is outside `root` does not count and is not `unreadable`. Pin a path
    that shares a PREFIX with `root` but is a sibling, e.g. `<root>-old/x`, because string
    prefix matching gets this wrong and path-component matching does not.
-5. `count_live` counts processes, not distinct worktrees: two processes in one worktree count
-   two. Pin it, because the caller uses this against a slot budget and slots are per process.
+5. `count_live` counts distinct WORKTREES, not processes: every process in one worktree counts
+   once between them. Pin it, because the caller uses this against a slot budget and
+   `admit_cmd::usable_slots` budgets memory PER RUN -- one run, one worktree, one slot.
+
+   This clause said the opposite until 2026-09-19, on the stated grounds that "slots are per
+   process". That was false about the budget and was only ever survivable because a hardcoded
+   comm filter admitted a single process per run. The filter was itself a hand-kept second
+   copy of the launcher table and was already wrong -- the zcode launcher runs as `zcode-cli`,
+   so every glm arm was invisible and `fb live` reported 1 against two running scopes. With
+   the filter gone, one codex run is seven processes, and per-process counting would report
+   seven agents against a seven-slot budget that is full at one.
 6. `unreadable` returns the pids in the order given, with no deduplication.
 7. `run` exits 0 whatever the count.
 

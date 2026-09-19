@@ -23,28 +23,39 @@ pub struct Proc {
     pub cwd: Option<String>,
 }
 
-/// How many of these processes are agents working in a worktree.
+/// How many agents are working in a worktree.
 ///
-/// `root` is the worktree root, e.g.
-/// `/home/gabe/.local/share/farmerbob/worktrees`.
+/// COUNT WORKTREES, NOT PROCESSES. One run occupies one worktree and one admission slot,
+/// and it is a whole process tree: the wrapper, bwrap, the launcher CLI and however many
+/// node workers it spawns -- seven of them for a single codex run. Counting processes
+/// answers a question no caller asked and inflates by the arity of whatever launcher is in
+/// use.
+///
+/// `root` is the worktree root, e.g. `/home/gabe/.local/share/farmerbob/worktrees`.
 pub fn count_live(procs: &[Proc], root: &str) -> usize {
     if root.is_empty() {
         return 0;
     }
+    worktrees_live(procs, root).len()
+}
+
+/// The worktrees with at least one live process, by name.
+pub fn worktrees_live(procs: &[Proc], root: &str) -> std::collections::BTreeSet<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    if root.is_empty() {
+        return seen;
+    }
     let root_path = Path::new(root);
-    procs
-        .iter()
-        .filter(|p| {
-            let Some(cwd) = &p.cwd else {
-                return false;
-            };
-            let cwd_path = Path::new(cwd);
-            match cwd_path.strip_prefix(root_path) {
-                Ok(rel) => rel.components().any(|c| matches!(c, Component::Normal(_))),
-                Err(_) => false,
-            }
-        })
-        .count()
+    for p in procs {
+        let Some(cwd) = &p.cwd else { continue };
+        let Ok(rel) = Path::new(cwd).strip_prefix(root_path) else {
+            continue;
+        };
+        if let Some(Component::Normal(first)) = rel.components().next() {
+            seen.insert(first.to_string_lossy().into_owned());
+        }
+    }
+    seen
 }
 
 /// The processes whose working directory could not be read, so a caller can
@@ -52,7 +63,8 @@ pub fn count_live(procs: &[Proc], root: &str) -> usize {
 pub fn unreadable(procs: &[Proc]) -> Vec<u32> {
     procs
         .iter()
-        .filter_map(|p| if p.cwd.is_none() { Some(p.pid) } else { None })
+        .filter(|p| p.cwd.is_none() && looks_like_a_launcher(&p.comm))
+        .map(|p| p.pid)
         .collect()
 }
 
@@ -73,7 +85,7 @@ pub fn run(args: &[String]) -> i32 {
         }
     }
 
-    let procs = gather_procs();
+    let procs = gather_procs(&root);
     let live = count_live(&procs, &root);
     let unread = unreadable(&procs);
 
@@ -90,7 +102,7 @@ pub fn run(args: &[String]) -> i32 {
 }
 
 /// Gathers candidate agent processes from `/proc`.
-fn gather_procs() -> Vec<Proc> {
+fn gather_procs(root: &str) -> Vec<Proc> {
     let mut procs = Vec::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return procs;
@@ -108,10 +120,19 @@ fn gather_procs() -> Vec<Proc> {
             continue;
         };
         let comm = comm_raw.trim().to_string();
-        if is_candidate_agent(&comm) {
-            let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))
-                .ok()
-                .map(|p| p.to_string_lossy().into_owned());
+        // NO NAME FILTER. This matched a fixed list -- opencode, zcode, agy, codex -- which
+        // was a second copy of the launcher table, kept by hand and already wrong: the
+        // zcode launcher runs as `zcode-cli`, so every glm arm was invisible and `fb live`
+        // reported 1 against two running scopes. A count used for ADMISSION that silently
+        // undercounts lets the harness dispatch past its own memory cap.
+        //
+        // The worktree is the ground truth, as this module's own heading says. A process is
+        // an agent's if its working directory is inside one, whatever it calls itself.
+        let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned());
+        let inside = cwd.as_deref().is_some_and(|c| c.starts_with(&root));
+        if inside || cwd.is_none() {
             procs.push(Proc { pid, comm, cwd });
         }
     }
@@ -120,8 +141,13 @@ fn gather_procs() -> Vec<Proc> {
 }
 
 /// Returns true if the executable name matches candidate agent binaries.
-fn is_candidate_agent(comm: &str) -> bool {
-    matches!(comm, "opencode" | "zcode" | "agy" | "codex")
+/// Launcher names seen in this project, used ONLY to decide whether an unreadable process
+/// is worth reporting as unclassified. It never decides what counts as live -- that is the
+/// worktree.
+fn looks_like_a_launcher(comm: &str) -> bool {
+    ["opencode", "zcode", "agy", "codex", "claude", "ori", "node"]
+        .iter()
+        .any(|n| comm.starts_with(n))
 }
 
 #[cfg(test)]
@@ -201,8 +227,14 @@ mod tests {
         assert_eq!(unreadable(&procs), vec![302]);
     }
 
+    /// Clause 5, REVERSED on 2026-09-19. It read "counts processes, not distinct worktrees
+    /// ... because the caller uses this against a slot budget and slots are per process".
+    /// That was false about the budget -- `admit_cmd::usable_slots` divides available memory
+    /// by a PER-RUN figure -- and it only survived because a hardcoded comm filter admitted
+    /// one process per run. With the filter gone one codex run is seven processes, which
+    /// would report seven agents against a budget that is full at one.
     #[test]
-    fn clause_5_counts_processes_not_worktrees() {
+    fn clause_5_counts_worktrees_not_processes() {
         let root = "/home/gabe/.local/share/farmerbob/worktrees";
         let p1 = Proc {
             pid: 501,
@@ -214,7 +246,7 @@ mod tests {
             comm: "opencode".to_string(),
             cwd: Some("/home/gabe/.local/share/farmerbob/worktrees/wt-shared".to_string()),
         };
-        assert_eq!(count_live(&[p1, p2], root), 2);
+        assert_eq!(count_live(&[p1, p2], root), 1);
     }
 
     #[test]
@@ -369,5 +401,101 @@ mod tests {
             live_count + unreadable_pids.len() + outside_count,
             procs.len()
         );
+    }
+
+    /// ONE RUN IS ONE AGENT, however many processes it is. A single codex run is seven --
+    /// the wrapper, bwrap, the CLI and four node workers -- and counting processes answers
+    /// a question no caller asked while inflating by the arity of the launcher in use.
+    #[test]
+    fn a_whole_process_tree_in_one_worktree_counts_once() {
+        let root = "/wt";
+        let tree: Vec<Proc> = ["fb", "bwrap", "codex", "node_repl", "node_repl"]
+            .iter()
+            .enumerate()
+            .map(|(i, c)| Proc {
+                pid: 100 + i as u32,
+                comm: c.to_string(),
+                cwd: Some("/wt/task--arm".to_string()),
+            })
+            .collect();
+        assert_eq!(count_live(&tree, root), 1);
+    }
+
+    /// The name filter was a SECOND COPY of the launcher table, kept by hand, and it was
+    /// already wrong: the zcode launcher runs as `zcode-cli`, not `zcode`, so every glm arm
+    /// was invisible and `fb live` reported 1 against two running scopes. A count used for
+    /// ADMISSION that silently undercounts lets the harness dispatch past its memory cap.
+    #[test]
+    fn an_agent_is_counted_whatever_its_process_calls_itself() {
+        let root = "/wt";
+        let procs = vec![
+            Proc {
+                pid: 1,
+                comm: "zcode-cli".into(),
+                cwd: Some("/wt/a--glm".into()),
+            },
+            Proc {
+                pid: 2,
+                comm: "codex-code-mode".into(),
+                cwd: Some("/wt/b--codex".into()),
+            },
+            Proc {
+                pid: 3,
+                comm: "something-nobody-registered".into(),
+                cwd: Some("/wt/c--new".into()),
+            },
+        ];
+        assert_eq!(count_live(&procs, root), 3);
+        assert_eq!(
+            worktrees_live(&procs, root).into_iter().collect::<Vec<_>>(),
+            vec!["a--glm", "b--codex", "c--new"]
+        );
+    }
+
+    /// A process sitting at the root itself is in no worktree, so it is no agent.
+    #[test]
+    fn a_process_at_the_root_itself_is_not_an_agent() {
+        let procs = vec![Proc {
+            pid: 1,
+            comm: "fb".into(),
+            cwd: Some("/wt".into()),
+        }];
+        assert_eq!(count_live(&procs, "/wt"), 0);
+    }
+
+    /// An unreadable cwd is NOT "not an agent" -- it is a process that could not be
+    /// classified, and the caller is told rather than quietly undercounted.
+    #[test]
+    fn an_unclassifiable_launcher_is_reported_not_swallowed() {
+        let procs = vec![
+            Proc {
+                pid: 7,
+                comm: "zcode-cli".into(),
+                cwd: None,
+            },
+            Proc {
+                pid: 8,
+                comm: "sshd".into(),
+                cwd: None,
+            },
+        ];
+        assert_eq!(
+            unreadable(&procs),
+            vec![7],
+            "only a plausible launcher is worth reporting"
+        );
+    }
+
+    /// An empty root cannot be matched against, and answering 0 for it would read as "no
+    /// agents" rather than "nothing was asked".
+    #[test]
+    fn an_empty_root_matches_nothing() {
+        let procs = vec![Proc {
+            pid: 1,
+            comm: "codex".into(),
+            cwd: Some("/wt/a".into()),
+        }];
+        assert_eq!(count_live(&procs, ""), 0);
+        assert!(worktrees_live(&procs, "").is_empty());
     }
 }
