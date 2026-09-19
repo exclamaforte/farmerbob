@@ -1,0 +1,14 @@
+toolchain MERGED codex-luna (bdc74d7).
+
+First adjudication with a live subjective tier on a one-arm field. critique ok, promote ok,
+prove ok; crossx n/a, correctly, being the one stage that truly needs two implementations.
+
+gemini-38-flash on codex-luna: no material defects, 0 claims -- so promoted: 0 and
+subjects: [] are the honest answer rather than a silent stage failure.
+
+Its two substantive findings were about MY spec and the suite, not the patch:
+  - unit_flag as a toolchain-level string assumes cargo's argument shape, in the module
+    written to stop the harness assuming cargo. Filed.
+  - four clauses unexercised by the candidate's two tests (Format vs FormatCheck, unit
+    narrowing with a `--` delimiter, first-duplicate-wins, supported() ordering/dedup),
+    with the consequence named: under cross-examination a suite this thin catches nothing.
