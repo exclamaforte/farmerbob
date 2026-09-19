@@ -189,22 +189,6 @@ enum Command {
         #[arg(long)]
         unregister: bool,
     },
-    /// Classify one pipeline stage from its exit status and the artefact it left.
-    ///
-    /// The shell asked `[ ! -s "$artefact" ]`, which is true when the file is missing,
-    /// when it is empty, and when the shell cannot stat it at all -- three facts, one
-    /// branch. This asks `farmerbob_core::stage_outcome` instead. Exits 0 when the stage
-    /// may be signed, 1 when it may not, 2 when the invocation itself was malformed.
-    Stage {
-        /// The stage's name, as the pipeline prints it.
-        name: String,
-        /// The stage command's exit status.
-        #[arg(long)]
-        rc: i32,
-        /// The artefact the stage was supposed to leave.
-        #[arg(long)]
-        artefact: String,
-    },
     /// Record and read credit for spec defects and follow-ups proposed by arms.
     ///
     /// Two stages feed it: the spec critique that runs BEFORE implementation, and the
@@ -660,13 +644,6 @@ fn main() {
             unregister,
         }) => reap_cmd::run_cmd(execute, unregister),
         Some(Command::Scope { task, arm }) => scope_cmd::run_cmd(&task, arm.as_deref()),
-        Some(Command::Stage { name, rc, artefact }) => stage_cmd::run(&[
-            name,
-            "--rc".to_string(),
-            rc.to_string(),
-            "--artefact".to_string(),
-            artefact,
-        ]),
         Some(Command::Ledger {
             record,
             arm,

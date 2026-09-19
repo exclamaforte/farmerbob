@@ -358,7 +358,7 @@ NTESTS=$(awk '
 # verdict is the only field that means anything: real work, compiles, tests exist and pass
 VERDICT="FAIL"
 # No absolute line threshold: it grades on VOLUME and fails correct implementations of
-# small tasks. Task size is a property of the task, not the arm.  (see crates/fb/src/score.rs)
+# small tasks. Task size is a property of the task, not the arm.  (see fb-score.sh)
 if [ "$BUILD" = "pass" ] && [ "$TEST" = "pass" ] && [ "$LOC" -gt 0 ] && [ "$NTESTS" -gt 0 ]; then
   VERDICT="PASS"
 elif [ "$LOC" -eq 0 ]; then VERDICT="NO-OP"
