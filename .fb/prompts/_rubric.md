@@ -154,6 +154,19 @@ your own addition to write the test, write the test the longer way.
 The rule is not "do not add API". It is "do not make your suite depend on API a rival has no
 reason to have".
 
+## A "derive these traits" instruction applies to types YOU define
+
+If a spec says to derive `Debug, Clone, PartialEq, Eq` "on every type in the Exact API", it
+means every type the task DEFINES. An Exact API block also NAMES types it imports --
+`Measurement`, `Absent`, `Verdict`, `BuildVerdict` -- and you can neither define nor change
+those. Read literally the two instructions contradict, and codex-luna reported exactly that
+before implementing: "the derive rule requires the implementation to derive those traits on
+`Measurement` and `Absent`, but the adjacent rule says those existing types must not be
+defined".
+
+Derive on what you write. If an imported type lacks a trait your tests need, say so in your
+handoff and test around it; do not edit the other file.
+
 ## Reuse the crate's existing types
 
 If this spec names a type that already exists in `farmerbob-core` -- `Verdict`, `Grade`,

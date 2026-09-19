@@ -90,6 +90,7 @@ pub mod task;
 pub mod target_decl;
 pub mod task_contract;
 pub mod taskid;
+pub mod test_delta;
 pub mod testout;
 pub mod timing;
 pub mod verify_plan;

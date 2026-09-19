@@ -1,0 +1,29 @@
+MERGED codex-luna
+Single arm, 138 lines, clippy 0.
+
+Probed all seven behaviours rather than trusting the suite:
+
+  541 -> 547              Added(6)       crate_total 547
+  541 -> 541              Unchanged      crate_total 541
+  547 -> 541              Removed(6)     crate_total 541   <- the regression case
+  unknown -> 547          Missing        crate_total 547   <- clause 7, independent
+  541 -> unknown          Missing        crate_total Missing
+  0 -> 0                  Unchanged                        <- not Added(0)
+  0 -> 3                  Added(3)
+
+Removed(6) is the one that matters: a candidate that BREAKS six existing tests
+shows a slightly lower crate total and reads as ordinary, and an implementation
+using saturating subtraction reports Unchanged and hides it.
+
+And unknown -> 547 gives a Missing contribution beside an Observed crate total,
+which is the point: 547 with a known baseline is "added 6", 547 with an unknown
+baseline is unknown, and it is never "added 547".
+
+SPEC DEFECT, found before implementation and accepted: "derive on every type in the
+Exact API" contradicts "Measurement and Absent are core's, you define neither",
+because the Exact API NAMES imported types. Read literally there is no legal move.
+That line is in most specs I wrote tonight, so the fix went into _rubric.md rather
+than this spec: a derive instruction applies to types the task DEFINES.
+
+Not yet wired: score.rs still records tests_run as the crate total. Making it
+report the contribution is the follow-up, and farmerbob-apxp stays open until then.
