@@ -12,6 +12,7 @@
 
 pub mod adapter;
 pub mod adjudicate;
+pub mod admit_queue;
 pub mod agent;
 pub mod attempt_log;
 pub mod attention;
