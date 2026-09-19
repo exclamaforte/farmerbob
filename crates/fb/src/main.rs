@@ -13,6 +13,7 @@ mod import;
 mod ledger_cmd;
 mod live_cmd;
 mod mutants;
+mod next_cmd;
 mod objective;
 mod pareto;
 mod park_cmd;
