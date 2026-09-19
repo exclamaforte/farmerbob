@@ -1,3 +1,125 @@
+<!-- fb:creates crates/fb/src/stage_cmd.rs -->
+# Task: the rule is in the crate and the shell still decides for itself
+
+Rust workspace, already builds. Work only inside `crates/fb`.
+Create `crates/fb/src/stage_cmd.rs` and add `mod stage_cmd;` to `crates/fb/src/main.rs`.
+Do not change any other file.
+
+## Why this exists
+
+`farmerbob_core::stage_outcome` was merged to end one coercion: a stage that exits 0 and writes
+no artefact did not run, and "I could not look at the artefact" is a third answer that neither
+"ran" nor "produced nothing" covers. It has no caller.
+
+`fb-pipeline.sh` still decides for itself, in shell:
+
+```sh
+if ! "$@" >> "$LOGS/$T.pipeline.log" 2>&1; then
+  echo "  $name: FAILED"; return 1
+fi
+if [ ! -s "$artefact" ]; then
+  echo "  $name: RAN BUT PRODUCED NOTHING at $artefact"; return 1
+fi
+```
+
+`[ ! -s "$artefact" ]` is true when the file is missing, when it is empty, and when the shell
+cannot stat it at all. Three facts, one branch. The comment above that line in the script says
+the two cases "need different fixes" -- and the log still cannot tell them apart, so an operator
+must stat the file by hand to know which bug to chase. (accepted follow-up, glm-53-flash on
+stage-outcome)
+
+This task gives the rule a caller, so the shell asks instead of deciding.
+
+## Exact API
+
+```rust
+/// `fb stage <name> --rc <i32> --artefact <path>`
+///
+/// Prints one line and exits 0 when the stage may be signed, 1 when it may not.
+pub fn run(args: &[String]) -> i32;
+```
+
+`run` takes the already-split command-line arguments AFTER the subcommand word, parses them,
+stats the artefact itself, and calls `farmerbob_core::stage_outcome::classify` and
+`may_sign`. It must not re-implement either rule.
+
+The artefact's size becomes the `Measurement<u64>` that `classify` takes:
+
+- the file exists and its length is readable: `Measurement::observed(len)`, and `len` may be 0;
+- the file does not exist: `Measurement::observed(0)`, because "not created" IS an observation
+  that it holds no bytes;
+- the metadata call FAILS for any other reason -- a permission error, a broken symlink, an I/O
+  error: `Measurement::instrument_failed(..)` with the OS error in the reason. This is the case
+  the shell cannot express and the reason this command exists.
+
+## Falsifiable clauses
+
+1. `rc != 0` prints a line naming the stage and `exit 1`, whatever the artefact says. Pin a
+   non-zero rc with a large healthy artefact.
+2. `rc == 0` with a non-empty artefact prints a line naming the stage and exits 0.
+3. `rc == 0` with an artefact that exists and is EMPTY exits 1, and the line says the stage
+   produced nothing. Assert that it mentions producing nothing, case-insensitively; do not
+   assert the sentence.
+4. `rc == 0` with an artefact that DOES NOT EXIST exits 1 and reports the same
+   `ProducedNothing` outcome as clause 3, because both are `Observed(0)`.
+5. `rc == 0` with an artefact that cannot be stat-ed exits 1 and the line distinguishes it from
+   clauses 3 and 4: it must mention that the artefact could not be inspected AND carry the OS
+   reason. This is the whole point; pin it.
+6. The exit status is `may_sign` negated, for every outcome: 0 exactly when the stage may be
+   signed. Pin that no other combination of rc and artefact produces exit 0.
+7. A missing `--rc` or a missing `--artefact`, or an `--rc` that is not an integer, prints a
+   usage line and exits 2. Two is neither "may sign" nor "may not"; it is "you asked wrongly".
+
+## Boundaries, at N and at zero
+
+- An artefact of exactly 0 bytes: clause 3. An artefact of exactly 1 byte: clause 2. Pin both
+  sides.
+- `--rc 0`: the only rc that can lead to exit 0.
+- A NEGATIVE `--rc`, which is what a signal-killed process reports through some launchers:
+  non-zero, so clause 1, and the value is preserved verbatim in the line.
+- `args` EMPTY: clause 7, usage, exit 2.
+- A stage `name` that is the empty string: degenerate, not invalid. It classifies and prints
+  like any other; the line is still non-empty.
+- An `--artefact` path that is a DIRECTORY: its metadata reads, and its length is whatever the
+  filesystem reports. Say what you do and do not let your tests assert on the length, because
+  it is the filesystem's answer and not this program's.
+
+## Superset status on every enumerated list
+
+`StageOutcome`'s variants are a CLOSED set of exactly five: `Ran`, `ProducedNothing`, `Failed`,
+`Unknown`, `Skipped`. You define none of them, you add none, and your tests may not assert on
+any outcome outside them. `Skipped` is never produced here -- this command is only called for a
+stage that was attempted -- and saying so in your handoff is required.
+
+The exit statuses are a CLOSED set of exactly three: `0`, `1`, `2`.
+
+The flags accepted are a CLOSED set of exactly two: `--rc` and `--artefact`. An unrecognised
+flag is clause 7.
+
+## Composition of aggregate returns
+
+`run` prints EXACTLY ONE line to stdout per invocation and returns exactly one status. The line
+and the status are two renderings of one `StageOutcome` and can never disagree: whenever the
+status is 0 the line reports `Ran`, and whenever it is 1 the line reports one of the other
+three.
+
+Say why clauses 3, 4 and 5 must be tested TOGETHER rather than separately: they are the three
+facts the shell collapses into one branch, and a test of any one alone passes against an
+implementation that collapses the other two. That collapse is the defect this command exists to
+remove.
+
+## Rules
+
+- No `unwrap()`, `expect()`, `panic!`, `todo!` or `unimplemented!` reachable from input, outside
+  `#[cfg(test)]`.
+- Add no dependencies. `farmerbob-core` is already one.
+- Tests that need a file must create it in a temporary directory they make and remove; do not
+  read this repository's own logs, which are mutable state shared with a running harness.
+- `cargo test -p fb` must pass and `cargo clippy -p fb -- -D warnings` must be clean. Both are
+  clean on HEAD as of this task, so any failure is yours.
+- `main.rs` gains the `mod stage_cmd;` line and nothing else. Wiring the subcommand into the
+  dispatch match is a SEPARATE task and is not yours; say in your handoff that `run` has no
+  caller yet.
 
 ## How this will be scored
 
