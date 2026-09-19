@@ -374,6 +374,94 @@ fn sum_run_logs(logs_dir: &Path, arm: &str, launcher: Launcher) -> Measurement<u
     }
 }
 
+/// Escalation credits per critic, from the ledger `fb escalate credit` writes.
+///
+/// Finding a defect in a rival is a DIFFERENT capability from implementing, and nothing on
+/// this board measured it. An arm that implements adequately but reliably sharpens the
+/// suite is worth knowing about, and a cost-versus-completion curve cannot express that.
+/// (bead farmerbob-mqr)
+///
+/// A missing ledger is no credits; an UNREADABLE one is not, and says so rather than
+/// quietly crediting every critic zero.
+pub fn escalation_credits(ledger: &Path) -> Measurement<BTreeMap<String, u64>> {
+    if !ledger.exists() {
+        return Measurement::observed(BTreeMap::new());
+    }
+    let Ok(text) = std::fs::read_to_string(ledger) else {
+        return Measurement::instrument_failed("the credit ledger could not be read");
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Measurement::instrument_failed("the credit ledger is not readable JSON");
+    };
+    let Some(rows) = json.get("contributions").and_then(|c| c.as_array()) else {
+        return Measurement::instrument_failed("the credit ledger has no contributions array");
+    };
+    let mut by: BTreeMap<String, u64> = BTreeMap::new();
+    for r in rows {
+        let (Some(critic), Some(n)) = (
+            r.get("critic").and_then(|c| c.as_str()),
+            r.get("tests").and_then(|c| c.as_u64()),
+        ) else {
+            return Measurement::instrument_failed("a credit ledger contribution is malformed");
+        };
+        *by.entry(critic.to_string()).or_default() += n;
+    }
+    Measurement::observed(by)
+}
+
+/// How far this board's inferred spend drifts from what the provider actually billed,
+/// as a percentage of the bill.
+///
+/// Every dollar figure here is INFERRED from opencode's own price table, which drifts from
+/// actual billing: measured against the dashboard it over-reports one model by 5% while
+/// under-reporting another by 15%, so the error is not a constant and CAN REORDER arms that
+/// sit close together. The provider reports what it charged; that is the authority, and the
+/// difference is this axis's honest error bar.
+///
+/// A bill of zero yields no drift rather than a division by zero.
+pub fn drift_pct(inferred: f64, billed: f64) -> Option<f64> {
+    (billed > 0.0).then(|| (inferred - billed) / billed * 100.0)
+}
+
+/// What the provider says it has charged, in dollars.
+fn billed_usd() -> Measurement<f64> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Measurement::instrument_failed("HOME is not set");
+    };
+    let creds = std::path::PathBuf::from(home).join(".ori/credentials.json");
+    let Ok(text) = std::fs::read_to_string(&creds) else {
+        return Measurement::not_attempted();
+    };
+    let Some(key) = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("key").and_then(|k| k.as_str()).map(str::to_string))
+    else {
+        return Measurement::instrument_failed("no API key in the credentials file");
+    };
+    let out = std::process::Command::new("curl")
+        .args([
+            "-s",
+            "--max-time",
+            "8",
+            "-H",
+            &format!("Authorization: Bearer {key}"),
+            "https://openrouter.ai/api/v1/credits",
+        ])
+        .output();
+    let Ok(out) = out else {
+        return Measurement::instrument_failed("curl could not be run");
+    };
+    match serde_json::from_slice::<serde_json::Value>(&out.stdout)
+        .ok()
+        .and_then(|v| v.get("data")?.get("total_usage")?.as_f64())
+    {
+        // A failed reconciliation is NOT a drift of zero. Printing "0%" would assert the
+        // board had been checked against the provider and agreed with it.
+        None => Measurement::instrument_failed("the provider returned no usage figure"),
+        Some(v) => Measurement::observed(v),
+    }
+}
+
 pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
     let base = match std::env::var("HOME") {
         Ok(_) => crate::paths::state(),
@@ -476,10 +564,11 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
     }
 
     println!(
-        "{:<24}{:>10}{:>5}{:>11}{:>12}{:>11}{:>10}  FRONTIER",
-        "ARM", "COMPLETE", "N", "TOTAL $", "$/SUCCESS", "TOKENS", "UNPRICED"
+        "{:<24}{:>10}{:>5}{:>11}{:>12}{:>11}{:>6}{:>10}  FRONTIER",
+        "ARM", "COMPLETE", "N", "TOTAL $", "$/SUCCESS", "TOKENS", "ESC", "UNPRICED"
     );
-    println!("{}", "-".repeat(94));
+    println!("{}", "-".repeat(100));
+    let credits = escalation_credits(&crate::paths::repo().join(".fb/credits.json"));
     let mut sorted = arms.clone();
     sorted.sort_by(|a, b| {
         b.completion_rate()
@@ -531,8 +620,17 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
         } else {
             ""
         };
+        // An unreadable ledger prints `?`, not `-`: no credits and no answer are
+        // different facts about an arm.
+        let esc = match credits.value() {
+            Some(by) => match by.get(&a.arm) {
+                Some(n) => n.to_string(),
+                None => "-".into(),
+            },
+            None => "?".into(),
+        };
         println!(
-            "{:<24}{rate:>10}{:>5}{usd:>11}{per:>12}{tokens:>11}{unp:>10}{mark}",
+            "{:<24}{rate:>10}{:>5}{usd:>11}{per:>12}{tokens:>11}{esc:>6}{unp:>10}{mark}",
             a.arm, a.runs,
         );
     }
@@ -548,6 +646,31 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
             never.join(", ")
         );
         println!("  Their launchers write no cost store. Absence of a bill is not a bill of zero.");
+    }
+    // RECONCILE against the provider. Every dollar above is inferred from a price table
+    // that drifts from actual billing, and the drift is not a constant, so it can reorder
+    // arms that sit close together. This is the axis's honest error bar.
+    if let Measurement::Observed(billed) = billed_usd() {
+        let inferred: f64 = arms
+            .iter()
+            .filter(|a| a.arm.starts_with("or-"))
+            .filter_map(|a| a.usd.value().copied())
+            .sum();
+        match drift_pct(inferred, billed) {
+            Some(d) => {
+                println!(
+                    "\n  the provider billed ${billed:.2}; this board infers ${inferred:.2} for \
+                     those arms  ({d:+.0}%)"
+                );
+                println!(
+                    "  per-arm $/success therefore carries roughly a +-{:.0}% error bar; arms \
+                     closer than that are NOT separable on cost.",
+                    d.abs()
+                );
+            }
+            // A bill of zero is not agreement: there is nothing to reconcile against.
+            None => println!("\n  the provider reports no spend yet; nothing to reconcile against"),
+        }
     }
     if shared_total > 0.0 {
         println!(
@@ -969,5 +1092,68 @@ mod recovered_token_tests {
             vec!["priced".to_string()],
             "an arm with no dollar figure stays off the curve"
         );
+    }
+
+    /// A fresh directory for one test's fixtures.
+    fn scratch(what: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("fb-pareto-{what}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Finding defects is a different capability from implementing, and the ledger is how
+    /// the board learns of it.
+    #[test]
+    fn escalation_credits_sum_per_critic() {
+        let d = scratch("credits");
+        let f = d.join("credits.json");
+        std::fs::write(
+            &f,
+            r#"{"contributions":[
+                 {"task":"a","critic":"alpha","found_on":"x","tests":3},
+                 {"task":"b","critic":"alpha","found_on":"y","tests":2},
+                 {"task":"c","critic":"beta","found_on":"z","tests":1}]}"#,
+        )
+        .unwrap();
+        let by = escalation_credits(&f).value().cloned().unwrap();
+        assert_eq!(by.get("alpha"), Some(&5));
+        assert_eq!(by.get("beta"), Some(&1));
+    }
+
+    /// No ledger is no credits. An UNREADABLE ledger is NOT: crediting every critic zero
+    /// because the file could not be parsed is the failure state wearing the success
+    /// state's clothes, and the board prints `?` for it rather than `-`.
+    #[test]
+    fn an_unreadable_ledger_is_not_zero_credits() {
+        let d = scratch("ledger");
+        assert_eq!(
+            escalation_credits(&d.join("absent.json")).value(),
+            Some(&BTreeMap::new())
+        );
+        let bad = d.join("bad.json");
+        std::fs::write(&bad, "{ not json").unwrap();
+        assert!(escalation_credits(&bad).value().is_none());
+        let malformed = d.join("m.json");
+        std::fs::write(&malformed, r#"{"contributions":[{"critic":"a"}]}"#).unwrap();
+        assert!(
+            escalation_credits(&malformed).value().is_none(),
+            "a contribution with no count is not a contribution of zero"
+        );
+    }
+
+    /// The board's dollars are INFERRED from a price table that drifts from actual billing.
+    /// The drift is the error bar, and arms closer together than it are not separable.
+    #[test]
+    fn drift_is_measured_against_the_bill_not_the_inference() {
+        assert_eq!(drift_pct(11.0, 10.0), Some(10.0));
+        assert_eq!(drift_pct(8.5, 10.0), Some(-15.0));
+    }
+
+    /// A bill of zero is nothing to reconcile against, not perfect agreement. Dividing by
+    /// it would print `inf%` or `0%` and either reads as a checked board.
+    #[test]
+    fn a_zero_bill_yields_no_drift_rather_than_agreement() {
+        assert_eq!(drift_pct(4.0, 0.0), None);
     }
 }

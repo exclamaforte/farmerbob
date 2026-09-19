@@ -78,17 +78,6 @@ impl Trial {
     fn logs() -> PathBuf {
         crate::paths::logs()
     }
-
-    fn sh(&self, script: &str, args: &[&str]) -> bool {
-        eprintln!("  $ {script} {}", args.join(" "));
-        Command::new(format!("{REPO}/{script}"))
-            .args(args)
-            .current_dir(REPO)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-
     /// `fb differential` answers with FOUR exit codes and two of them look alike:
     /// 0 every measured arm agrees, 1 an arm diverges -- both of which mean the
     /// INSTRUMENT WORKED -- 3 the task declares no oracle, and 2 declared but
@@ -174,12 +163,12 @@ impl Trial {
             eprintln!("  cannot write {matrix}");
             return false;
         }
-        self.sh("fb-admit.sh", &[&matrix])
+        crate::admit_cmd::run(std::path::Path::new(&matrix)) == 0
     }
 
     fn report(&self) -> bool {
         // the adjudication table: objective evidence, then what the critics said
-        let _ = self.sh("fb-objective.sh", &[&self.task]);
+        let _ = crate::objective::run_cmd(Some(self.task.clone()));
         let cdir = Self::logs().join("critiques").join(&self.task);
         println!("\n=== subjective: critiques ===");
         if let Ok(entries) = std::fs::read_dir(&cdir) {
