@@ -5,6 +5,7 @@ mod bench_gather;
 mod cmd;
 mod compare_cmd;
 mod compare_gather;
+mod conform_cmd;
 mod critique;
 mod crossx;
 mod decl_cmd;
@@ -119,6 +120,13 @@ enum Command {
         /// Decide even when no critique exists. Off by default, deliberately.
         #[arg(long)]
         allow_missing_critique: bool,
+    },
+    /// Run a frozen conformance suite against every candidate of a task.
+    Conform {
+        task: String,
+        suite: String,
+        #[arg(long, default_value = "farmerbob-core")]
+        krate: String,
     },
     /// Capture every candidate worktree's work as a patch, before anything reaps it.
     Archive { worktrees: Vec<String> },
@@ -863,6 +871,9 @@ fn main() {
             epsilon,
             allow_missing_critique,
         }) => adjudicate_cmd::run(&task, epsilon, allow_missing_critique),
+        Some(Command::Conform { task, suite, krate }) => {
+            conform_cmd::run(&task, &krate, std::path::Path::new(&suite))
+        }
         Some(Command::Archive { worktrees }) => archive_cmd::run(&worktrees),
         Some(Command::Speclint { specs }) => speclint_cmd::run(&specs),
         Some(Command::Speccheck { task, krate, arms }) => {
