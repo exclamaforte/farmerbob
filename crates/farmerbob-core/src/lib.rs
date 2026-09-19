@@ -84,6 +84,7 @@ pub mod sensitivity;
 pub mod slots;
 pub mod spec_fate;
 pub mod speclint_shape;
+pub mod stage_cast;
 pub mod stage_exit;
 pub mod stage_key;
 pub mod stage_outcome;
