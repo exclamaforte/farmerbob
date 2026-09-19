@@ -63,7 +63,11 @@ PYEOF
 live=$(systemctl --user list-units --type=scope --state=running --no-legend 2>/dev/null \
        | grep -o 'fb-[a-z0-9-]*--[a-z0-9_-]*' | sed 's/^fb-//' | sort -u)
 nlive=$(printf '%s' "$live" | grep -c . || true)
-waves=$(pgrep -cf "fb-admit\.sh" 2>/dev/null | head -1); waves=${waves:-0}
+# A process is what it EXECUTES, not what its command line mentions. `pgrep -cf` counted
+# every shell that merely named the script -- two false positives were live when this was
+# written, against zero real waves.  (beads farmerbob-7e2, farmerbob-05p)
+. /home/gabe/Documents/farmerbob/fb-liveness.sh
+waves=$(fb_running fb-admit.sh); waves=${waves:-0}
 
 echo "== live =="
 if [ "$nlive" -eq 0 ]; then echo "  no agents running (dispatcher processes: $waves)"

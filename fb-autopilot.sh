@@ -123,12 +123,20 @@ BEAT="$HOME/.local/share/farmerbob/logs/autopilot.heartbeat"
 beat() { printf '%s pid=%s %s\n' "$(date -Is)" "$$" "$*" > "$BEAT"; }
 say "autopilot up (pid $$)"; beat "starting"
 
+. /home/gabe/Documents/farmerbob/fb-liveness.sh
+
 while :; do
   # --state=running: a failed scope is not a live agent, and subtracting one from the slot
   # count forever is how a machine loses capacity one timeout at a time. See fb-status.sh.
   live=$(systemctl --user list-units --type=scope --state=running --no-legend 2>/dev/null \
          | grep -c 'fb-[a-z0-9-]*--.*\.scope' || true)
-  waves=$(pgrep -f 'fb-admit\.sh' 2>/dev/null | wc -l)
+  # A process is what it EXECUTES, not what its command line mentions. `pgrep -f` counted
+  # every shell that merely named the script, and this value gates dispatch: believing waves
+  # are running means never launching, believing none are means launching into a full
+  # machine. Two false positives were live against zero real waves when this was fixed, so
+  # the autopilot had been refusing to launch on the strength of a grep matching a grep.
+  #   (beads farmerbob-7e2, farmerbob-05p)
+  waves=$(fb_running fb-admit.sh)
 
   slots=$(free_slots || echo "")
   beat "live=$live waves=$waves slots=${slots:-?} queued=$(ls -1 "$Q"/*.tsv 2>/dev/null | wc -l)"
