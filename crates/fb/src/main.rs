@@ -1,6 +1,7 @@
 mod adjudicate_cmd;
 mod cmd;
 mod compare_gather;
+mod bench_cmd;
 mod compare_cmd;
 mod prices_cmd;
 mod timing_cmd;

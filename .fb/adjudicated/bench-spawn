@@ -1,0 +1,30 @@
+MERGED glm-53-flash
+Single arm, 466 lines, 12 tests, clippy 0.
+
+The impure layer the benchmark path lacked. trial_plan, bench_read,
+task_contract::score and gate_kind were all pure by design and all reachable from
+nothing; this spawns verify.sh once and bench.sh per trial and drives the loop.
+
+Twelve tests, one per clause and boundary, using REAL shell scripts as the spec
+required -- 38 references to verify.sh/bench.sh, and 6 delegating calls into
+trial_plan::next and bench_read. The spec forbade a fake spawner because the defect
+this module can have is running the wrong thing in the wrong order, which a fake
+cannot catch.
+
+The four that carry it, all present and passing:
+
+  incorrect_verification_never_runs_bench        a wrong kernel is not timed
+  crashed_verification_is_instrument_not_incorrect  its pair: ran-and-said-no is
+                                                 about the candidate, died is
+                                                 about us
+  stops_at_enough_and_keeps_sample_order         exactly min_trials executions
+  slow_trial_is_killed_and_counts_bad            a timeout is a BAD trial, not a
+                                                 measurement
+
+And the boundary pair the spec set: missing_bench_script_is_an_instrument_failure
+against zero_minimum_measures_with_zero_samples -- both end with no samples, and
+one is a broken task while the other is what the manifest asked for.
+
+Not wired: there is no `fb bench` subcommand, and nothing calls run_bench. The
+benchmark path is now complete as modules and still has no entry point.
+farmerbob-p172 stays open.
