@@ -60,6 +60,11 @@ enum Command {
         /// Task name; its score file is `<logs>/<task>.score.json`.
         task: String,
     },
+    /// What should happen to each of a task's candidates.
+    Verify {
+        /// Task name; its score file is <logs>/<task>.score.json.
+        task: String,
+    },
     /// How each arm spent its run: time to first write, span, rate.
     Timing {
         /// Task name.
@@ -650,6 +655,11 @@ fn main() {
             let score_path = paths::logs().join(format!("{task}.score.json"));
             let mut out = std::io::stdout();
             compare_gather::run(&score_path, &mut out)
+        }
+        Some(Command::Verify { task }) => {
+            let score_path = paths::logs().join(format!("{task}.score.json"));
+            let mut out = std::io::stdout();
+            verify_gather::run(&score_path, &mut out)
         }
         Some(Command::Timing { task: _ }) => {
             let mut out = std::io::stdout();
@@ -1374,5 +1384,186 @@ mod tests {
         let (rc, _) = run_prices_from_args(&["--catalogue", dir.to_str().unwrap()])
             .expect("run prices with directory catalogue");
         assert_eq!(rc, 4);
+    }
+
+    // -- fb verify -----------------------------------------------------------------------
+
+    struct TempVerifyScore {
+        task: String,
+        path: PathBuf,
+    }
+
+    impl TempVerifyScore {
+        fn new(task_suffix: &str, contents: &str) -> Self {
+            static VERIFY_COUNTER: AtomicUsize = AtomicUsize::new(0);
+            let n = VERIFY_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let task = format!(
+                "fb_verify_wire_{}_{}_{}",
+                std::process::id(),
+                n,
+                task_suffix
+            );
+            let logs_dir = paths::logs();
+            let _ = std::fs::create_dir_all(&logs_dir);
+            let path = logs_dir.join(format!("{task}.score.json"));
+            std::fs::write(&path, contents).expect("write temp verify score file");
+            TempVerifyScore { task, path }
+        }
+
+        fn task(&self) -> &str {
+            &self.task
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempVerifyScore {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    fn run_verify_from_args(args: &[&str]) -> Result<(i32, Vec<u8>), clap::Error> {
+        let mut full_args = vec!["fb", "verify"];
+        full_args.extend_from_slice(args);
+        let cli = Cli::try_parse_from(full_args)?;
+        match cli.command {
+            Some(Command::Verify { task }) => {
+                let score_path = paths::logs().join(format!("{task}.score.json"));
+                let mut out = Vec::new();
+                let code = verify_gather::run(&score_path, &mut out);
+                Ok((code, out))
+            }
+            _ => panic!("expected Verify command"),
+        }
+    }
+
+    #[test]
+    fn clause_1_verify_present_score_file_prints_line_per_candidate_and_matches_gather_code() {
+        let json = r#"[
+            {"source":"arm_a","build":"pass","test":"pass","verdict":"PASS","err":"ok"},
+            {"source":"arm_b","build":"FAIL","test":"FAIL","verdict":"FAIL","err":"build error"}
+        ]"#;
+        let fixture = TempVerifyScore::new("clause1", json);
+        let (rc, stdout) = run_verify_from_args(&[fixture.task()]).expect("run verify");
+
+        let mut expected_out = Vec::new();
+        let expected_code = verify_gather::run(fixture.path(), &mut expected_out);
+
+        assert_eq!(rc, expected_code);
+        assert_eq!(stdout, expected_out);
+
+        let out_text = String::from_utf8_lossy(&stdout);
+        let candidate_lines: Vec<&str> = out_text.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            candidate_lines.len(),
+            2,
+            "must print one line per candidate: {out_text}"
+        );
+    }
+
+    #[test]
+    fn clause_2_verify_missing_score_file_exits_with_unreadable_code_differing_from_present_and_zero() {
+        let json = r#"[
+            {"source":"arm_a","build":"pass","test":"pass","verdict":"PASS","err":"ok"},
+            {"source":"arm_b","build":"pass","test":"pass","verdict":"PASS","err":"ok"}
+        ]"#;
+        let present_fixture = TempVerifyScore::new("clause2_present", json);
+        let (present_rc, _) =
+            run_verify_from_args(&[present_fixture.task()]).expect("run verify present");
+
+        static MISSING_COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let missing_task = format!(
+            "fb_verify_nonexistent_{}_{}",
+            std::process::id(),
+            MISSING_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let missing_path = paths::logs().join(format!("{missing_task}.score.json"));
+        assert!(!missing_path.exists());
+
+        let (missing_rc, _) =
+            run_verify_from_args(&[&missing_task]).expect("run verify missing");
+
+        let mut expected_unreadable_out = Vec::new();
+        let expected_unreadable_code =
+            verify_gather::run(&missing_path, &mut expected_unreadable_out);
+
+        assert_eq!(missing_rc, expected_unreadable_code);
+        assert_ne!(missing_rc, 0, "missing score file must not exit 0");
+        assert_ne!(
+            missing_rc, present_rc,
+            "missing score file and present one must yield different codes"
+        );
+    }
+
+    #[test]
+    fn clause_3_verify_no_argument_is_clap_usage_error_exit_2() {
+        let err = match run_verify_from_args(&[]) {
+            Err(e) => e,
+            Ok(_) => panic!("expected clap missing argument error for bare `fb verify`"),
+        };
+        assert_eq!(err.exit_code(), 2);
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn clause_4_slots_subcommand_unchanged_before_and_after() {
+        let parsed = match Cli::try_parse_from([
+            "fb",
+            "slots",
+            "--available-mb",
+            "1024",
+            "--headroom-mb",
+            "256",
+            "--memory-mb",
+            "512",
+            "--plan",
+        ]) {
+            Ok(c) => c,
+            Err(e) => panic!("failed to parse slots: {e}"),
+        };
+        match parsed.command {
+            Some(Command::Slots {
+                available_mb,
+                headroom_mb,
+                memory_mb,
+                plan,
+            }) => {
+                assert_eq!(available_mb, 1024);
+                assert_eq!(headroom_mb, 256);
+                assert_eq!(memory_mb, 512);
+                assert!(plan);
+                let rc = slots_cmd::run_cmd(available_mb, headroom_mb, memory_mb, plan);
+                assert_eq!(rc, 0);
+            }
+            _ => panic!("expected Slots command"),
+        }
+    }
+
+    #[test]
+    fn clause_5_help_lists_verify() {
+        let err = match Cli::try_parse_from(["fb", "--help"]) {
+            Err(e) => e,
+            Ok(_) => panic!("--help should return clap DisplayHelp"),
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help_text = err.to_string();
+        assert!(
+            help_text.contains("verify"),
+            "`fb --help` must list `verify` subcommand: {help_text}"
+        );
+    }
+
+    #[test]
+    fn boundary_empty_array_score_file_agrees_with_verify_gather() {
+        let fixture = TempVerifyScore::new("boundary_empty", "[]");
+        let (rc, stdout) =
+            run_verify_from_args(&[fixture.task()]).expect("run verify with empty array");
+        let mut expected_out = Vec::new();
+        let expected_code = verify_gather::run(fixture.path(), &mut expected_out);
+        assert_eq!(rc, expected_code);
+        assert_eq!(stdout, expected_out);
     }
 }
