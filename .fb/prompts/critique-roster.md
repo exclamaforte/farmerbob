@@ -101,6 +101,24 @@ survives past the terminal. Name the file after the critic and the subject.
 8. The written critique's path identifies the critic. Pin that two critics reviewing the same
    subject produce two files, not one overwriting the other.
 
+9. **An unrecognised `status` in `sources.toml` is not eligible.** Anything that is not
+   exactly `verified` or `untested` is excluded from the roster, `disabled` included. Pin it
+   with a status string this spec does not name. The previous draft delegated this and the
+   critic was right to call it out: treating an unknown status as castable is the dangerous
+   direction, and `fb-eligible.sh` already excludes it, so divergence here would put the two
+   implementations of one rule into disagreement.
+
+10. **Zero candidates and unmeasurable candidates are different answers.** `candidates()`
+    returns a `Measurement`. `Observed(vec![])` is zero candidates and returns 4. `Missing(..)`
+    -- the worktree root does not exist, is unreadable, is not a directory -- is an instrument
+    failure and returns **1**, with the reason on stderr.
+
+    This is not hypothetical: the existing test
+    `zero_candidates_returns_not_applicable_and_writes_nothing` pointed `FB_WT` at a temporary
+    path it had not created, got `InstrumentFailed`, and asserted 4. A previous attempt at this
+    task failed the gate on exactly that. Pin BOTH cases, in one test each, and make the
+    zero-candidate one create its empty directory.
+
 ## Boundaries, at N and at zero
 
 - Zero candidates: 4, per clause 2. Not 1 — nothing went wrong.
@@ -111,9 +129,14 @@ survives past the terminal. Name the file after the critic and the subject.
   EXAMINE, not who may be examined; `stage_cast` already pins this and your tests may rely on
   it.
 - A critic whose launcher fails: that assignment is `Missing` with its reason, the other
-  assignments still run, and the command's exit code is unchanged by it. A failed critic is a
-  gap in the evidence, not a failure of the stage. Say in your handoff what you chose if you
-  read this differently.
+  assignments still run, and the command returns **0**. A failed critic is a gap in the
+  evidence, not a failure of the stage.
+
+  `0` therefore means "every assignment was attempted", NOT "every assignment produced a
+  report". The spec critic found these two readings contradicting each other in an earlier
+  draft -- "do not require both unchanged exit status and artefacts for every assignment" --
+  and this clause picks the first. A caller that needs to know which critics produced nothing
+  reads the reports, which `format_result` already distinguishes with "(no critique written)".
 
 ## Superset status on every enumerated list
 
@@ -142,10 +165,16 @@ that was assigned and then failed must be visible as exactly that rather than ab
   repository's own worktrees; they are mutable state shared with a running harness, and a test
   that launches a real arm is a test that spends money and hangs. Every test here must be able
   to run with no network and no agent binary present.
+- **The seam for that is `FB_WT`**, which `crate::paths::worktrees()` already reads, and
+  `FB_REPO`, which `crate::paths::repo()` already reads. A test points them at a temporary
+  directory it created. The spec critic found that the previous draft demanded tests exercise
+  real candidate discovery while forbidding them the only root it could discover from; this
+  names the seam instead. You are not asked to add one.
 - Change `crates/fb/src/critique.rs` and nothing else, plus `.fb/handoff.md`.
 - RUN `cargo clippy -p fb --all-targets -- -D warnings` BEFORE you finish. `cargo test -p fb`
   may need `cargo build -p fb` first: a test in this crate shells out to `target/debug/fb` and
   reads a stale binary otherwise.
+
 
 
 
