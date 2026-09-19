@@ -15,14 +15,16 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use farmerbob_core::gate::{Observation as GateObs, Verdict, judge};
 use farmerbob_core::liveness::{Authority, Liveness, Observation as LiveObs, Tracker};
 use farmerbob_core::measurement::Measurement;
 use farmerbob_core::scope::{Change, Declared, Departure, Scope, assess, is_clean};
+use farmerbob_core::test_delta::{Contribution, Counts, contribution, crate_total};
 
 /// Launcher process names that indicate an agent is working in a worktree.
 const LAUNCHERS: [&str; 4] = ["opencode", "agy", "zcode", "codex"];
@@ -39,6 +41,10 @@ struct Record {
     build: bool,
     tests_ok: bool,
     tests_run: u32,
+    /// What this candidate contributed to the crate's suite, as decided by
+    /// `farmerbob_core::test_delta`. Missing when the baseline or after count
+    /// could not be measured.
+    tests_delta: Measurement<Contribution>,
     /// Lines added. Absent when git cannot read the worktree at all -- which must NOT be
     /// summed to zero, because zero is the arm's fault and absent is the harness's.
     lines: Measurement<u32>,
@@ -245,19 +251,89 @@ fn liveness_of(wt: &Path) -> (Liveness, String) {
     (b.liveness, b.evidence)
 }
 
-/// Counts tests that actually EXECUTED across every `test result: ok.` line.
-fn tests_passed_count(log: &str) -> u32 {
-    log.lines()
-        .filter_map(|l| l.strip_prefix("test result: ok. "))
-        .filter_map(|r| r.split_whitespace().next())
-        .filter_map(|n| n.parse::<u32>().ok())
-        .sum()
-}
-
 fn clippy_warnings(log: &str) -> i32 {
     log.lines()
         .filter(|l| l.starts_with("warning") || l.starts_with("error"))
         .count() as i32
+}
+
+/// Measure the crate's passing-test count on a candidate's base revision.
+///
+/// The base is exported to a temporary directory rather than checking it out
+/// in the candidate worktree. This keeps the candidate's files and index
+/// unchanged while allowing the same cargo command to measure the baseline.
+fn baseline_tests(wt: &Path, krate: &str, base: Option<&str>) -> Measurement<u32> {
+    let Some(base) = base else {
+        return Measurement::instrument_failed(
+            "git could not determine the candidate's base revision",
+        );
+    };
+
+    let dir = std::env::temp_dir().join(format!(
+        "fb-score-baseline-{}-{}",
+        std::process::id(),
+        now_ms()
+    ));
+    if let Err(e) = fs::create_dir(&dir) {
+        return Measurement::instrument_failed(&format!(
+            "could not create the baseline directory {}: {e}",
+            dir.display()
+        ));
+    }
+
+    let archive = match Command::new("git")
+        .arg("-C")
+        .arg(wt)
+        .args(["archive", "--format=tar", base])
+        .output()
+    {
+        Ok(output) if output.status.success() => output.stdout,
+        Ok(output) => {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            let _ = fs::remove_dir_all(&dir);
+            return Measurement::instrument_failed(&format!(
+                "git could not archive the candidate's base: {detail}"
+            ));
+        }
+        Err(e) => {
+            let _ = fs::remove_dir_all(&dir);
+            return Measurement::instrument_failed(&format!(
+                "could not run git to archive the candidate's base: {e}"
+            ));
+        }
+    };
+
+    let mut extract = match Command::new("tar")
+        .args(["-x", "-f", "-", "-C"])
+        .arg(&dir)
+        .stdin(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&dir);
+            return Measurement::instrument_failed(&format!(
+                "could not run tar for the baseline archive: {e}"
+            ));
+        }
+    };
+
+    let wrote_archive = match extract.stdin.take() {
+        Some(mut stdin) => stdin.write_all(&archive).is_ok(),
+        None => false,
+    };
+    let extracted = extract.wait().is_ok_and(|status| status.success());
+    if !wrote_archive || !extracted {
+        let _ = fs::remove_dir_all(&dir);
+        return Measurement::instrument_failed(
+            "the baseline archive could not be extracted, so its tests could not be measured",
+        );
+    }
+
+    let (_, log) = run(&dir, &["test", "-p", krate]);
+    let result = farmerbob_core::build_verdict::tests_run(&log);
+    let _ = fs::remove_dir_all(&dir);
+    result
 }
 
 /// Measures one worktree. Returns `None` when the run is still live.
@@ -424,13 +500,14 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
     let (built, build_log) = run(wt, &["build", "-p", krate]);
     let mut tests_ok = false;
     let mut tests_run = 0;
+    let mut after = Measurement::instrument_failed("the crate did not produce a test result");
     let clippy: Measurement<i32>;
     let mut err = None;
 
     if built {
         let (ok, log) = run(wt, &["test", "-p", krate]);
         tests_ok = ok;
-        tests_run = tests_passed_count(&log);
+        after = farmerbob_core::build_verdict::tests_run(&log);
         let (_, lint) = run(wt, &["clippy", "-p", krate, "--all-targets"]);
         // DELTA, not absolute: counting the crate's total charges every candidate for lint
         // debt it inherited, and since all candidates inherit the same debt the metric reads
@@ -443,6 +520,13 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
             .lines()
             .find(|l| l.starts_with("error"))
             .map(|l| l.chars().take(70).collect());
+    }
+
+    let before = baseline_tests(wt, krate, base.as_deref());
+    let counts = Counts { before, after };
+    let tests_delta = contribution(&counts);
+    if let Some(total) = crate_total(&counts).value() {
+        tests_run = *total;
     }
 
     let verdict = judge(&GateObs {
@@ -488,6 +572,7 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
         build: built,
         tests_ok,
         tests_run,
+        tests_delta,
         lines,
         new_files: untracked.len() as u32,
         crates,
@@ -517,6 +602,21 @@ fn read_duration(log_root: &Path, bead: &str, src: &str) -> Measurement<f64> {
     }
 }
 
+fn tests_delta_json(delta: &Measurement<Contribution>) -> serde_json::Value {
+    match delta {
+        Measurement::Observed(Contribution::Added(n)) => {
+            serde_json::json!({"kind": "Added", "count": n})
+        }
+        Measurement::Observed(Contribution::Removed(n)) => {
+            serde_json::json!({"kind": "Removed", "count": n})
+        }
+        Measurement::Observed(Contribution::Unchanged) => {
+            serde_json::json!({"kind": "Unchanged"})
+        }
+        Measurement::Missing(_) => serde_json::Value::Null,
+    }
+}
+
 fn to_json(r: &Record) -> serde_json::Value {
     serde_json::json!({
         "source": r.source,
@@ -524,6 +624,7 @@ fn to_json(r: &Record) -> serde_json::Value {
         "build": if r.build { "pass" } else { "FAIL" },
         "test": if r.tests_ok { "pass" } else { "FAIL" },
         "tests_run": r.tests_run,
+        "tests_delta": tests_delta_json(&r.tests_delta),
         "lines": r.lines.value().copied().unwrap_or(0),
         "lines_measured": r.lines.is_observed(),
         "new_files": r.new_files,
@@ -723,14 +824,14 @@ mod tests {
 test result: ok. 12 passed; 0 failed; 0 ignored
 test result: ok. 7 passed; 0 failed; 0 ignored
 ";
-        assert_eq!(tests_passed_count(log), 19);
+        assert_eq!(farmerbob_core::build_verdict::tests_run(log), Measurement::Observed(19));
     }
 
     #[test]
     fn a_filtered_run_that_matched_nothing_counts_zero_not_success() {
         // The first bug ever filed in this project: `ok. 0 passed` is a REAL zero.
         let log = "test result: ok. 0 passed; 0 failed; 0 ignored; 3 filtered out\n";
-        assert_eq!(tests_passed_count(log), 0);
+        assert_eq!(farmerbob_core::build_verdict::tests_run(log), Measurement::Observed(0));
         assert_eq!(
             judge(&GateObs {
                 built: Some(true),
