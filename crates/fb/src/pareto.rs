@@ -409,18 +409,94 @@ pub fn escalation_credits(ledger: &Path) -> Measurement<BTreeMap<String, u64>> {
     Measurement::observed(by)
 }
 
-/// How far this board's inferred spend drifts from what the provider actually billed,
-/// as a percentage of the bill.
+/// Each arm's `model` string, exactly as the registry writes it.
 ///
-/// Every dollar figure here is INFERRED from opencode's own price table, which drifts from
-/// actual billing: measured against the dashboard it over-reports one model by 5% while
-/// under-reporting another by 15%, so the error is not a constant and CAN REORDER arms that
-/// sit close together. The provider reports what it charged; that is the authority, and the
-/// difference is this axis's honest error bar.
+/// The provider lives in this string's prefix, so reconciliation asks the registry which
+/// arms bill a provider instead of guessing from the arm's name.
+pub fn registry_models(repo: &Path) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if let Ok(body) = fs::read_to_string(repo.join("sources.toml"))
+        && let Ok(doc) = toml::from_str::<toml::Value>(&body)
+        && let Some(t) = doc.get("source").and_then(|s| s.as_table())
+    {
+        for (name, v) in t {
+            if let Some(m) = v.get("model").and_then(|m| m.as_str()) {
+                out.insert(name.clone(), m.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Whether an arm bills the given provider, according to the REGISTRY rather than its name.
 ///
-/// A bill of zero yields no drift rather than a division by zero.
-pub fn drift_pct(inferred: f64, billed: f64) -> Option<f64> {
-    (billed > 0.0).then(|| (inferred - billed) / billed * 100.0)
+/// The reconciliation filtered on the `or-` name prefix. That happens to be right today --
+/// all 18 openrouter-routed arms are named `or-*` -- but it is a name standing in for a
+/// registry fact, which is the shape of bug this project keeps rediscovering. An arm
+/// renamed, or a non-`or-` arm pointed at openrouter, silently drops out of the comparison
+/// and the drift shifts with no line saying why.
+pub fn routed_via(model: Option<&str>, provider_prefix: &str) -> bool {
+    model.is_some_and(|m| m.starts_with(provider_prefix))
+}
+
+/// What a reconciliation against the provider can honestly say.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reconciliation {
+    /// Every run on that provider was priced, so the difference is price-table drift.
+    Drift {
+        /// What this board infers, per-run spend plus that provider's share of the shared store.
+        inferred: f64,
+        /// What the provider says it charged.
+        billed: f64,
+        /// The difference as a percentage of the bill.
+        pct: f64,
+    },
+    /// Some runs were never priced, so the difference cannot be split between a stale price
+    /// table and runs nothing measured. The inferred figure is a FLOOR, and carried here so
+    /// the shortfall can still be reported as a bound rather than discarded.
+    Incomplete {
+        /// What this board can account for: a lower bound on the true spend.
+        floor: f64,
+        /// What the provider says it charged.
+        billed: f64,
+        /// Runs on that provider with no cost store.
+        unpriced: u32,
+        /// Runs on that provider in total.
+        total: u32,
+    },
+    /// The provider reports no spend, so there is nothing to reconcile against.
+    NothingBilled,
+}
+
+/// Reconcile inferred spend against the provider's own figure.
+///
+/// TWO THINGS THIS MUST NOT CONFLATE. A board that infers less than the bill because its
+/// price table is stale is a measurement to correct. A board that infers less because runs
+/// went unmeasured is a board that cannot speak to drift at all -- and reporting the second
+/// as the first invents an error bar out of missing data, which is worse than no error bar,
+/// because a number that looks measured gets used.
+///
+/// `inferred` must be like-for-like with the bill: the per-run spend AND that provider's
+/// share of the shared critic/prover store, which is kept separate everywhere else on this
+/// board and was omitted from the first version of this comparison -- a subset measured
+/// against the whole, which inflates the apparent drift.
+pub fn reconcile(inferred: f64, billed: f64, unpriced: u32, total: u32) -> Reconciliation {
+    if billed <= 0.0 {
+        return Reconciliation::NothingBilled;
+    }
+    if unpriced > 0 {
+        return Reconciliation::Incomplete {
+            floor: inferred,
+            billed,
+            unpriced,
+            total,
+        };
+    }
+    Reconciliation::Drift {
+        inferred,
+        billed,
+        pct: (inferred - billed) / billed * 100.0,
+    }
 }
 
 /// What the provider says it has charged, in dollars.
@@ -651,25 +727,67 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
     // that drifts from actual billing, and the drift is not a constant, so it can reorder
     // arms that sit close together. This is the axis's honest error bar.
     if let Measurement::Observed(billed) = billed_usd() {
-        let inferred: f64 = arms
+        // Like-for-like with the bill: the registry says which arms bill this provider, and
+        // the inferred figure carries BOTH the per-run spend and that provider's share of
+        // the shared critic/prover store. The first version of this comparison summed only
+        // per-run spend for name-matched arms -- a subset measured against the whole, which
+        // inflated the apparent drift.
+        let registry_models = registry_models(&crate::paths::repo());
+        let on_provider =
+            |arm: &str| routed_via(registry_models.get(arm).map(String::as_str), "openrouter/");
+        let per_run: f64 = arms
             .iter()
-            .filter(|a| a.arm.starts_with("or-"))
+            .filter(|a| on_provider(&a.arm))
             .filter_map(|a| a.usd.value().copied())
             .sum();
-        match drift_pct(inferred, billed) {
-            Some(d) => {
+        let shared_here: f64 = shared
+            .iter()
+            .filter(|(arm, _)| on_provider(arm))
+            .map(|(_, (c, _))| c)
+            .sum();
+        let (mut unpriced_runs, mut total_runs) = (0u32, 0u32);
+        for a in arms.iter().filter(|a| on_provider(&a.arm)) {
+            let (p, n) = priced.get(&a.arm).copied().unwrap_or((0, 0));
+            total_runs += n;
+            unpriced_runs += n.saturating_sub(p);
+        }
+        match reconcile(per_run + shared_here, billed, unpriced_runs, total_runs) {
+            Reconciliation::Drift {
+                inferred,
+                billed,
+                pct,
+            } => {
                 println!(
                     "\n  the provider billed ${billed:.2}; this board infers ${inferred:.2} for \
-                     those arms  ({d:+.0}%)"
+                     those arms  ({pct:+.0}%)"
                 );
                 println!(
                     "  per-arm $/success therefore carries roughly a +-{:.0}% error bar; arms \
                      closer than that are NOT separable on cost.",
-                    d.abs()
+                    pct.abs()
+                );
+            }
+            Reconciliation::Incomplete {
+                floor,
+                billed,
+                unpriced,
+                total,
+            } => {
+                println!(
+                    "\n  the provider billed ${billed:.2}; this board can account for \
+                     ${floor:.2}, a FLOOR -- {unpriced} of {total} runs on it were never priced."
+                );
+                println!(
+                    "  ${:.2} is unaccounted for. No error bar can be stated from this alone: \
+                     the shortfall cannot be split between a stale price table and the runs \
+                     nothing measured, and {unpriced} run(s) is too few to explain it.",
+                    (billed - floor).max(0.0)
                 );
             }
             // A bill of zero is not agreement: there is nothing to reconcile against.
-            None => println!("\n  the provider reports no spend yet; nothing to reconcile against"),
+            Reconciliation::NothingBilled => {
+                println!("\n  the provider reports no spend yet; nothing to reconcile against")
+            }
         }
     }
     if shared_total > 0.0 {
@@ -1146,14 +1264,64 @@ mod recovered_token_tests {
     /// The drift is the error bar, and arms closer together than it are not separable.
     #[test]
     fn drift_is_measured_against_the_bill_not_the_inference() {
-        assert_eq!(drift_pct(11.0, 10.0), Some(10.0));
-        assert_eq!(drift_pct(8.5, 10.0), Some(-15.0));
+        assert_eq!(
+            reconcile(11.0, 10.0, 0, 5),
+            Reconciliation::Drift {
+                inferred: 11.0,
+                billed: 10.0,
+                pct: 10.0
+            }
+        );
+        assert_eq!(
+            reconcile(8.5, 10.0, 0, 5),
+            Reconciliation::Drift {
+                inferred: 8.5,
+                billed: 10.0,
+                pct: -15.0
+            }
+        );
     }
 
     /// A bill of zero is nothing to reconcile against, not perfect agreement. Dividing by
     /// it would print `inf%` or `0%` and either reads as a checked board.
     #[test]
     fn a_zero_bill_yields_no_drift_rather_than_agreement() {
-        assert_eq!(drift_pct(4.0, 0.0), None);
+        assert_eq!(reconcile(4.0, 0.0, 0, 5), Reconciliation::NothingBilled);
+    }
+
+    /// A SHORTFALL IS NOT AUTOMATICALLY DRIFT. A board that infers less than the bill
+    /// because its price table is stale is a measurement to correct; one that infers less
+    /// because runs went unmeasured cannot speak to drift at all. Reporting the second as
+    /// the first invents an error bar out of missing data -- worse than none, because a
+    /// number that looks measured gets used.
+    #[test]
+    fn unpriced_runs_forbid_stating_an_error_bar() {
+        assert_eq!(
+            reconcile(9.94, 21.07, 12, 40),
+            Reconciliation::Incomplete {
+                floor: 9.94,
+                billed: 21.07,
+                unpriced: 12,
+                total: 40
+            },
+            "the inferred figure survives as a FLOOR rather than being discarded"
+        );
+        // The same figures with every run priced ARE drift.
+        assert!(matches!(
+            reconcile(9.94, 21.07, 0, 40),
+            Reconciliation::Drift { .. }
+        ));
+    }
+
+    /// The provider comes from the REGISTRY's model string, not from the arm's name. A name
+    /// prefix standing in for a registry fact is the shape of bug this project keeps
+    /// rediscovering: an arm renamed, or a non-`or-` arm pointed at openrouter, drops out
+    /// of the comparison silently and the drift shifts with no line saying why.
+    #[test]
+    fn the_provider_is_read_from_the_registry_not_the_arm_name() {
+        assert!(routed_via(Some("openrouter/deepseek/v4"), "openrouter/"));
+        assert!(!routed_via(Some("anthropic/claude"), "openrouter/"));
+        // An arm the registry gives no model is not silently assigned to a provider.
+        assert!(!routed_via(None, "openrouter/"));
     }
 }
