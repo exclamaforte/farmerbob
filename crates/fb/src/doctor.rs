@@ -96,6 +96,8 @@ fn run_all() -> Vec<Check> {
         check_delegated_controllers(),
         check_systemd(),
         check_nvidia(),
+        check_cuda_toolkit(),
+        check_gpu_clocks(),
         check_git_worktree(),
         check_disk_headroom(),
         check_agent_clis(),
@@ -859,6 +861,126 @@ fn check_nvidia() -> Check {
             "nvidia",
             Status::Warn,
             format!("nvidia-smi returned no GPU info: {}", text.trim()),
+            None,
+        ),
+    }
+}
+
+/// Parse `nvcc --version` output: `Cuda compilation tools, release 13.3,
+/// V13.3.73` -> `13.3.73`.
+pub fn parse_nvcc_version(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("Cuda compilation tools, release ") {
+            let mut parts = rest.split(',');
+            let _release = parts.next()?.trim();
+            let build = parts.next()?.trim().strip_prefix('V')?;
+            if !build.is_empty() && build.chars().all(|c| c.is_ascii_digit() || c == '.') {
+                return Some(build.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Check that the CUDA toolkit is present: custom kernels need `nvcc`,
+/// not just the driver.
+fn check_cuda_toolkit() -> Check {
+    let output = match Command::new("nvcc").arg("--version").output() {
+        Ok(out) => out,
+        Err(e) => {
+            return Check::new(
+                "cuda toolkit",
+                Status::Warn,
+                format!("nvcc not found: {e}"),
+                Some(
+                    "install the CUDA toolkit (provides nvcc) to build custom kernels".to_string(),
+                ),
+            );
+        }
+    };
+    if !output.status.success() {
+        return Check::new(
+            "cuda toolkit",
+            Status::Warn,
+            format!("nvcc exited {}", output.status),
+            Some("reinstall the CUDA toolkit; nvcc should answer --version".to_string()),
+        );
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    match parse_nvcc_version(&text) {
+        Some(version) => Check::new("cuda toolkit", Status::Ok, format!("nvcc {version}"), None),
+        None => Check::new(
+            "cuda toolkit",
+            Status::Warn,
+            "nvcc ran but its version is unreadable".to_string(),
+            Some("reinstall the CUDA toolkit".to_string()),
+        ),
+    }
+}
+
+/// Parse an `nvidia-smi --query-gpu=clocks... --format=csv,noheader` line:
+/// `2902 MHz, 3105 MHz, 14001 MHz` -> (current, max graphics, max mem).
+pub fn parse_clock_line(line: &str) -> Option<(String, String, String)> {
+    let mut parts = line.split(',').map(str::trim);
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(cur), Some(max_g), Some(max_m))
+            if !cur.is_empty() && !max_g.is_empty() && !max_m.is_empty() =>
+        {
+            Some((cur.to_string(), max_g.to_string(), max_m.to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// Check GPU clock readout permissions without changing any state.
+/// Querying clocks is unprivileged; LOCKING them needs elevation, so the
+/// message states that instead of attempting it: a preflight check must
+/// never mutate the instrument it inspects.
+fn check_gpu_clocks() -> Check {
+    let output = match Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=clocks.current.graphics,clocks.max.graphics,clocks.max.mem",
+            "--format=csv,noheader",
+        ])
+        .output()
+    {
+        Ok(out) => out,
+        Err(e) => {
+            return Check::new(
+                "gpu clocks",
+                Status::Warn,
+                format!("nvidia-smi not found: {e}"),
+                None,
+            );
+        }
+    };
+    if !output.status.success() {
+        return Check::new(
+            "gpu clocks",
+            Status::Warn,
+            format!(
+                "nvidia-smi clock query exited {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+            Some("check nvidia-smi permissions for this user".to_string()),
+        );
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    match text.lines().next().and_then(parse_clock_line) {
+        Some((cur, max_g, max_m)) => Check::new(
+            "gpu clocks",
+            Status::Ok,
+            format!(
+                "graphics {cur} (max {max_g}), mem max {max_m}; locking clocks needs elevation"
+            ),
+            None,
+        ),
+        None => Check::new(
+            "gpu clocks",
+            Status::Warn,
+            format!("unreadable clock line: {}", text.trim()),
             None,
         ),
     }
@@ -2605,5 +2727,33 @@ esac
         let check = check_name_collisions(std::path::Path::new("/definitely/not/here/fb"));
         assert_eq!(check.status, Status::Warn);
         assert!(check.message.contains("cannot read"), "{}", check.message);
+    }
+
+    /// nvcc versions read off the release-and-build line; anything else
+    /// is not a version.
+    #[test]
+    fn nvcc_version_parses_release_line() {
+        let out = "nvcc: NVIDIA (R) Cuda compiler driver\nCuda compilation tools, release 13.3, V13.3.73\n";
+        assert_eq!(parse_nvcc_version(out), Some("13.3.73".to_string()));
+        assert_eq!(parse_nvcc_version("garbage\n"), None);
+        assert_eq!(
+            parse_nvcc_version("Cuda compilation tools, release X, VY\n"),
+            None
+        );
+    }
+
+    /// Clock lines parse three fields; short or empty lines do not.
+    #[test]
+    fn clock_line_parses_three_fields() {
+        assert_eq!(
+            parse_clock_line("2902 MHz, 3105 MHz, 14001 MHz"),
+            Some((
+                "2902 MHz".to_string(),
+                "3105 MHz".to_string(),
+                "14001 MHz".to_string()
+            ))
+        );
+        assert_eq!(parse_clock_line("2902 MHz, 3105 MHz"), None);
+        assert_eq!(parse_clock_line(""), None);
     }
 }
