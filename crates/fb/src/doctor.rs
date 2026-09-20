@@ -148,6 +148,214 @@ fn decide_orphaned_modules(crates: &[CrateSources]) -> Check {
     )
 }
 
+/// The names `lib.rs` re-exports, per module: `pub use foo::{A, B};` -> `foo -> [A, B]`.
+///
+/// A module reached only through a re-exported TYPE is reached. Ignoring re-exports would
+/// report `run`, `task` and `ids` as dead when `Run`, `Task` and `TaskId` are used
+/// throughout the workspace.
+pub fn reexported_names(lib_rs: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut out: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    // A re-export list may SPAN LINES, and this project's `pub use proto::{...}` does. Read
+    // each statement to its `;` rather than each line: a line-by-line reader sees
+    // `pub use proto::{` with no names after it and silently records none, which reports a
+    // module as unreached because its re-exports were never parsed.
+    for stmt in lib_rs.split(';') {
+        let Some(at) = stmt.find("pub use ") else {
+            continue;
+        };
+        let rest = &stmt[at + "pub use ".len()..];
+        let Some((module, names)) = rest.split_once("::") else {
+            continue;
+        };
+        let names = names.trim().trim_start_matches('{').trim_end_matches('}');
+        let list: Vec<String> = names
+            .split(',')
+            .map(|n| n.trim().trim_end_matches('}').trim().to_string())
+            .filter(|n| !n.is_empty() && n != "*")
+            .collect();
+        if !list.is_empty() {
+            out.entry(module.trim().to_string())
+                .or_default()
+                .extend(list);
+        }
+    }
+    out
+}
+
+/// Everything outside `//` line comments.
+///
+/// Crude on purpose: it does not track string literals, so a `//` inside one truncates that
+/// line. That direction is safe here -- it can only REMOVE apparent mentions, and the
+/// failure this check must avoid is reporting dead code as live.
+fn strip_line_comments(text: &str) -> String {
+    text.lines()
+        .map(|l| match l.find("//") {
+            Some(at) => &l[..at],
+            None => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Whether `text` names `<prefix>::<stem>` as a whole path segment.
+///
+/// Unlike `names_as_path` this does NOT require a trailing `::`. A module pulled in as
+/// `use crate::helper;` is used by that line, and demanding `helper::` after it reads the
+/// import as no mention at all.
+fn names_module(text: &str, prefix: &str, stem: &str) -> bool {
+    let needle = format!("{prefix}::{stem}");
+    text.match_indices(&needle).any(|(at, _)| {
+        let before = text[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let after = text[at + needle.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        !before && !after
+    })
+}
+
+/// Every name the rest of the workspace IMPORTS from this crate.
+///
+/// Matching a re-exported type's bare name against all foreign source is a false-NEGATIVE
+/// machine: `encode`, `Hello` and `Topic` are re-exported from `proto`, and each of them
+/// occurs in another crate -- in a log message, a comment, and a test string respectively.
+/// On bare-word matching `proto` reads as reached, when nothing imports it at all. Dead code
+/// reported as live is the one answer this check must never give, so only an actual import
+/// from this crate counts.
+pub fn imported_names(foreign: &str, crate_ident: &str) -> std::collections::BTreeSet<String> {
+    // COMMENTS ARE NOT CALLS. A doc comment naming `farmerbob_core::spec_fate::fate` kept
+    // spec_fate off the dead list for as long as the comment existed -- and the comment in
+    // question was one I wrote an hour earlier, explaining this very check. Prose about a
+    // module is the opposite of evidence that anything runs it.
+    let foreign = strip_line_comments(foreign);
+    let foreign = foreign.as_str();
+    let needle = format!("{crate_ident}::");
+    let mut out = std::collections::BTreeSet::new();
+    let bytes = foreign.as_bytes();
+    for (at, _) in foreign.match_indices(&needle) {
+        // Read only the PATH that follows, not the rest of the statement. Collecting to the
+        // next `;` swept up every word in between -- so `resume`, `roster` and `selection`,
+        // which are ordinary English and appear in nearby comments, read as imports and
+        // their modules read as live. Dead code reported as live is the one answer this
+        // check must not give.
+        let mut i = at + needle.len();
+        loop {
+            let seg_start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            if i > seg_start {
+                out.insert(foreign[seg_start..i].to_string());
+            }
+            // A `::` continues the path; anything else ends it.
+            if foreign[i..].starts_with("::") {
+                i += 2;
+                continue;
+            }
+            // A brace group names several items at this level: `::{A, B, c::d}`.
+            if foreign[i..].starts_with('{') {
+                let mut depth = 0usize;
+                let group_start = i;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'{' => depth += 1,
+                        b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                i += 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                for token in
+                    foreign[group_start..i].split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                {
+                    if !token.is_empty() {
+                        out.insert(token.to_string());
+                    }
+                }
+            }
+            break;
+        }
+    }
+    out
+}
+
+/// Modules of an INTERNAL library crate that nothing in the workspace reaches.
+///
+/// "A crate with a `lib.rs` contributes nothing to the report: its `pub mod`s are reachable
+/// by definition of an external caller." That is true of a PUBLIC library and false of this
+/// one. `farmerbob-core` has exactly two consumers, both in this workspace, so a `pub mod`
+/// nothing in the workspace calls is dead -- and because the check skipped library crates
+/// entirely, 37 of its 100 modules had accumulated unnoticed, each one specified,
+/// implemented, critiqued, adjudicated and merged.  (bead farmerbob-oa5w)
+///
+/// A module is reachable when another crate names `<crate_ident>::<stem>`, or names a type
+/// `lib.rs` re-exports from it, or when a module that is itself reachable names it as
+/// `crate::<stem>` or `super::<stem>`. The closure runs from OUTSIDE the crate inwards: a
+/// self-reference cannot seed it, and a ring of modules importing only each other stays
+/// unreachable, which is exactly the shape dead code takes here.
+pub fn unreachable_library_modules(
+    bodies: &[(String, String)],
+    lib_rs: &str,
+    foreign: &str,
+    crate_ident: &str,
+) -> Vec<String> {
+    let reexports = reexported_names(lib_rs);
+    let imported = imported_names(foreign, crate_ident);
+    // `imported` covers BOTH spellings: `use farmerbob_core::gate;` and a call site written
+    // `farmerbob_core::spec_fate::fate(..)`. `names_as_path` cannot -- it requires a
+    // trailing `::`, so a plain `use` import of a module reads as no mention at all and the
+    // module is reported dead while production imports it.
+    let named_outside = |stem: &str| {
+        imported.contains(stem)
+            || reexports
+                .get(stem)
+                .is_some_and(|ns| ns.iter().any(|n| imported.contains(n)))
+    };
+
+    let mut reachable: Vec<String> = bodies
+        .iter()
+        .filter(|(stem, _)| named_outside(stem))
+        .map(|(stem, _)| stem.clone())
+        .collect();
+
+    let mut grew = true;
+    while grew {
+        grew = false;
+        let frontier: Vec<String> = reachable.clone();
+        for from in &frontier {
+            let Some((_, body)) = bodies.iter().find(|(s, _)| s == from) else {
+                continue;
+            };
+            for (stem, _) in bodies {
+                if reachable.iter().any(|r| r == stem) {
+                    continue;
+                }
+                if names_module(body, "crate", stem) || names_module(body, "super", stem) {
+                    reachable.push(stem.clone());
+                    grew = true;
+                }
+            }
+        }
+    }
+
+    let mut dead: Vec<String> = bodies
+        .iter()
+        .map(|(stem, _)| stem.clone())
+        .filter(|stem| !reachable.iter().any(|r| r == stem))
+        .collect();
+    dead.sort();
+    dead
+}
+
 /// Turn a crate scan into the unreachable-modules report, without touching the filesystem.
 ///
 /// A module of a BINARY crate (one with a `main.rs` and no `lib.rs`) is reachable when
@@ -165,6 +373,40 @@ fn decide_orphaned_modules(crates: &[CrateSources]) -> Check {
 /// Deliberately unlike the orphan check's `Fail`.
 fn decide_unreachable_modules(crates: &[ScannedCrate]) -> Check {
     let mut unreachable = Vec::new();
+
+    // INTERNAL LIBRARY CRATES ARE IN THE CLAIM. The rule used to be that a crate with a
+    // `lib.rs` contributes nothing, because its `pub mod`s are reachable "by definition of
+    // an external caller". True of a PUBLIC library; false of these. farmerbob-core has two
+    // consumers, both in this workspace, and 37 of its 100 modules had accumulated
+    // unreached -- each specified, implemented, critiqued, adjudicated and merged.
+    // (bead farmerbob-oa5w)
+    for krate in crates {
+        let Some(lib) = &krate.sources.lib_rs else {
+            continue;
+        };
+        if krate.sources.main_rs.is_some() {
+            // A crate with both roots has a binary half that may reach private modules the
+            // library half does not export. Guessing which is worse than not claiming it.
+            continue;
+        }
+        let ident = krate.sources.name.replace('-', "_");
+        let foreign: String = crates
+            .iter()
+            .filter(|c| c.sources.name != krate.sources.name)
+            .flat_map(|c| {
+                c.bodies
+                    .iter()
+                    .map(|(_, b)| b.as_str())
+                    .chain(c.sources.main_rs.as_deref())
+                    .chain(c.sources.lib_rs.as_deref())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for stem in unreachable_library_modules(&krate.bodies, lib, &foreign, &ident) {
+            unreachable.push(format!("{}:{stem}", krate.sources.name));
+        }
+    }
+
     for krate in crates {
         let Some(main) = &krate.sources.main_rs else {
             continue;
@@ -1925,8 +2167,14 @@ esac
         assert!(reachable.contains(&"b".to_string()));
     }
 
+    /// REVERSED 2026-09-19. This asserted that a library crate's `pub mod` is never
+    /// reported, on the grounds that it is "reachable by definition of an external caller".
+    /// True of a PUBLIC library; false of an internal one. farmerbob-core has exactly two
+    /// consumers, both in this workspace, and while this rule stood 37 of its 100 modules
+    /// accumulated unreached -- each specified, implemented, critiqued, adjudicated and
+    /// merged, and none of them running.  (bead farmerbob-oa5w)
     #[test]
-    fn unreachable_library_pub_mod_is_never_reported() {
+    fn an_internal_library_module_nothing_imports_is_reported() {
         let krate = ScannedCrate {
             sources: CrateSources {
                 name: "libcrate".to_string(),
@@ -1937,8 +2185,32 @@ esac
             bodies: vec![("public".to_string(), "pub fn unused() {}".to_string())],
         };
         let check = decide_unreachable_modules(&[krate]);
-        assert_eq!(check.status, Status::Ok);
-        assert!(!check.message.contains("public"));
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check.message.contains("libcrate:public"),
+            "{}",
+            check.message
+        );
+    }
+
+    /// A crate with BOTH roots is still out of the claim: its binary half may reach private
+    /// modules the library half does not export, and guessing which is worse than silence.
+    #[test]
+    fn a_crate_with_both_roots_is_not_claimed() {
+        let krate = ScannedCrate {
+            sources: CrateSources {
+                name: "both".to_string(),
+                stems: vec!["lib".to_string(), "main".to_string(), "m".to_string()],
+                lib_rs: Some("pub mod m;".to_string()),
+                main_rs: Some("fn main() {}".to_string()),
+            },
+            bodies: vec![("m".to_string(), "pub fn f() {}".to_string())],
+        };
+        assert!(
+            !decide_unreachable_modules(&[krate])
+                .message
+                .contains("both:m")
+        );
     }
 
     #[test]
@@ -2017,5 +2289,79 @@ esac
         let recomputed = decide_unreachable_modules(&scan_crate_sources(&dir.join("crates")));
         assert_eq!(recomputed.status, reach.status);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A re-export list may SPAN LINES, and this project's `pub use proto::{...}` does. A
+    /// line-by-line reader sees `pub use proto::{` with no names after it, records none,
+    /// and then reports the module as unreached because its re-exports were never parsed.
+    #[test]
+    fn a_multi_line_reexport_is_read_whole() {
+        let lib = "pub use proto::{\n    Hello, Topic,\n    encode,\n};\npub use run::{Run};\n";
+        let m = reexported_names(lib);
+        assert_eq!(
+            m.get("proto").map(|v| v.as_slice()),
+            Some(
+                [
+                    "Hello".to_string(),
+                    "Topic".to_string(),
+                    "encode".to_string()
+                ]
+                .as_slice()
+            )
+        );
+        assert_eq!(m.get("run").map(|v| v.len()), Some(1));
+    }
+
+    /// ONLY AN ACTUAL IMPORT COUNTS. Matching a re-exported type's bare name against all
+    /// foreign source is a false-NEGATIVE machine: `encode`, `Hello` and `Topic` come from
+    /// `proto`, and each occurs elsewhere in this workspace -- in a log message, a comment
+    /// and a test string. On bare-word matching `proto` reads as reached when nothing
+    /// imports it. Dead code reported as live is the one answer this check must not give.
+    #[test]
+    fn incidental_words_are_not_imports() {
+        let foreign = "eprintln!(\"cannot encode ledger\");\n                       // Topic keywords, in order.\n                       assert_eq!(norm(\"Hello, World!\"), \"hello world\");\n";
+        let names = imported_names(foreign, "farmerbob_core");
+        assert!(names.is_empty(), "nothing is imported here: {names:?}");
+    }
+
+    /// A real import is found, including from a braced group spanning lines.
+    #[test]
+    fn a_braced_import_group_names_every_item() {
+        let foreign = "use farmerbob_core::adjudicate::{Evidence, Gap, Ruling};\n                       use farmerbob_core::gate;\n";
+        let names = imported_names(foreign, "farmerbob_core");
+        for want in ["adjudicate", "Evidence", "Gap", "Ruling", "gate"] {
+            assert!(names.contains(want), "{want} missing from {names:?}");
+        }
+    }
+
+    /// A module nothing outside the crate names, and that no reached module names, is dead
+    /// -- and a RING of modules importing only each other stays dead, which is the shape
+    /// this code actually takes.
+    #[test]
+    fn a_ring_of_modules_naming_only_each_other_is_still_dead() {
+        let bodies = vec![
+            ("live".to_string(), "pub fn f() {}".to_string()),
+            ("a".to_string(), "use crate::b;".to_string()),
+            ("b".to_string(), "use crate::a;".to_string()),
+        ];
+        let dead =
+            unreachable_library_modules(&bodies, "", "use farmerbob_core::live;", "farmerbob_core");
+        assert_eq!(dead, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    /// A module reached only transitively, through one that IS imported, is alive.
+    #[test]
+    fn transitive_reach_through_an_imported_module_counts() {
+        let bodies = vec![
+            ("front".to_string(), "use crate::helper;".to_string()),
+            ("helper".to_string(), "pub fn h() {}".to_string()),
+        ];
+        let dead = unreachable_library_modules(
+            &bodies,
+            "",
+            "use farmerbob_core::front;",
+            "farmerbob_core",
+        );
+        assert!(dead.is_empty(), "{dead:?}");
     }
 }
