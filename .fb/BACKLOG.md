@@ -17,7 +17,7 @@ crate could not pass its own gate.
 
 **Files:** `crates/farmerbob-core/src/ledger.rs` + `crates/fb/src/adjudicate_cmd.rs` + fb-launch.sh  
 **Beads:** 1 (P0)  
-**Status:** open — do this first
+**Status:** DONE  (recounted 2026-09-19)
 
 A critic's FOLLOWUP is the cheapest work this project can do, and it is the mechanism that
 stops the backlog growing rather than adding to it. A followup handled in-turn never becomes a
@@ -59,7 +59,7 @@ correctly.
 
 **Files:** `crates/farmerbob-core/src/cost.rs`  
 **Beads:** 6 (P0, P1, P3)  
-**Status:** SPECCED - .fb/prompts/cost-honesty.md, wave157 in flight
+**Status:** 3/6 closed  (recounted 2026-09-19)
 
 Six ways of saying one thing: `RunCost.usd` is `Option<f64>`, so "free on a plan", "metered but
 unpriced", "never measured" and "measured and disputed" are one `None` -- and a `None` that
@@ -78,7 +78,7 @@ use it.
 
 **Files:** `crates/fb/src/scope_cmd.rs + crates/farmerbob-core/src/scope.rs`  
 **Beads:** 4 (P1, P2)  
-**Status:** open
+**Status:** 2/4 closed  (recounted 2026-09-19)
 
 The gate disagrees with itself about what universe of paths it observes. One bead says it
 reports 777 departures for a clean arm because a pathspec was omitted; another says it sees
@@ -95,7 +95,7 @@ too quiet.
 
 **Files:** `crates/farmerbob-core/src/target_decl.rs + precondition.rs + fb-target.sh`  
 **Beads:** 7 (P0, P1, P2)  
-**Status:** open
+**Status:** 5/7 closed  (recounted 2026-09-19)
 
 Seven scripts each reimplemented the reader for `fb:creates` / `fb:modifies`, and six of them
 knew only `creates`. Every `modifies` spec was therefore unpipelineable and sat in NEEDS
@@ -115,7 +115,7 @@ the one reader; the work is deleting the other six and teaching the survivor wha
 
 **Files:** `crates/farmerbob-core/src/{build_verdict,quota}.rs + crates/fb/src/sources.rs`  
 **Beads:** 4 (P1)  
-**Status:** open
+**Status:** 1/4 closed  (recounted 2026-09-19)
 
 The same decision implemented more than once, diverging silently. Four tools reimplemented the
 verdict and each reintroduced the same bug. `quota::Registry` duplicates `fb::sources::Registry`
@@ -133,7 +133,7 @@ registry could not see.
 
 **Files:** `crates/fb/src/score.rs + crates/farmerbob-core/src/testout.rs`  
 **Beads:** 6 (P1, P2)  
-**Status:** open
+**Status:** DONE  (recounted 2026-09-19)
 
 `tests_run` is the crate's total presented as the candidate's contribution -- an arm that wrote
 6 tests has a record saying 547. `test_delta` and `score-delta` fixed the arithmetic; these are
@@ -151,7 +151,7 @@ one flaky test reads as NO-TESTS).
 
 **Files:** `fb-dispatch.sh + fb-score.sh + crates/farmerbob-core/src/wtreap.rs`  
 **Beads:** 9 (P0, P1, P2, P3)  
-**Status:** open
+**Status:** 0/9 closed  (recounted 2026-09-19)
 
 A candidate's work lives only in its worktree, uncommitted, and several things delete it. The
 hidden conformance suites shipped inside every worktree; an arm can register worktrees in the
@@ -172,7 +172,7 @@ scoring runs inside a live worktree. fb-archive.sh is today's stopgap and is not
 
 **Files:** `crates/fb/src/critique.rs + fb-critique.sh`  
 **Beads:** 6 (P1, P2)  
-**Status:** open
+**Status:** 0/6 closed  (recounted 2026-09-19)
 
 Critics get none of the protections implementers get: no systemd scope, no bwrap, no timeout.
 One wandering critic stalls the pipeline and is invisible. A rate-limited critic reports "no
@@ -190,7 +190,7 @@ renders a critique as blank when it filed no CLAIMS, hiding its JUDGEMENTS entir
 
 **Files:** `fb-crossx.sh + crates/farmerbob-core/src/graft.rs`  
 **Beads:** 6 (P1)  
-**Status:** open
+**Status:** 0/6 closed  (recounted 2026-09-19)
 
 The grafter mangles the suites it moves. It dropped the source file's imports, then the fix for
 that injected duplicates, which are a hard error. It renames `mod tests` but not every module.
@@ -207,7 +207,7 @@ It still VOIDs on `crates/fb` tasks, and the cause is the graft rather than the 
 
 **Files:** `crates/farmerbob-core/src/{crossx,divergence,field_shape}.rs`  
 **Beads:** 4 (P1, P2)  
-**Status:** open
+**Status:** 0/4 closed  (recounted 2026-09-19)
 
 Separate from T8: even a correctly grafted matrix is being READ wrong. Total API divergence is a
 fifth cell shape and means the spec under-specified the interface, but crossx reports it as "no
@@ -223,7 +223,7 @@ the detector cannot tell a correct strict suite from an over-fitted one.
 
 **Files:** `crates/farmerbob-core/src/quota.rs + crates/fb/src/sources.rs + fb-eligible.sh`  
 **Beads:** 8 (P1, P2, P3)  
-**Status:** open
+**Status:** 1/8 closed  (recounted 2026-09-19)
 
 `parked_until` exists and until today the Rust registry could not read it. Now it can, and the
 remaining half is that nothing SETS it from an observation and nothing re-probes an expired one
@@ -243,7 +243,7 @@ remaining half is that nothing SETS it from an observation and nothing re-probes
 
 **Files:** `.fb/prompts/_rubric.md + crates/farmerbob-core/src/speclint_shape.rs`  
 **Beads:** 5 (P0, P1)  
-**Status:** open
+**Status:** 1/5 closed  (recounted 2026-09-19)
 
 Specs that cannot be satisfied. A boundary that reads as a demand but was meant as delegation
 voided a whole matrix. Every spec contradicts itself on the handoff file. One pinned a closed
@@ -260,7 +260,7 @@ spec critics today; speclint should catch the SHAPE before dispatch.
 
 **Files:** `fb-speccheck.sh + .fb/queue + crates/fb/src/critique.rs`  
 **Beads:** 4 (P1, P2, P3)  
-**Status:** open
+**Status:** 0/4 closed  (recounted 2026-09-19)
 
 An artefact outliving the run that produced it, and nothing noticing. A spec critique is reused
 against a spec that has since changed. A spec edited mid-wave shows the critic and the
@@ -277,7 +277,7 @@ beside the artefact, and re-run when they differ.
 
 **Files:** `fb-dispatch.sh + fb-pipeline.sh + fb-autopilot.sh`  
 **Beads:** 3 (P1, P2)  
-**Status:** open
+**Status:** 0/3 closed  (recounted 2026-09-19)
 
 bash reads scripts incrementally, so editing a running one corrupts it mid-execution. This has
 happened twice. It is a discipline today (a rule in the tick prompt) and should be a lock.
@@ -290,7 +290,7 @@ happened twice. It is a discipline today (a rule in the tick prompt) and should 
 
 **Files:** `crates/farmerbob-core/src/{resource,liveness}.rs + fb-score.sh`  
 **Beads:** 5 (P1)  
-**Status:** open
+**Status:** 0/5 closed  (recounted 2026-09-19)
 
 Instruments pointed at the wrong target. `mem_peak_mb` samples foreign cgroups because `pgrep -f`
 matches the harness's own git processes. Process-name matching is not process identity. An
@@ -307,7 +307,7 @@ so candidates are charged for pre-existing lint debt.
 
 **Files:** `crates/farmerbob-core/src/known_defect.rs + fb-prove.sh + fb-escalate.sh`  
 **Beads:** 3 (P1, P2)  
-**Status:** open
+**Status:** 0/3 closed  (recounted 2026-09-19)
 
 The escalation path's parsers. `known_defect` splits the heading on the FIRST ' -- ', so a stamp
 containing one misparses the critic; it returns an empty claim when the prefix is missing; and
@@ -321,7 +321,7 @@ prove's reference veto silently passes when the task is not yet merged.
 
 **Files:** `crates/fb/src/{score,doctor}.rs + crates/farmerbob-core/src/lib_diff.rs`  
 **Beads:** 3 (P1)  
-**Status:** open
+**Status:** 0/3 closed  (recounted 2026-09-19)
 
 Nothing checks that an arm did what it claimed beyond the gate. An arm stubbed a shipped command
 to `-> i32 { 1 }` and scored PASS, because nothing verifies that public items the task never
@@ -336,7 +336,7 @@ mentioned still work. Eight modules are declared, tested and unreachable. `fb ve
 
 **Files:** `fb-dispatch.sh + fb-admit.sh + fb-speccheck.sh`  
 **Beads:** 5 (P1, P2)  
-**Status:** open
+**Status:** 0/5 closed  (recounted 2026-09-19)
 
 Sequencing around dispatch. codex's session continuation makes it re-answer the spec critique
 instead of implementing. fb-admit dispatches immediately after speccheck, so nobody ever rules
@@ -353,7 +353,7 @@ identically to a hang.
 
 **Files:** `hooks/pre-commit-fmt + crates/farmerbob-core/src/scope.rs`  
 **Beads:** 2 (P1, P2)  
-**Status:** CLOSEABLE - verify then close
+**Status:** DONE  (recounted 2026-09-19)
 
 Both fixed on 2026-09-19 -- the pre-commit formatter hook and scope's Semantic/FormattingOnly
 distinction. Listed so they are verified and closed rather than quietly assumed.
