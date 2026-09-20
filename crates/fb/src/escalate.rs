@@ -435,7 +435,7 @@ fn auto(task: &str) -> i32 {
             // better the critic, the more likely its finding is about the arm that WON, and
             // the more certainly it was discarded. `farmerbob_core::finding_fate` answers
             // FILE-AS-KNOWN-DEFECT for exactly this case.
-            file_known_defect(task, &critic, subj);
+            file_known_defect(task, subj, claims.as_ref());
             println!("  {subj}: VETOED against the merged reference -- retracting");
             retract_from(&[&suite, &tgt_path]);
             continue;
@@ -468,23 +468,77 @@ fn critic_for(claims: Option<&serde_json::Value>, subject: &str) -> Option<Strin
         .map(|(c, _)| c.to_string())
 }
 
+/// The claim a critic made about this subject, as `farmerbob_core::known_defect` wants it.
+///
+/// Returns `None` when no claim names this subject: a known-defect entry with no claim
+/// records that a defect exists without recording what it is, which is what the file is for.
+fn defect_from_claims(
+    claims: Option<&serde_json::Value>,
+    subject: &str,
+) -> Option<farmerbob_core::known_defect::KnownDefect> {
+    let rows = claims?.get("claims")?.as_array()?;
+    let row = rows
+        .iter()
+        .find(|c| c.get("subject").and_then(|s| s.as_str()) == Some(subject))?;
+    let text = |k: &str| {
+        row.get(k)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    // WHERE, TRIGGER, EXPECT, ACTUAL, in that order. A line the critic did not write is
+    // ABSENT rather than present and empty -- an empty evidence line asserts the critic
+    // considered it and had nothing to say.
+    let evidence = ["where", "trigger", "expect", "actual"]
+        .iter()
+        .filter_map(|k| text(k))
+        .collect();
+    Some(farmerbob_core::known_defect::KnownDefect {
+        critic: text("critic")?,
+        subject: subject.to_string(),
+        claim: text("claim")?,
+        evidence,
+    })
+}
+
 /// Record a confirmed-but-unmergeable finding so it survives the retraction.
-fn file_known_defect(task: &str, critic: &str, subject: &str) {
+///
+/// THE RECORD MUST CARRY THE FINDING. This wrote a timestamp, the two arm names and a
+/// boilerplate sentence -- so the file said a defect existed without saying what it was,
+/// which is the one thing it is for. It also appended unconditionally, so re-running
+/// `fb escalate auto` recorded the same defect again; and it hand-rolled a format
+/// `known_defect::parse` cannot read, so the deduplication that module provides could never
+/// have worked even if it had been called.
+///
+/// `farmerbob_core::known_defect` renders the entry, parses the file back and answers
+/// `already_recorded`. It had no callers. (bead farmerbob-oa5w)
+fn file_known_defect(task: &str, subject: &str, claims: Option<&serde_json::Value>) {
+    use farmerbob_core::known_defect::{already_recorded, parse, render};
     let kd = crate::paths::repo().join(".fb/known-defects");
     if fs::create_dir_all(&kd).is_err() {
         return;
     }
+    let Some(defect) = defect_from_claims(claims, subject) else {
+        println!(
+            "  {subject}: confirmed, but no claim names it -- not recording a defect with no \
+             statement of what it is"
+        );
+        return;
+    };
     let f = kd.join(format!("{task}.md"));
-    let mut s = fs::read_to_string(&f).unwrap_or_default();
-    s.push_str(&format!(
-        "\n## {} -- {critic} on {subject}\n\
-         FILE-AS-KNOWN-DEFECT\n\n\
-         The escalated test failed against the merged reference, so it was not\n\
-         added to the suite. The finding was confirmed and is recorded here so\n\
-         it survives the retraction.\n",
-        chrono::Utc::now().to_rfc3339()
-    ));
-    if fs::write(&f, s).is_ok() {
+    let existing_text = fs::read_to_string(&f).unwrap_or_default();
+    if already_recorded(&parse(&existing_text), &defect) {
+        println!("  {subject}: already recorded as a known defect");
+        return;
+    }
+    let entry = render(task, &chrono::Utc::now().to_rfc3339(), &defect);
+    let body = if existing_text.is_empty() {
+        entry
+    } else {
+        format!("{existing_text}\n{entry}")
+    };
+    if fs::write(&f, body).is_ok() {
         println!("  {subject}: recorded as a known defect -> .fb/known-defects/{task}.md");
     }
 }
@@ -856,6 +910,69 @@ mod tests {
         assert_eq!(
             farmerbob_core::gate::judge(&observation),
             farmerbob_core::gate::Verdict::NoTests
+        );
+    }
+
+    /// THE RECORD MUST CARRY THE FINDING. The entry used to be a timestamp, two arm names
+    /// and a boilerplate sentence, so the file said a defect existed without saying what it
+    /// was -- the one thing it is for.
+    #[test]
+    fn a_known_defect_carries_the_claim_and_its_evidence() {
+        let claims = serde_json::json!({"claims": [{
+            "subject": "codex-luna", "critic": "agy-opus-46",
+            "claim": "sensitivity() returns None where the spec makes it Some(0.0)",
+            "where": "cost.rs:212", "trigger": "an arm with no priced runs",
+            "expect": "Some(0.0)", "actual": "None"
+        }]});
+        let d = defect_from_claims(Some(&claims), "codex-luna").expect("a claim names it");
+        assert_eq!(d.critic, "agy-opus-46");
+        assert!(d.claim.contains("sensitivity()"));
+        assert_eq!(
+            d.evidence,
+            vec![
+                "cost.rs:212",
+                "an arm with no priced runs",
+                "Some(0.0)",
+                "None"
+            ]
+        );
+    }
+
+    /// A line the critic did not write is ABSENT, not empty. An empty evidence line asserts
+    /// the critic considered it and had nothing to say.
+    #[test]
+    fn evidence_the_critic_omitted_is_absent_not_blank() {
+        let claims = serde_json::json!({"claims": [{
+            "subject": "s", "critic": "c", "claim": "x", "where": "f.rs:1", "trigger": ""
+        }]});
+        let d = defect_from_claims(Some(&claims), "s").unwrap();
+        assert_eq!(d.evidence, vec!["f.rs:1"]);
+    }
+
+    /// No claim naming the subject means no statement of the defect, and an entry without
+    /// one records nothing worth keeping.
+    #[test]
+    fn a_subject_with_no_claim_yields_no_defect() {
+        let claims =
+            serde_json::json!({"claims": [{"subject": "other", "critic": "c", "claim": "x"}]});
+        assert!(defect_from_claims(Some(&claims), "missing").is_none());
+        assert!(defect_from_claims(None, "missing").is_none());
+    }
+
+    /// Re-running escalation must not append the same defect again. The old writer appended
+    /// unconditionally AND wrote a format `known_defect::parse` cannot read, so the
+    /// deduplication could never have worked even if it had been called.
+    #[test]
+    fn the_same_defect_is_recognised_in_a_rendered_file() {
+        use farmerbob_core::known_defect::{already_recorded, parse, render};
+        let claims = serde_json::json!({"claims": [{
+            "subject": "s", "critic": "c", "claim": "the thing is wrong", "where": "f.rs:1"
+        }]});
+        let d = defect_from_claims(Some(&claims), "s").unwrap();
+        let file = render("task", "2026-09-19T00:00:00Z", &d);
+        assert!(
+            already_recorded(&parse(&file), &d),
+            "what render writes must be what parse reads: {file}"
         );
     }
 }
