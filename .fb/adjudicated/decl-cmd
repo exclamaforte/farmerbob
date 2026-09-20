@@ -1,0 +1,12 @@
+MERGED glm-53-flash (grafted)
+Merged 2026-09-18 in 24cda64: 299 lines, 14 tests. decl_cmd delegates to
+farmerbob_core::target_decl and renders; its own module doc says a regex here would be the
+fourth reader. Three readers of one marker disagreed until then -- precondition tracked
+fences and was right, fb-target.sh took head -1 and was right only by convention, and
+fb-dispatch.sh checked them all and killed target-decl on a fenced EXAMPLE in its own
+rationale.
+Exit codes are values, not prose: 0 one declaration, 2 none, 3 ambiguous or refused, 4
+unreadable; 1 is deliberately unused so a shell `if` cannot conflate them.
+RECORD WRITTEN LATE, 2026-09-19. The merge happened; nobody wrote this file, so fb status
+reported the task as never decided and its skip marker looked like an abandonment. Extended
+by decl-why (2026-09-19), which made those refusals legible instead of silent.
