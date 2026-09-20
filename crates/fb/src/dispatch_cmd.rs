@@ -194,6 +194,149 @@ pub fn seed_credentials(state_data: &Path) -> Result<(), String> {
         .map_err(|e| format!("cannot seed {}: {e}", cred.display()))
 }
 
+/// Whether a kernel task demands exclusive GPU access, from its
+/// manifest. Unreadable or unparseable manifests (or no `gpu` in
+/// `exclusive`) mean no lease: other stages report malformed manifests,
+/// and a task that does not declare exclusivity is not serialized.
+pub fn kernel_wants_gpu(task_dir: &Path) -> bool {
+    std::fs::read_to_string(task_dir.join("task.toml"))
+        .ok()
+        .and_then(|text| farmerbob_core::task_contract::TaskManifest::parse(&text).ok())
+        .is_some_and(|manifest| manifest.exclusive.iter().any(|e| e == "gpu"))
+}
+
+/// A held GPU lease, released back to the file store on drop -- every
+/// path out, including panics.
+pub struct GpuLeaseGuard {
+    state_dir: PathBuf,
+    token: String,
+    arm: String,
+}
+
+impl Drop for GpuLeaseGuard {
+    fn drop(&mut self) {
+        if self.token.is_empty() {
+            return;
+        }
+        if crate::gpu_lease::release(&self.state_dir, &self.token).unwrap_or(false) {
+            println!("{}: released gpu lease", self.arm);
+        }
+    }
+}
+
+/// Acquire the GPU lease for a run, or refuse with the reason to print.
+/// A broken lease store warns and proceeds unleashed: failing closed on
+/// lease-infra trouble would turn every lease bug into a total GPU
+/// outage, which is exactly the arrangement this replaces.
+pub fn acquire_gpu_lease(run: &str, runtime_max_s: u64) -> Result<GpuLeaseGuard, String> {
+    let state_dir = crate::paths::state().join("gpu-leases");
+    let max_hold = runtime_max_s.saturating_add(300);
+    match crate::gpu_lease::acquire(&state_dir, "gpu", run, max_hold) {
+        Ok(Ok(granted)) => Ok(GpuLeaseGuard {
+            state_dir,
+            token: granted.token,
+            arm: run.to_string(),
+        }),
+        Ok(Err(busy)) => {
+            let held = busy
+                .held_for_secs
+                .map(|s| format!(" held {s}s"))
+                .unwrap_or_default();
+            Err(format!(
+                "GPU-BUSY held by {}{} ({} queued behind it): deferred, not failed",
+                busy.holder, held, busy.queue_depth
+            ))
+        }
+        Err(why) => {
+            eprintln!("warning: gpu lease unavailable ({why}); proceeding unleashed");
+            Ok(GpuLeaseGuard {
+                state_dir,
+                token: String::new(),
+                arm: run.to_string(),
+            })
+        }
+    }
+}
+///
+/// Paths use `/` separators. Unreadable files are skipped, not failed: the
+/// snapshot pins what it could read, and a file the harness could not read
+/// before dispatch that appears readable after is the operator's cue, not a
+/// silent pass. `kernel_trust::snapshot` filters the writable candidate.
+pub fn collect_task_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(base: &Path, rel: &str, out: &mut Vec<(String, Vec<u8>)>) {
+        let dir = if rel.is_empty() {
+            base.to_path_buf()
+        } else {
+            base.join(rel)
+        };
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return;
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        for name in names {
+            let path = dir.join(&name);
+            let rel_path = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
+            if path.is_dir() {
+                walk(base, &rel_path, out);
+            } else if let Ok(bytes) = fs::read(&path) {
+                out.push((rel_path, bytes));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, "", &mut out);
+    out
+}
+
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Archive a kernel run's work product (bead farmerbob-x81s.16).
+///
+/// `candidate.py` lives in the SHARED task dir, so the next run on the
+/// task overwrites it; the worktree has no copy either, which is why
+/// `fb archive` (worktrees only) never sees kernel work. The artifact
+/// store (content hash + pin, GC-proof) is where the bytes survive, under
+/// the run id. The trust record already persists beside the run log, so
+/// only the candidate needs storing. Returns lines for the operator.
+/// A store failure warns, never fails the run: archiving is evidence,
+///
+/// Task dirs are the shared base, like the repo itself: `fb reap` walks
+/// worktrees only and must never touch them, and there is nothing per-run
+/// in them to reap. `fb kernel-score` already takes task paths, and the
+/// trust record above is the scope gate for kernels.
+pub fn archive_kernel_run(task_dir: &Path, run: &str, artifacts: &Path) -> Vec<String> {
+    let candidate = task_dir.join(farmerbob_core::kernel_trust::WRITABLE);
+    let mut sink = Vec::new();
+    let code = crate::artifact_cmd::store(&candidate, "kernel-source", run, artifacts, &mut sink);
+    let stored = String::from_utf8_lossy(&sink).into_owned();
+    if code == 0 {
+        vec![format!("archived candidate -> {}", stored.trim())]
+    } else {
+        vec![format!(
+            "warning: candidate not archived (rc={code}): {}",
+            stored.trim()
+        )]
+    }
+}
 /// Dispatch one arm on one task.
 /// What a dispatch must do to the arm's worktree and session before it runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -353,13 +496,97 @@ pub fn run_in(
         spec.clone()
     };
 
-    let env = [
+    // The KernelBench trust boundary (bead farmerbob-x81s.1). When the
+    // operator points a run at a task directory, its pinned files are
+    // hashed BEFORE the arm starts (every file except candidate.py), the
+    // directory rides into the confinement read-only via the same variable
+    // (see `isolated_cmd::run`, which binds the task ro and the candidate
+    // back writable LAST), and the hashes are re-checked after. systemd-run
+    // --scope execs its child directly, so env set here reaches `fb
+    // isolated` inside the scope.
+    let kernel_task: Option<PathBuf> = std::env::var_os("FB_KERNEL_TASK_DIR")
+        .map(PathBuf::from)
+        .filter(|d| d.is_dir());
+    // Each turn guards itself: the snapshot is taken in memory before
+    // launch (and written to the pinned record for audit), then re-checked
+    // after. A follow-up turn re-pins what the previous turn left -- which
+    // that turn already verified -- so tampering is attributed to the turn
+    // that moved the file.
+    let before_snap: Vec<farmerbob_core::kernel_trust::Pinned> = match kernel_task.as_deref() {
+        Some(dir) => {
+            let snap = farmerbob_core::kernel_trust::snapshot(&collect_task_files(dir));
+            let mut out = String::from("[");
+            for (i, p) in snap.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&format!(
+                    "{{\"file\":\"{}\",\"hash\":\"{}\"}}",
+                    json_escape(&p.file),
+                    p.hash
+                ));
+            }
+            out.push(']');
+            let _ = fs::write(logs.join(format!("{run}.pinned.json")), &out);
+            println!("{arm}: pinned {} trust snapshot", dir.display());
+            snap
+        }
+        None => Vec::new(),
+    };
+
+    let mut env: Vec<(&str, PathBuf)> = vec![
         ("XDG_DATA_HOME", state.join("data")),
         ("XDG_STATE_HOME", state.join("state")),
         ("XDG_CACHE_HOME", state.join("cache")),
     ];
+    if let Some(ref dir) = kernel_task {
+        env.push(("FB_KERNEL_TASK_DIR", dir.clone()));
+    }
     let started = std::time::Instant::now();
     let unit = unit_name(&run, std::process::id());
+    let runtime_max_s: u64 = std::env::var("FB_RUN_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2700);
+    // GPU lease (bead farmerbob-oa5w.1): a kernel task declaring
+    // exclusive GPU access serializes on the file-backed lease before
+    // launching. A busy GPU refuses the run like a bad premise (no
+    // launch, no session, rc 0 -- the tick retries), never as an arm
+    // failure. The guard releases on every path out, including panics;
+    // a crashed dispatch heals by TTL expiry on the next acquire.
+    let _gpu_lease = match kernel_task.as_deref() {
+        Some(dir) if kernel_wants_gpu(dir) => match acquire_gpu_lease(&run, runtime_max_s) {
+            Ok(guard) => Some(guard),
+            Err(refused) => {
+                println!("{arm}: {refused}");
+                return 0;
+            }
+        },
+        _ => None,
+    };
+    // Host memory peak from the run's OWN scope (bead farmerbob-05p):
+    // the sampler reads <scope>/memory.peak on an interval and keeps the
+    // max, stopping when the run ends. No pid is ever discovered, so no
+    // foreign command line can pollute the reading. Scopes vanish with
+    // their last process, which is why this samples during the run: after
+    // is too late.
+    let mem_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mem_unit = unit.clone();
+    let mem_sampler = std::thread::spawn({
+        let stop = std::sync::Arc::clone(&mem_stop);
+        move || {
+            let interval_ms: u64 = std::env::var("FB_MEM_SAMPLE_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(crate::memsample::SAMPLE_INTERVAL_MS);
+            crate::memsample::sample_peak(
+                Path::new("/sys/fs/cgroup"),
+                &mem_unit,
+                std::time::Duration::from_millis(interval_ms),
+                &stop,
+            )
+        }
+    });
     let said = crate::launch::launch_in(
         arm,
         &prompt,
@@ -370,10 +597,7 @@ pub fn run_in(
         Some(crate::launch::Scope {
             unit: &unit,
             memory_max: std::env::var("FB_MEM_MAX").unwrap_or_else(|_| "3G".to_string()),
-            runtime_max_s: std::env::var("FB_RUN_TIMEOUT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(2700),
+            runtime_max_s,
         }),
     );
     let seconds = started.elapsed().as_secs();
@@ -383,12 +607,67 @@ pub fn run_in(
         farmerbob_core::measurement::Measurement::Missing(reason) => (1, format!("{reason:?}")),
     };
     let _ = fs::write(&log, &text);
+    // Stop the memory sampler and take its max. Absent when the scope
+    // never appeared (or cgroup v1): the run JSON then carries no memory
+    // field at all, which renders as unmeasured -- never as zero.
+    mem_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mem_peak_mb = mem_sampler
+        .join()
+        .ok()
+        .flatten()
+        .map(|bytes| bytes / 1024 / 1024);
+    if let Some(mb) = mem_peak_mb {
+        println!("{arm}: host peak {mb} MB (own scope)");
+    }
+    // Re-hash the pinned files AFTER the run. A movement voids the run: it
+    // names the file and both hashes on stdout and in the trust record, and
+    // `fb kernel-score --tampered` (fed from this record) refuses it any
+    // score. Tampered is not low-ranked; it is not ranked at all.
+    if let Some(ref dir) = kernel_task {
+        let after = farmerbob_core::kernel_trust::snapshot(&collect_task_files(dir));
+        let tampers = farmerbob_core::kernel_trust::verify(&before_snap, &after);
+        let mut trust = String::from("{\"tampered\":[");
+        for (i, t) in tampers.iter().enumerate() {
+            if i > 0 {
+                trust.push(',');
+            }
+            trust.push_str(&format!(
+                "{{\"file\":\"{}\",\"before\":\"{}\",\"after\":\"{}\"}}",
+                json_escape(&t.file),
+                t.before,
+                t.after
+            ));
+        }
+        trust.push_str("]}");
+        let _ = fs::write(logs.join(format!("{run}.trust.json")), &trust);
+        for t in &tampers {
+            println!("{arm}: {}", farmerbob_core::kernel_trust::void_line(t));
+        }
+        if tampers.is_empty() {
+            println!(
+                "{arm}: trust clean ({} pinned files re-hashed)",
+                after.len()
+            );
+        }
+        for line in archive_kernel_run(dir, &run, &crate::paths::artifacts()) {
+            println!("{arm}: {line}");
+        }
+    }
     let _ = fs::write(
         logs.join(format!("{run}.json")),
-        format!(
-            r#"{{"source":"{arm}","bead":"{task}","crate":"{krate}","rc":{rc},"duration_s":{seconds},"worktree":"{}","branch":"{branch}","confined":"yes"}}"#,
-            wt.display()
-        ),
+        match mem_peak_mb {
+            // Provenance rides with the value: readers trust scoped
+            // peaks and treat unsourced values as the pgrep era (bead
+            // farmerbob-05p).
+            Some(mb) => format!(
+                r#"{{"source":"{arm}","bead":"{task}","crate":"{krate}","rc":{rc},"duration_s":{seconds},"worktree":"{}","branch":"{branch}","confined":"yes","mem_peak_mb":{mb},"mem_source":"scope"}}"#,
+                wt.display()
+            ),
+            None => format!(
+                r#"{{"source":"{arm}","bead":"{task}","crate":"{krate}","rc":{rc},"duration_s":{seconds},"worktree":"{}","branch":"{branch}","confined":"yes"}}"#,
+                wt.display()
+            ),
+        },
     );
     println!("{arm:<24} rc={rc} {seconds}s -> {}", log.display());
     rc
@@ -520,5 +799,60 @@ mod tests {
         };
         assert!(why.contains("refusing"), "{why}");
         assert!(why.contains("fresh run"), "{why}");
+    }
+
+    /// The trust collector walks the whole task tree (including `ref/`) and
+    /// the snapshot pins everything but the candidate (bead
+    /// farmerbob-x81s.1).
+    #[test]
+    fn the_trust_collector_pins_everything_but_the_candidate() {
+        let base = std::env::temp_dir().join(format!("fb-trust-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("ref")).unwrap();
+        std::fs::write(base.join("candidate.py"), "agent").unwrap();
+        std::fs::write(base.join("verify.sh"), "scorer").unwrap();
+        std::fs::write(base.join("ref/problem.py"), "ref").unwrap();
+        let files = collect_task_files(&base);
+        let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"candidate.py"), "{names:?}");
+        assert!(names.contains(&"verify.sh"), "{names:?}");
+        assert!(names.contains(&"ref/problem.py"), "{names:?}");
+        let snap = farmerbob_core::kernel_trust::snapshot(&files);
+        assert!(!snap.iter().any(|p| p.file == "candidate.py"));
+        assert!(snap.iter().any(|p| p.file == "verify.sh"));
+        // A tampered scorer between two collections is caught end to end.
+        std::fs::write(base.join("verify.sh"), "{\"correct\":true}").unwrap();
+        let after = farmerbob_core::kernel_trust::snapshot(&collect_task_files(&base));
+        let tampers = farmerbob_core::kernel_trust::verify(&snap, &after);
+        assert_eq!(tampers.len(), 1);
+        assert_eq!(tampers[0].file, "verify.sh");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Archiving stores the candidate under the run id: the bytes survive
+    /// the shared task dir being overwritten by the next run (bead
+    /// farmerbob-x81s.16). A missing candidate warns instead of failing.
+    #[test]
+    fn archiving_pins_the_candidate_to_the_run() {
+        let base = std::env::temp_dir().join(format!("fb-archive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let task = base.join("task");
+        let store = base.join("store");
+        std::fs::create_dir_all(&task).unwrap();
+        std::fs::write(task.join("candidate.py"), "agent code").unwrap();
+        let lines = archive_kernel_run(&task, "test-run", &store);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("archived candidate -> "), "{lines:?}");
+        assert!(lines[0].contains("\"pin\":\"test-run\""), "{lines:?}");
+        // The pin record names the run: evidence survives GC and reaping.
+        let pin = std::fs::read_to_string(store.join("pins").join("test-run")).expect("pin");
+        assert!(pin.contains("kernel_source"), "{pin}");
+        // Idempotent: a second archive deduplicates, same pin.
+        let again = archive_kernel_run(&task, "test-run", &store);
+        assert!(again[0].contains("\"deduplicated\":true"), "{again:?}");
+        // Nothing to store warns rather than failing the run.
+        let missing = archive_kernel_run(&base.join("empty"), "test-run", &store);
+        assert!(missing[0].starts_with("warning: "), "{missing:?}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

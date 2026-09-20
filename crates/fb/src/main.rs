@@ -6,7 +6,6 @@ mod autopilot_cmd;
 mod backfill_cmd;
 mod bench_cmd;
 mod bench_gather;
-mod cmd;
 mod compare_cmd;
 mod compare_gather;
 mod conform_cmd;
@@ -16,11 +15,13 @@ mod decl_cmd;
 mod defects;
 mod differential;
 mod dispatch_cmd;
+mod diversity_cmd;
 mod doctor;
 mod eligible;
 mod escalate;
 mod fate_cmd;
 mod followups_cmd;
+mod gpu_lease;
 mod hooks_cmd;
 mod import;
 mod isolated_cmd;
@@ -28,8 +29,11 @@ mod kernel_score_cmd;
 mod launch;
 mod ledger_cmd;
 mod live_cmd;
+mod log_cmd;
+mod memsample;
 mod mutants;
 mod next_cmd;
+mod novelty_cmd;
 mod objective;
 mod pareto;
 mod park_cmd;
@@ -41,6 +45,7 @@ mod promote;
 mod prove;
 mod reap_cmd;
 mod repro_cmd;
+mod revalidate_cmd;
 mod scope_cmd;
 mod score;
 mod select;
@@ -49,8 +54,8 @@ mod slots_cmd;
 mod sources;
 mod speccheck_cmd;
 mod speclint_cmd;
-mod stage_cmd;
 mod status;
+mod sweep_cmd;
 mod timing_cmd;
 mod trial;
 mod verifier_cmd;
@@ -188,6 +193,20 @@ enum Command {
     },
     /// Count agent processes whose working directory is inside a candidate worktree.
     Live { args: Vec<String> },
+    /// Who holds the GPU lease, who waits, and what the record says
+    /// (bead farmerbob-oa5w.1). Read-only.
+    GpuStatus {
+        /// Resource name. Defaults to the one GPU.
+        #[arg(long, default_value = "gpu")]
+        resource: String,
+    },
+    /// Dump what an arm said and did, from its own session store (bead
+    /// farmerbob-x81s.17): the transcript a timeout would otherwise take
+    /// with it.
+    Log {
+        /// Run id, as in logs/<run>.log (`task--arm`).
+        run: String,
+    },
     /// Run the subjective tier over tasks that never got one.
     Backfill { tasks: Vec<String> },
     /// Run one arm's test suite against another arm's implementation -- one crossx cell,
@@ -341,8 +360,26 @@ enum Command {
         #[arg(long)]
         unregister: bool,
     },
-    /// Record and read credit for spec defects and follow-ups proposed by arms.
-    ///
+    /// Plan the losers' cleanup for a task that has a winner (bead
+    /// farmerbob-oa5w.2): every candidate worktree except the winner's,
+    /// with archive refs. Read-only; removal belongs to the sweep bead.
+    Sweep {
+        /// Task name.
+        task: String,
+        /// Winning arm. Unknown winners refuse, sweeping nothing.
+        #[arg(long)]
+        winner: String,
+    },
+    /// Check queued task specs against the live base (bead
+    /// farmerbob-m71): merging a winner invalidates queued premises, so
+    /// the queue is re-validated -- here by hand, and automatically by
+    /// the post-merge hook.
+    Revalidate {
+        /// Queue directory. Defaults to the repository's `.fb/queue`.
+        #[arg(long, default_value = "")]
+        queue_dir: String,
+    },
+    /// Record and read credit for spec defects and follow-ups proposed by arms.    ///
     /// Two stages feed it: the spec critique that runs BEFORE implementation, and the
     /// FOLLOWUPS section of cross-critique. An accepted proposal is a positive signal
     /// about an arm that nothing else here measures. See docs/PROPOSALS.md.
@@ -544,6 +581,25 @@ enum Command {
         /// Unreadable runs tolerated before the instrument is judged unreliable.
         #[arg(long, default_value_t = 3)]
         max_bad: u32,
+        /// Print one machine JSON object instead of the human line, for
+        /// piping into `fb kernel-score --bench-json` (bead
+        /// farmerbob-x81s.15).
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Cluster one wave's candidates by approach: N approaches or one
+    /// approach N times (bead farmerbob-x81s.8). A collapsed wave reads
+    /// as one approach, never as N successes.
+    Diversity {
+        /// One candidate per arm as `arm=path`. Repeat for every arm.
+        #[arg(long)]
+        candidate: Vec<String>,
+    },
+    /// Exploration credit on its own axis (bead farmerbob-x81s.9).
+    Novelty {
+        /// Record an attempt or show a task's ledger.
+        #[command(subcommand)]
+        cmd: NoveltyCmd,
     },
     /// Score one kernel task from its baseline and fresh samples.
     KernelScore {
@@ -552,8 +608,9 @@ enum Command {
         /// Fingerprint of the environment the samples were measured in.
         #[arg(long)]
         fingerprint: String,
-        /// Fresh bench samples in ms, comma separated.
-        #[arg(long)]
+        /// Fresh bench samples in ms, comma separated. Empty takes them
+        /// from --bench-json instead.
+        #[arg(long, default_value = "")]
         samples: String,
         /// Whether verification passed.
         #[arg(long, default_value_t = false)]
@@ -564,6 +621,41 @@ enum Command {
         /// Minimum fresh samples before a task may be scored.
         #[arg(long, default_value_t = 1)]
         min_samples: usize,
+        /// Trust re-hash findings, one per tampered file as
+        /// `path:hash-before:hash-after`. Repeat for every file. A non-empty
+        /// list voids the run (bead farmerbob-x81s.1): named, never scored.
+        #[arg(long)]
+        tampered: Vec<String>,
+        /// Clock verdict from the bench run (`""` when clean). Non-empty is
+        /// the `clock` status (bead farmerbob-x81s.2): named, distinct from
+        /// slow and from incorrect, never scored.
+        #[arg(long, default_value = "")]
+        clock: String,
+        /// Minimum memory traffic in bytes (inputs plus output, as the
+        /// bench shim reports it). Non-zero enables the plausibility floor
+        /// (bead farmerbob-x81s.6): a median below bytes-over-peak-bandwidth
+        /// is `unreliable`, naming the floor and the figure. Zero disables
+        /// the check.
+        #[arg(long, default_value_t = 0)]
+        io_bytes: u64,
+        /// Held-out verdict from the verify run. Set when the candidate
+        /// passed the visible inputs and failed inputs from a seed the
+        /// agent never had (bead farmerbob-x81s.4): its own `specialised`
+        /// status, never incorrect.
+        #[arg(long, default_value_t = false)]
+        specialised: bool,
+        /// Reference-call answer from the verify run. Set when the
+        /// candidate executed the task's own reference code (bead
+        /// farmerbob-x81s.5): its own `reference` status, never incorrect,
+        /// never slow.
+        #[arg(long, default_value_t = false)]
+        reference_call: bool,
+        /// Bench JSON from `fb bench --json`: a file path, or `-` for
+        /// stdin. Fills samples, correct, clock, io_bytes, specialised
+        /// and reference_call; explicit flags win over file values when
+        /// set (bead farmerbob-x81s.15).
+        #[arg(long, default_value = "")]
+        bench_json: String,
     },
     /// Store bytes by content hash, pin them, collect garbage.
     Artifact {
@@ -694,6 +786,58 @@ fn agents(all: bool, json: bool) -> i32 {
         }
     }
     exit::OK
+}
+
+/// `fb novelty` actions.
+#[derive(Subcommand)]
+enum NoveltyCmd {
+    /// Record one attempt at a task. Prints NEW APPROACH for a novelty
+    /// win, seen otherwise. Exit 0 whenever the ledger is written.
+    Record {
+        /// Task name.
+        #[arg(long)]
+        task: String,
+        /// Arm name.
+        #[arg(long)]
+        arm: String,
+        /// Candidate file.
+        #[arg(long)]
+        file: String,
+        /// Harness verdict: correct|incorrect|unreliable|stale|void|clock|specialised|reference.
+        #[arg(long)]
+        verdict: String,
+        /// Harness detail.
+        #[arg(long, default_value = "")]
+        detail: String,
+        /// Measured speedup, if any. Written down, never summed.
+        #[arg(long)]
+        speedup: Option<f64>,
+        /// Strategy the arm was asked for (bead farmerbob-x81s.10):
+        /// sdpa-math|sdpa-flash|sdpa-efficient|sdpa-cudnn|triton-tiled|torch-compile|fusion|eager-baseline.
+        #[arg(long)]
+        asked_strategy: Option<String>,
+    },
+    /// Show a task's ledger: approaches with first arms and best
+    /// speedups, then attempt counts.
+    Log {
+        /// Task name.
+        #[arg(long)]
+        task: String,
+    },
+    /// Show a task's spec-ready digest for paste-injection into later
+    /// specs (bead farmerbob-x81s.11).
+    Brief {
+        /// Task name.
+        #[arg(long)]
+        task: String,
+    },
+    /// Show a task's strategy report: per asked strategy, attempts with
+    /// asked-versus-produced match (bead farmerbob-x81s.10).
+    Strategy {
+        /// Task name.
+        #[arg(long)]
+        task: String,
+    },
 }
 
 fn leaderboard(from: &str, show_excluded: bool, json: bool) -> i32 {
@@ -925,6 +1069,21 @@ fn main() {
             execute,
             unregister,
         }) => reap_cmd::run_cmd(execute, unregister),
+        Some(Command::Sweep { task, winner }) => sweep_cmd::run(
+            &task,
+            &winner,
+            &crate::paths::worktrees(),
+            &mut std::io::stdout(),
+        ),
+        Some(Command::Revalidate { queue_dir }) => {
+            let repo = paths::repo();
+            let dir = if queue_dir.is_empty() {
+                repo.join(".fb/queue")
+            } else {
+                PathBuf::from(queue_dir)
+            };
+            revalidate_cmd::run(&repo, &dir, &mut std::io::stdout())
+        }
         Some(Command::Scope { task, arm }) => scope_cmd::run_cmd(&task, arm.as_deref()),
         Some(Command::Ledger {
             record,
@@ -1031,6 +1190,34 @@ fn main() {
         Some(Command::Wave { matrix, foreground }) => {
             wave_cmd::run(std::path::Path::new(&matrix), !foreground)
         }
+        Some(Command::Diversity { candidate }) => {
+            diversity_cmd::run(&candidate, &mut std::io::stdout())
+        }
+        Some(Command::Novelty { cmd }) => match cmd {
+            NoveltyCmd::Record {
+                task,
+                arm,
+                file,
+                verdict,
+                detail,
+                speedup,
+                asked_strategy,
+            } => novelty_cmd::run_record(
+                &task,
+                &arm,
+                &file,
+                &verdict,
+                &detail,
+                speedup,
+                asked_strategy.as_deref(),
+                &mut std::io::stdout(),
+            ),
+            NoveltyCmd::Log { task } => novelty_cmd::run_log(&task, &mut std::io::stdout()),
+            NoveltyCmd::Brief { task } => novelty_cmd::run_brief(&task, &mut std::io::stdout()),
+            NoveltyCmd::Strategy { task } => {
+                novelty_cmd::run_strategy(&task, &mut std::io::stdout())
+            }
+        },
         Some(Command::Admit { matrix }) => admit_cmd::run(std::path::Path::new(&matrix)),
         Some(Command::Pipeline {
             task,
@@ -1038,6 +1225,10 @@ fn main() {
             target,
         }) => pipeline_cmd::run(&task, &krate, target.as_deref()),
         Some(Command::Live { args }) => live_cmd::run(&args),
+        Some(Command::GpuStatus { resource }) => {
+            gpu_lease::run_status(&resource, &mut std::io::stdout())
+        }
+        Some(Command::Log { run }) => log_cmd::run(&run, &mut std::io::stdout()),
         Some(Command::Backfill { tasks }) => backfill_cmd::run(&tasks),
         Some(Command::Repro {
             task,
@@ -1108,6 +1299,7 @@ fn main() {
             timeout_s,
             max_attempts,
             max_bad,
+            json,
         }) => {
             let plan = bench_cmd::BenchPlan {
                 dir: dir.clone(),
@@ -1115,7 +1307,11 @@ fn main() {
                 max_attempts,
                 max_bad,
             };
-            bench_gather::run(&dir, &plan, &mut std::io::stdout())
+            if json {
+                bench_gather::run_json(&dir, &plan, &mut std::io::stdout())
+            } else {
+                bench_gather::run(&dir, &plan, &mut std::io::stdout())
+            }
         }
         Some(Command::KernelScore {
             baseline,
@@ -1124,6 +1320,12 @@ fn main() {
             correct,
             p,
             min_samples,
+            tampered,
+            clock,
+            io_bytes,
+            specialised,
+            reference_call,
+            bench_json,
         }) => {
             let mut parsed: Vec<f64> = Vec::new();
             for part in samples.split(',').filter(|s| !s.trim().is_empty()) {
@@ -1135,6 +1337,79 @@ fn main() {
                     }
                 }
             }
+            // Bench JSON fills whatever the flags left at their defaults:
+            // explicit flags win when set. `-` reads stdin, so a wave
+            // pipes bench straight into scoring.
+            let mut from_file = kernel_score_cmd::BenchJsonInputs {
+                samples: Vec::new(),
+                correct: false,
+                clock: String::new(),
+                io_bytes: 0,
+                specialised: false,
+                reference_call: false,
+            };
+            if !bench_json.is_empty() {
+                let text = if bench_json == "-" {
+                    use std::io::Read as _;
+                    let mut text = String::new();
+                    if std::io::stdin().read_to_string(&mut text).is_err() {
+                        eprintln!("error: cannot read --bench-json from stdin");
+                        std::process::exit(2);
+                    }
+                    text
+                } else if let Ok(text) = std::fs::read_to_string(&bench_json) {
+                    text
+                } else {
+                    eprintln!("error: cannot read --bench-json at {bench_json:?}");
+                    std::process::exit(2);
+                };
+                match kernel_score_cmd::parse_bench_json(&text) {
+                    Ok(inputs) => from_file = inputs,
+                    Err(why) => {
+                        eprintln!("error: {why}");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            if parsed.is_empty() {
+                parsed = from_file.samples;
+            }
+            let correct = correct || from_file.correct;
+            let clock = if clock.is_empty() {
+                from_file.clock
+            } else {
+                clock
+            };
+            let io_bytes = if io_bytes == 0 {
+                from_file.io_bytes
+            } else {
+                io_bytes
+            };
+            let specialised = specialised || from_file.specialised;
+            let reference_call = reference_call || from_file.reference_call;
+            let mut tampers = Vec::new();
+            for spec in &tampered {
+                // Paths are task-relative (no colons); hashes are hex (no
+                // colons). A spec that does not split in three is a typo
+                // about what was tampered, and a typo there voids the wrong
+                // thing -- refuse it like an unregistered arm.
+                let mut parts = spec.splitn(3, ':');
+                match (parts.next(), parts.next(), parts.next()) {
+                    (Some(file), Some(before), Some(after))
+                        if !file.is_empty() && !before.is_empty() && !after.is_empty() =>
+                    {
+                        tampers.push(farmerbob_core::kernel_trust::Tamper {
+                            file: file.to_string(),
+                            before: before.to_string(),
+                            after: after.to_string(),
+                        })
+                    }
+                    _ => {
+                        eprintln!("error: unparseable --tampered {spec:?}, want path:before:after");
+                        std::process::exit(2);
+                    }
+                }
+            }
             kernel_score_cmd::run(
                 &baseline,
                 &fingerprint,
@@ -1142,6 +1417,11 @@ fn main() {
                 correct,
                 p,
                 min_samples,
+                &tampers,
+                &clock,
+                io_bytes,
+                specialised,
+                reference_call,
                 &mut std::io::stdout(),
             )
         }
@@ -2012,6 +2292,7 @@ mod tests {
                 timeout_s,
                 max_attempts,
                 max_bad,
+                json,
             }) => {
                 let plan = bench_cmd::BenchPlan {
                     dir: dir.clone(),
@@ -2020,7 +2301,11 @@ mod tests {
                     max_bad,
                 };
                 let mut out = Vec::new();
-                let code = bench_gather::run(&dir, &plan, &mut out);
+                let code = if json {
+                    bench_gather::run_json(&dir, &plan, &mut out)
+                } else {
+                    bench_gather::run(&dir, &plan, &mut out)
+                };
                 Ok((code, out))
             }
             _ => panic!("expected Bench command"),
@@ -2155,6 +2440,26 @@ mod tests {
             help_text.contains("bench"),
             "`fb --help` must list the bench subcommand: {help_text}"
         );
+        assert!(
+            help_text.contains("diversity"),
+            "`fb --help` must list the diversity subcommand: {help_text}"
+        );
+        assert!(
+            help_text.contains("novelty"),
+            "`fb --help` must list the novelty subcommand: {help_text}"
+        );
+        assert!(
+            help_text.contains("log"),
+            "`fb --help` must list the log subcommand: {help_text}"
+        );
+        assert!(
+            help_text.contains("revalidate"),
+            "`fb --help` must list the revalidate subcommand: {help_text}"
+        );
+        assert!(
+            help_text.contains("sweep"),
+            "`fb --help` must list the sweep subcommand: {help_text}"
+        );
     }
 
     #[test]
@@ -2168,6 +2473,27 @@ mod tests {
         let (code, _) = run_bench_args(&[scratch.path.to_str().unwrap(), "--timeout-s", "0"])
             .expect("--timeout-s 0 must not be a clap error");
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn boundary_json_flag_emits_parseable_samples() {
+        let scratch = BenchScratch::new("jsonflag");
+        scratch.write_valid_manifest(1);
+        scratch.write("verify.sh", "echo '{\"correct\":true,\"detail\":\"ok\"}'\n");
+        scratch.write(
+            "bench.sh",
+            "echo '{\"ms\":2.5,\"metrics\":{\"io_bytes\":700}}'\n",
+        );
+
+        let (code, out) =
+            run_bench_args(&[scratch.path.to_str().unwrap(), "--json"]).expect("--json parses");
+        assert_eq!(code, 0);
+        let value: serde_json::Value =
+            serde_json::from_slice(&out).expect("--json prints one JSON object");
+        assert_eq!(value["status"], "measured");
+        assert_eq!(value["samples"], serde_json::json!([2.5]));
+        assert_eq!(value["io_bytes"], 700);
+        assert_eq!(value["verify"]["correct"], true);
     }
 
     #[test]

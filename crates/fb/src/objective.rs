@@ -194,7 +194,7 @@ pub fn run_cmd(only: Option<String>) -> i32 {
                 portability,
                 defect_sens,
                 secs: measured(e.get("duration_s")),
-                mem_mb: measured(rec.get("mem_peak_mb")),
+                mem_mb: mem_from_record(&rec),
                 price,
                 outcome,
             });
@@ -260,6 +260,18 @@ fn measured(v: Option<&Value>) -> Measurement<Value> {
             Measurement::nothing_to_measure("field absent from the score or run record")
         }
         Some(other) => Measurement::observed(other.clone()),
+    }
+}
+
+/// Memory from a run record, trusted only with scope provenance (bead
+/// farmerbob-05p): values from the pgrep era, and runs from before any
+/// producer existed, render as unmeasured rather than as numbers. A
+/// missing peak is not a zero peak, and a contaminated peak is not a
+/// measurement at all.
+fn mem_from_record(rec: &Value) -> Measurement<Value> {
+    match rec.get("mem_source").and_then(Value::as_str) {
+        Some("scope") => measured(rec.get("mem_peak_mb")),
+        _ => measured(None),
     }
 }
 
@@ -779,6 +791,26 @@ mod tests {
             "measured 0 mem shows dash: {line:?}"
         );
         assert!(line.contains("0.00"), "price 0.0 formatted: {line:?}");
+    }
+
+    /// Scope provenance decides: a scoped peak measures, a legacy value
+    /// without provenance (the pgrep era, including its 13.8 GB ghosts)
+    /// and a missing peak both render as unmeasured -- flagged, never
+    /// trusted (bead farmerbob-05p).
+    #[test]
+    fn mem_trusts_scope_provenance_only() {
+        use farmerbob_core::measurement::Measurement;
+        let scoped = serde_json::json!({"mem_peak_mb": 122, "mem_source": "scope"});
+        assert!(matches!(mem_from_record(&scoped), Measurement::Observed(_)));
+        let legacy = serde_json::json!({"mem_peak_mb": 13815});
+        assert!(matches!(mem_from_record(&legacy), Measurement::Missing(_)));
+        let missing = serde_json::json!({});
+        assert!(matches!(mem_from_record(&missing), Measurement::Missing(_)));
+        let wrong_source = serde_json::json!({"mem_peak_mb": 5, "mem_source": "pgrep"});
+        assert!(matches!(
+            mem_from_record(&wrong_source),
+            Measurement::Missing(_)
+        ));
     }
 
     #[test]

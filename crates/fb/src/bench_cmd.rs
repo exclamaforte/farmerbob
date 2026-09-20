@@ -44,10 +44,32 @@ pub enum Outcome {
         verify: VerifyOutput,
         /// Good measurements, in the order the trials produced them.
         samples: Vec<f64>,
+        /// Memory traffic in bytes when a trial reported it (the bench
+        /// shim records it in trial metrics). First present value wins;
+        /// every trial of one task measures the same tensors.
+        io_bytes: Option<u64>,
     },
     /// Verification ran and said the implementation is INCORRECT. This is a
     /// result about the candidate, and no trials were attempted.
     Incorrect(VerifyOutput),
+    /// Verification passed the visible inputs and failed the held-out set:
+    /// input specialisation, not ordinary incorrectness (bead
+    /// farmerbob-x81s.4). The two say completely different things about the
+    /// arm, so they are never lumped together. No trials were attempted.
+    Specialised(VerifyOutput),
+    /// Verification caught the candidate executing the task's own reference
+    /// code (bead farmerbob-x81s.5): it IS the reference, so a pass says
+    /// nothing about the arm. Its own verdict -- not incorrect, not slow.
+    /// No trials were attempted.
+    ReferenceCall(VerifyOutput),
+    /// A trial caught the candidate reaching the instrument's clock
+    /// (bead farmerbob-x81s.2): a rebound timing primitive or a reported
+    /// measurement impossible against the harness wall clock. Distinct from
+    /// slow (the number is not trusted at all) and from incorrect (the
+    /// kernel may be numerically right and still unreadable as timed).
+    /// First strike aborts the run: the same file is imported by every
+    /// trial, so later trials cannot clear it. Carries the named verdict.
+    Clock(String),
     /// The instrument failed: verification could not be read, or too many
     /// trials were unreadable, or attempts ran out. Carries a reason.
     Instrument(String),
@@ -157,8 +179,14 @@ fn read_verification(p: &BenchPlan) -> Result<VerifyOutput, String> {
 /// Verification runs before any trial and at most once. If `trial_plan`
 /// abandons the not-yet-started run — a zero attempt budget — no script runs
 /// at all. A verification that ran and reported incorrect is
-/// [`Outcome::Incorrect`], a result about the candidate; every other early
-/// stop is [`Outcome::Instrument`], a result about the harness.
+/// [`Outcome::Incorrect`], a result about the candidate; a verification
+/// that passed visible inputs and failed the held-out set is
+/// [`Outcome::Specialised`], never merely incorrect; a verification that
+/// caught the candidate running the reference is [`Outcome::ReferenceCall`],
+/// never incorrect and never slow; every other early
+/// stop is [`Outcome::Instrument`], a result about the harness. A trial
+/// that names a clock verdict aborts the run as [`Outcome::Clock`] on first
+/// strike instead of counting a bad trial.
 pub fn run_bench(m: &TaskManifest, p: &BenchPlan) -> Outcome {
     // The plan is consulted before anything spawns: a zero attempt budget
     // abandons the empty run, so neither script executes.
@@ -180,6 +208,17 @@ pub fn run_bench(m: &TaskManifest, p: &BenchPlan) -> Outcome {
         Ok(verify) => verify,
         Err(reason) => return Outcome::Instrument(reason),
     };
+    // Specialisation outranks incorrectness: the shim sets correct=false
+    // in both cases, but a memorised kernel must never read as merely
+    // wrong. A reference call outranks both: it IS the answer key, so
+    // nothing about the arm was measured at all. Checked most severe
+    // first.
+    if verify.reference_call {
+        return Outcome::ReferenceCall(verify);
+    }
+    if verify.specialised {
+        return Outcome::Specialised(verify);
+    }
     if !verify.correct {
         return Outcome::Incorrect(verify);
     }
@@ -190,6 +229,7 @@ pub fn run_bench(m: &TaskManifest, p: &BenchPlan) -> Outcome {
         bad: 0,
     };
     let mut samples = Vec::new();
+    let mut io_bytes: Option<u64> = None;
     loop {
         match trial_plan::next(m, &progress, p.max_attempts, p.max_bad) {
             Next::Run => {
@@ -206,11 +246,25 @@ pub fn run_bench(m: &TaskManifest, p: &BenchPlan) -> Outcome {
                     Ok(output) => {
                         progress.good += 1;
                         samples.push(output.ms);
+                        if io_bytes.is_none() {
+                            io_bytes = bench_read::io_bytes(&output);
+                        }
                     }
-                    Err(_) => progress.bad += 1,
+                    Err(_) => {
+                        if let Some(verdict) = bench_read::clock_verdict(&run) {
+                            return Outcome::Clock(verdict);
+                        }
+                        progress.bad += 1;
+                    }
                 }
             }
-            Next::Enough(_) => return Outcome::Measured { verify, samples },
+            Next::Enough(_) => {
+                return Outcome::Measured {
+                    verify,
+                    samples,
+                    io_bytes,
+                };
+            }
             Next::Abandon(_) => {
                 return Outcome::Instrument(format!(
                     "attempts: trial_plan abandoned the run after {} attempted, {} readable, {} unreadable",
@@ -256,6 +310,9 @@ mod tests {
             timeout_s: 0,
             exclusive: Vec::new(),
             min_trials,
+            correctness_precision: "fp32".to_string(),
+            correctness_trials: 1,
+            determinism: "required".to_string(),
         }
     }
 
@@ -293,10 +350,16 @@ mod tests {
         counting_bench(&dir);
         let outcome = run_bench(&manifest(3), &plan(&dir, 0, 10, 2));
         match outcome {
-            Outcome::Measured { verify, samples } => {
+            Outcome::Measured {
+                verify,
+                samples,
+                io_bytes,
+            } => {
                 assert!(verify.correct);
                 assert_eq!(verify.detail, "ok");
                 assert_eq!(samples, vec![1.0, 2.0, 3.0]);
+                // The counting bench.sh reports no metrics: no io_bytes.
+                assert_eq!(io_bytes, None);
             }
             other => panic!("expected Measured, got {:?}", other),
         }
@@ -460,6 +523,111 @@ mod tests {
         match outcome {
             Outcome::Instrument(reason) => assert!(reason.contains("bench.sh")),
             other => panic!("expected Instrument, got {:?}", other),
+        }
+    }
+
+    /// A trial naming a clock verdict aborts the run on first strike with
+    /// the verdict attached -- distinct from slow, incorrect, and
+    /// instrument (bead farmerbob-x81s.2). Pinned with a marker the script
+    /// would create on a second execution: one strike is enough because the
+    /// same file is imported by every trial.
+    #[test]
+    fn a_clock_verdict_aborts_on_first_strike() {
+        let dir = scratch("clock");
+        write_script(&dir, "verify.sh", OK_VERIFY);
+        write_script(
+            &dir,
+            "bench.sh",
+            "echo ran >> runs.log\necho '{\"clock\":\"tampered:time.perf_counter\",\"detail\":\"rebound\"}'\nexit 1\n",
+        );
+        let outcome = run_bench(&manifest(3), &plan(&dir, 0, 10, 5));
+        match outcome {
+            Outcome::Clock(verdict) => {
+                assert!(verdict.contains("tampered"), "{verdict}");
+                assert!(verdict.contains("time.perf_counter"), "{verdict}");
+            }
+            other => panic!("expected Clock, got {:?}", other),
+        }
+        let log = fs::read_to_string(dir.join("runs.log")).expect("runs.log");
+        assert_eq!(log.lines().count(), 1);
+    }
+
+    /// A clean verdict alongside ms changes nothing: trials with
+    /// `"clock": "ok"` still measure.
+    #[test]
+    fn a_clean_clock_verdict_still_measures() {
+        let dir = scratch("clock-ok");
+        write_script(&dir, "verify.sh", OK_VERIFY);
+        write_script(&dir, "bench.sh", "echo '{\"ms\":5,\"clock\":\"ok\"}'\n");
+        let outcome = run_bench(&manifest(2), &plan(&dir, 0, 10, 2));
+        match outcome {
+            Outcome::Measured { samples, .. } => assert_eq!(samples, vec![5.0, 5.0]),
+            other => panic!("expected Measured, got {:?}", other),
+        }
+    }
+
+    /// A specialised verification aborts before any trial with its own
+    /// verdict -- never Incorrect, and bench.sh never executes (bead
+    /// farmerbob-x81s.4). Pinned with a marker the script would create.
+    #[test]
+    fn a_specialised_verification_runs_no_trials() {
+        let dir = scratch("specialised");
+        write_script(
+            &dir,
+            "verify.sh",
+            "echo '{\"correct\":false,\"detail\":\"heldout\",\"specialised\":true}'\n",
+        );
+        write_script(&dir, "bench.sh", "touch marker\n");
+        let outcome = run_bench(&manifest(3), &plan(&dir, 0, 10, 2));
+        match outcome {
+            Outcome::Specialised(verify) => {
+                assert!(verify.specialised);
+                assert!(!verify.correct);
+            }
+            other => panic!("expected Specialised, got {:?}", other),
+        }
+        assert!(!dir.join("marker").exists());
+    }
+
+    /// A reference-calling verification aborts before any trial with its
+    /// own verdict -- never Incorrect, never slow -- and outranks a
+    /// simultaneous specialisation flag (bead farmerbob-x81s.5). Pinned
+    /// with a marker the script would create.
+    #[test]
+    fn a_reference_call_verification_runs_no_trials() {
+        let dir = scratch("reference");
+        write_script(
+            &dir,
+            "verify.sh",
+            "echo '{\"correct\":false,\"detail\":\"ref\",\"specialised\":true,\"reference_call\":true}'\n",
+        );
+        write_script(&dir, "bench.sh", "touch marker\n");
+        let outcome = run_bench(&manifest(3), &plan(&dir, 0, 10, 2));
+        match outcome {
+            Outcome::ReferenceCall(verify) => {
+                assert!(verify.reference_call);
+                assert!(!verify.correct);
+            }
+            other => panic!("expected ReferenceCall, got {:?}", other),
+        }
+        assert!(!dir.join("marker").exists());
+    }
+
+    /// io_bytes reported in trial metrics rides the outcome: the first
+    /// present value wins (bead farmerbob-x81s.15).
+    #[test]
+    fn io_bytes_rides_the_measured_outcome() {
+        let dir = scratch("io-bytes");
+        write_script(&dir, "verify.sh", OK_VERIFY);
+        write_script(
+            &dir,
+            "bench.sh",
+            "echo '{\"ms\":5,\"metrics\":{\"io_bytes\":12345}}'\n",
+        );
+        let outcome = run_bench(&manifest(2), &plan(&dir, 0, 10, 2));
+        match outcome {
+            Outcome::Measured { io_bytes, .. } => assert_eq!(io_bytes, Some(12345)),
+            other => panic!("expected Measured, got {:?}", other),
         }
     }
 }

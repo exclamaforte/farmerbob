@@ -686,6 +686,72 @@ pub fn reconcile(
     }
 }
 
+/// Fallback cost error bar in percent, when no live provider bill is
+/// available to reconcile against (bead farmerbob-xsa): 15%, the worst
+/// arm in the opencode-figures-vs-dashboard reconciliation (gemini
+/// -15%). Arms whose $/success intervals at this bound overlap are
+/// reported as indistinguishable rather than ranked.
+pub const FALLBACK_COST_ERROR_PCT: f64 = 15.0;
+
+/// Group arms whose $/success figures are indistinguishable at the given
+/// bound: intervals `[v(1-b), v(1+b)]` overlapping, transitively closed.
+/// Groups sort by best (lowest) figure, members sort by name. Singletons
+/// are their own group: overlapping nothing is also an answer.
+pub fn indistinguishable(arms: &[(String, f64)], bound_pct: f64) -> Vec<Vec<String>> {
+    let bound = (bound_pct / 100.0).max(0.0);
+    let mut order: Vec<usize> = (0..arms.len()).collect();
+    order.sort_by(|a, b| {
+        arms[*a]
+            .1
+            .partial_cmp(&arms[*b].1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for idx in order {
+        let value = arms[idx].1;
+        // Every group this arm overlaps, not just the first: the arm
+        // bridges them into one connected component, and joining one
+        // while leaving the other split reports a boundary that is not
+        // there.
+        let mut hit: Vec<usize> = Vec::new();
+        for (gi, group) in groups.iter().enumerate() {
+            let overlaps = group.iter().any(|member| {
+                let other = arms[*member].1;
+                let (lo, hi) = if value <= other {
+                    (value, other)
+                } else {
+                    (other, value)
+                };
+                lo * (1.0 + bound) >= hi * (1.0 - bound)
+            });
+            if overlaps {
+                hit.push(gi);
+            }
+        }
+        match hit.as_slice() {
+            [] => groups.push(vec![idx]),
+            [first, rest @ ..] => {
+                groups[*first].push(idx);
+                // Drain from the back so indices stay valid, then drop
+                // the emptied groups.
+                for gi in rest.iter().rev() {
+                    let members = std::mem::take(&mut groups[*gi]);
+                    groups[*first].extend(members);
+                }
+                groups.retain(|group| !group.is_empty());
+            }
+        }
+    }
+    groups
+        .into_iter()
+        .map(|group| {
+            let mut names: Vec<String> = group.into_iter().map(|i| arms[i].0.clone()).collect();
+            names.sort();
+            names
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -752,6 +818,8 @@ mod tests {
                 Billing::Metered {
                     input_per_mtok: 1.0,
                     output_per_mtok: 1.0,
+                    cache_read_per_mtok: None,
+                    cache_write_per_mtok: None,
                 },
                 1,
             ),
@@ -776,6 +844,8 @@ mod tests {
             Billing::Metered {
                 input_per_mtok: 1.0,
                 output_per_mtok: 1.0,
+                cache_read_per_mtok: None,
+                cache_write_per_mtok: None,
             },
             1,
         );
@@ -785,6 +855,8 @@ mod tests {
             Billing::Metered {
                 input_per_mtok: 1.0,
                 output_per_mtok: 1.0,
+                cache_read_per_mtok: None,
+                cache_write_per_mtok: None,
             },
             2,
         );
@@ -815,6 +887,8 @@ mod tests {
             Billing::Metered {
                 input_per_mtok: 1.0,
                 output_per_mtok: 1.0,
+                cache_read_per_mtok: None,
+                cache_write_per_mtok: None,
             },
             0,
         );
@@ -833,6 +907,8 @@ mod tests {
                 Billing::Metered {
                     input_per_mtok: 1.0,
                     output_per_mtok: 1.0,
+                    cache_read_per_mtok: None,
+                    cache_write_per_mtok: None,
                 },
                 true,
                 false,
@@ -843,6 +919,8 @@ mod tests {
                 Billing::Metered {
                     input_per_mtok: 1.0,
                     output_per_mtok: 1.0,
+                    cache_read_per_mtok: None,
+                    cache_write_per_mtok: None,
                 },
                 true,
                 true,
@@ -876,6 +954,8 @@ mod tests {
                 Billing::Metered {
                     input_per_mtok: 1.0,
                     output_per_mtok: 1.0,
+                    cache_read_per_mtok: None,
+                    cache_write_per_mtok: None,
                 },
                 1,
             ),
@@ -1324,5 +1404,47 @@ mod reconciliation {
             reconcile(Some(1.0), Some(1.0), f64::NAN),
             Reconciliation::Unchecked { .. }
         ));
+    }
+
+    fn priced(name: &str, usd: f64) -> (String, f64) {
+        (name.to_string(), usd)
+    }
+
+    /// Overlapping intervals group; distant arms stand alone. At 15%,
+    /// 0.1256 and 0.14 overlap (the bead's unseparable case) while 0.0232
+    /// stands apart.
+    #[test]
+    fn overlapping_intervals_group() {
+        let groups = indistinguishable(
+            &[priced("a", 0.1256), priced("b", 0.14), priced("c", 0.0232)],
+            FALLBACK_COST_ERROR_PCT,
+        );
+        assert_eq!(groups.len(), 2);
+        assert!(groups[0].contains(&"c".to_string()));
+        assert!(groups[1].contains(&"a".to_string()));
+        assert!(groups[1].contains(&"b".to_string()));
+    }
+
+    /// Bridging merges transitively: c overlaps a and b, which never
+    /// overlap each other, yet all three are one component. At 15% the
+    /// overlap ratio is 1.15/0.85 = 1.353: a=1.0 vs b=1.4 exceeds it,
+    /// c=1.2 bridges both sides.
+    #[test]
+    fn bridges_merge_transitively() {
+        let groups = indistinguishable(
+            &[priced("a", 1.0), priced("b", 1.4), priced("c", 1.2)],
+            15.0,
+        );
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        assert_eq!(groups[0].len(), 3);
+    }
+
+    /// Zero bound groups only exact equals; empty input groups nothing.
+    #[test]
+    fn zero_bound_and_empty() {
+        let groups =
+            indistinguishable(&[priced("a", 1.0), priced("b", 1.0), priced("c", 2.0)], 0.0);
+        assert_eq!(groups.len(), 2);
+        assert!(indistinguishable(&[], 15.0).is_empty());
     }
 }

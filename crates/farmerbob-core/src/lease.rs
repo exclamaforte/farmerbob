@@ -104,7 +104,7 @@ pub struct LeaseStatus {
 /// One live grant of one resource to one holder. The token is the only
 /// handle: the lease id exists to be reported in a [`Grant`], not to be
 /// looked up.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ActiveLease {
     token: LeaseToken,
     holder: HolderId,
@@ -114,7 +114,7 @@ struct ActiveLease {
 }
 
 /// Per-resource bookkeeping: one exclusive holder slot plus a FIFO queue.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ResourceState {
     max_hold: Duration,
     active: Option<ActiveLease>,
@@ -128,7 +128,11 @@ struct ResourceState {
 /// handed to a waiter by [`LeaseManager::release`], [`LeaseManager::expire`]
 /// or [`LeaseManager::holder_died`] starts its full max hold at the moment
 /// of handover. No method reads a clock.
-#[derive(Debug, Default)]
+///
+/// Serialisable as a whole so a file-backed interim (bead farmerbob-oa5w.1)
+/// can persist it between processes until the daemon owns serialization
+/// (bead farmerbob-3ne).
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct LeaseManager {
     resources: HashMap<ResourceName, ResourceState>,
     /// Registration order, so sweeps over several resources are deterministic.
@@ -302,6 +306,14 @@ impl LeaseManager {
             queue_depth: state.queue.len(),
             waiting: state.queue.iter().cloned().collect(),
         }
+    }
+
+    /// Snapshots every registered resource in registration order.
+    pub fn status_all(&self, now: DateTime<Utc>) -> Vec<LeaseStatus> {
+        self.order
+            .iter()
+            .map(|name| self.status(name, now))
+            .collect()
     }
 
     /// Stamps a fresh lease onto `holder` in the single holder slot at time

@@ -81,6 +81,9 @@ mod tests {
             timeout_s: 0,
             exclusive: Vec::new(),
             min_trials,
+            correctness_precision: "fp32".to_string(),
+            correctness_trials: 1,
+            determinism: "required".to_string(),
         }
     }
 

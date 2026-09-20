@@ -73,6 +73,13 @@ pub struct RunRecord {
     #[allow(dead_code)]
     #[serde(default)]
     pub mem_peak_mb: Option<u64>,
+    // Provenance for the peak: "scope" when measured from the run's own
+    // cgroup scope (bead farmerbob-05p). Absent on every record written
+    // before the producer existed -- which is how readers tell scoped
+    // peaks from the pgrep era.
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub mem_source: Option<String>,
     #[allow(dead_code)]
     #[serde(default)]
     pub worktree: Option<String>,
@@ -166,6 +173,7 @@ mod tests {
             lines_added: Some(1),
             tests_run: Some(1),
             mem_peak_mb: None,
+            mem_source: None,
             worktree: None,
             branch: None,
         }

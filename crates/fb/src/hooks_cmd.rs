@@ -181,9 +181,32 @@ pub fn run_hook(name: &str, args: &[String]) -> i32 {
     }
     if name == "pre-commit" {
         pre_commit_fmt()
+    } else if name == "post-merge" {
+        post_merge_revalidate()
     } else {
         0
     }
+}
+
+/// After a merge, re-validate the queue against the live base (bead
+/// farmerbob-m71): merging a winner is exactly the event that
+/// invalidates queued specs. Informational by necessity -- a post-merge
+/// hook cannot stop the merge -- so this always exits 0 and says what it
+/// found. An INVALID line names a queued task whose premise the merge
+/// just took away: do not dispatch it.
+pub fn post_merge_revalidate() -> i32 {
+    let repo = crate::paths::repo();
+    let queue = repo.join(".fb/queue");
+    let mut out = Vec::new();
+    let code = crate::revalidate_cmd::run(&repo, &queue, &mut out);
+    let text = String::from_utf8_lossy(&out);
+    for line in text.lines() {
+        println!("post-merge: {line}");
+    }
+    if code != 0 {
+        println!("post-merge: queue has invalid premises -- revalidate before dispatching");
+    }
+    0
 }
 
 /// Every hook to install: the ones beads has, plus pre-commit whether or not it does.
@@ -313,5 +336,14 @@ mod tests {
         assert_eq!(invoked_as("hooks/post-merge"), Some("post-merge"));
         assert_eq!(invoked_as("/r/target/debug/fb"), None);
         assert_eq!(invoked_as("fb"), None);
+    }
+
+    /// The post-merge hook reports the queue's standing and always exits
+    /// 0: a post-merge hook cannot stop the merge, so it informs rather
+    /// than punishes. Read-only against wherever the tests run.
+    #[test]
+    fn post_merge_reports_and_exits_zero() {
+        assert_eq!(run_hook("post-merge", &[]), 0);
+        assert_eq!(post_merge_revalidate(), 0);
     }
 }

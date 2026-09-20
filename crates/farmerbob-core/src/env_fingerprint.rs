@@ -92,6 +92,26 @@ impl EnvFingerprint {
         self == other
     }
 
+    /// Peak device memory bandwidth in GB/s, by GPU name.
+    ///
+    /// The plausibility floor (bead farmerbob-x81s.6) needs bytes moved
+    /// over peak bandwidth, and the peak must come from the fingerprinted
+    /// GPU -- a hardcoded figure is a silent wrong answer on any other
+    /// machine, and fingerprints exist precisely because this harness is
+    /// expected to move. Unknown GPUs yield `None`, and the floor is then
+    /// skipped loudly (the scorer warns) rather than guessed: a guessed
+    /// peak is a guessed floor, which is no floor at all.
+    ///
+    /// One entry, deliberately: the RTX 5090's 1792 GB/s (512-bit bus at
+    /// 28 Gbps) is the card on this machine, verified against its spec.
+    /// Add a row only with the vendor's published figure in hand.
+    pub fn peak_memory_bandwidth_gbps(&self) -> Option<f64> {
+        match self.gpu_name.as_str() {
+            "RTX5090" => Some(1792.0),
+            _ => None,
+        }
+    }
+
     /// Check a result's fingerprint against the baseline's. `Ok(())` when
     /// they match; `Err` names the fields that differ, so the operator knows
     /// whether to re-baseline (driver upgrade) or stop comparing (new GPU).
@@ -200,5 +220,15 @@ mod tests {
         let err = changed.check_against(&fp()).expect_err("must be stale");
         assert!(err.contains("torch"), "{err}");
         assert!(err.contains("arch"), "{err}");
+    }
+
+    /// The known card yields its published peak; anything else yields no
+    /// floor rather than a guessed one.
+    #[test]
+    fn bandwidth_comes_from_the_gpu_or_nowhere() {
+        assert_eq!(fp().peak_memory_bandwidth_gbps(), Some(1792.0));
+        let mut unknown = fp();
+        unknown.gpu_name = "RTX6090".to_string();
+        assert_eq!(unknown.peak_memory_bandwidth_gbps(), None);
     }
 }

@@ -656,6 +656,72 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
         .filter_map(|r| r.usd.value().copied())
         .sum();
 
+    // Cost error bar and indistinguishability (bead farmerbob-xsa), hoisted
+    // so the JSON board and the text board state the same bound. The live
+    // provider drift, when fully priced arms allow measuring it; otherwise
+    // the fallback worst-arm bound. Either way the bound is STATED next to
+    // the figures it qualifies, and arms overlapping inside it group rather
+    // than rank.
+    let registry_models = registry_models(&crate::paths::repo());
+    let on_provider =
+        |arm: &str| routed_via(registry_models.get(arm).map(String::as_str), "openrouter/");
+    let per_run: f64 = arms
+        .iter()
+        .filter(|a| on_provider(&a.arm))
+        .filter_map(|a| a.usd.value().copied())
+        .sum();
+    let shared_here: f64 = shared
+        .iter()
+        .filter(|(arm, _)| on_provider(arm))
+        .map(|(_, (c, _))| c)
+        .sum();
+    let claimed: std::collections::BTreeSet<String> = runs
+        .iter()
+        .map(|r| format!("{}--{}", r.task, r.arm))
+        .collect();
+    let unclaimed = unclaimed_provider_spend(&base, &claimed, &on_provider);
+    let (mut unpriced_runs, mut total_runs) = (0u32, 0u32);
+    for a in arms.iter().filter(|a| on_provider(&a.arm)) {
+        let (p, n) = priced.get(&a.arm).copied().unwrap_or((0, 0));
+        total_runs += n;
+        unpriced_runs += n.saturating_sub(p);
+    }
+    let billed = billed_usd();
+    let (bound_pct, bound_note): (f64, String) = match &billed {
+        Measurement::Observed(bill) => {
+            match reconcile(
+                per_run + shared_here + unclaimed,
+                *bill,
+                unpriced_runs,
+                total_runs,
+            ) {
+                Reconciliation::Drift { pct, .. } => (
+                    pct.abs(),
+                    format!("provider reconciliation ±{:.0}%", pct.abs()),
+                ),
+                _ => (
+                    cost::FALLBACK_COST_ERROR_PCT,
+                    "price-table bound ±15% (bead xsa); unpriced runs excluded from reconciliation"
+                        .to_string(),
+                ),
+            }
+        }
+        _ => (
+            cost::FALLBACK_COST_ERROR_PCT,
+            "no live bill; price-table bound ±15% (bead xsa worst arm)".to_string(),
+        ),
+    };
+    let priced_pairs: Vec<(String, f64)> = arms
+        .iter()
+        .filter_map(|a| {
+            a.usd_per_completion()
+                .value()
+                .copied()
+                .map(|v| (a.arm.clone(), v))
+        })
+        .collect();
+    let indistinct = cost::indistinguishable(&priced_pairs, bound_pct);
+
     if json_only {
         let rows: Vec<serde_json::Value> = arms
             .iter()
@@ -686,6 +752,8 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
             serde_json::to_string_pretty(&serde_json::json!({
                 "arms": rows, "frontier": front,
                 "measured_spend": spend.value().copied(), "completed": completed, "counted_runs": counted,
+                "cost_error_bar_pct": bound_pct, "cost_error_note": bound_note,
+                "indistinguishable": indistinct.iter().filter(|g| g.len() > 1).collect::<Vec<_>>(),
             }))
             .unwrap_or_else(|_| "{}".into())
         );
@@ -779,41 +847,18 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
     // RECONCILE against the provider. Every dollar above is inferred from a price table
     // that drifts from actual billing, and the drift is not a constant, so it can reorder
     // arms that sit close together. This is the axis's honest error bar.
-    if let Measurement::Observed(billed) = billed_usd() {
+    // (Sums hoisted above for the JSON board; the prints stay here.)
+    if let Measurement::Observed(billed) = &billed {
         // Like-for-like with the bill: the registry says which arms bill this provider, and
         // the inferred figure carries BOTH the per-run spend and that provider's share of
         // the shared critic/prover store. The first version of this comparison summed only
         // per-run spend for name-matched arms -- a subset measured against the whole, which
         // inflated the apparent drift.
-        let registry_models = registry_models(&crate::paths::repo());
-        let on_provider =
-            |arm: &str| routed_via(registry_models.get(arm).map(String::as_str), "openrouter/");
-        let per_run: f64 = arms
-            .iter()
-            .filter(|a| on_provider(&a.arm))
-            .filter_map(|a| a.usd.value().copied())
-            .sum();
-        let shared_here: f64 = shared
-            .iter()
-            .filter(|(arm, _)| on_provider(arm))
-            .map(|(_, (c, _))| c)
-            .sum();
         // Spend on this provider that no scored run claims. It is real money the provider
         // billed, and excluding it reports a shortfall the host can in fact account for.
-        let claimed: std::collections::BTreeSet<String> = runs
-            .iter()
-            .map(|r| format!("{}--{}", r.task, r.arm))
-            .collect();
-        let unclaimed = unclaimed_provider_spend(&base, &claimed, &on_provider);
-        let (mut unpriced_runs, mut total_runs) = (0u32, 0u32);
-        for a in arms.iter().filter(|a| on_provider(&a.arm)) {
-            let (p, n) = priced.get(&a.arm).copied().unwrap_or((0, 0));
-            total_runs += n;
-            unpriced_runs += n.saturating_sub(p);
-        }
         match reconcile(
             per_run + shared_here + unclaimed,
-            billed,
+            *billed,
             unpriced_runs,
             total_runs,
         ) {
@@ -852,6 +897,25 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
             // A bill of zero is not agreement: there is nothing to reconcile against.
             Reconciliation::NothingBilled => {
                 println!("\n  the provider reports no spend yet; nothing to reconcile against")
+            }
+        }
+    }
+    // Indistinguishability (bead farmerbob-xsa): arms whose $/success
+    // intervals at the stated bound overlap group rather than rank.
+    // Skipped only when no arm has a $/success figure at all: nothing
+    // to compare is not a finding.
+    {
+        let multi: Vec<&Vec<String>> = indistinct.iter().filter(|g| g.len() > 1).collect();
+        if !priced_pairs.is_empty() {
+            println!("\n  cost error bar ±{bound_pct:.0}% ({bound_note})");
+            if multi.is_empty() {
+                println!(
+                    "  every priced arm separates: no two $/success figures overlap inside it"
+                );
+            } else {
+                for group in multi {
+                    println!("  indistinguishable on cost: {}", group.join(", "));
+                }
             }
         }
     }
@@ -1247,6 +1311,8 @@ mod recovered_token_tests {
                 billing: usd.map_or(Billing::Unknown, |_| Billing::Metered {
                     input_per_mtok: 1.0,
                     output_per_mtok: 1.0,
+                    cache_read_per_mtok: None,
+                    cache_write_per_mtok: None,
                 }),
                 usd: usd.map_or(Measurement::not_attempted(), Measurement::observed),
                 tokens: tokens.map_or(Measurement::not_attempted(), Measurement::observed),

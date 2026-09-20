@@ -25,6 +25,27 @@ pub fn bwrap_argv(
     repo: &Path,
     cmd: &[String],
 ) -> Vec<String> {
+    bwrap_argv_with_kernel(wt, root, admin, repo, None, cmd)
+}
+
+/// The bwrap argv with a KernelBench task confined: the task directory is
+/// bound read-only and `candidate.py` -- the only file the agent may write
+/// (bead farmerbob-x81s.1) -- is bound back writable.
+///
+/// Order is load-bearing twice over: bwrap applies binds in argv order and a
+/// later one wins, so the task ro-bind must come before anything it punches
+/// through, and the writable candidate MUST bind LAST, after the read-only
+/// bind of the directory that contains it. A candidate bound before its
+/// parent's ro-bind would be read-only; bound anywhere but last it risks a
+/// later bind covering it.
+pub fn bwrap_argv_with_kernel(
+    wt: &Path,
+    root: &Path,
+    admin: &Path,
+    repo: &Path,
+    task_dir: Option<&Path>,
+    cmd: &[String],
+) -> Vec<String> {
     let s = |p: &Path| p.to_string_lossy().into_owned();
     let mut a: Vec<String> = ["bwrap", "--dev-bind", "/", "/"]
         .iter()
@@ -74,6 +95,20 @@ pub fn bwrap_argv(
         }
     }
 
+    // The KernelBench trust boundary (bead farmerbob-x81s.1). The task
+    // directory holds both what the agent edits and what it is measured
+    // against, so it is read-only in here; the candidate is the single
+    // writable path and binds LAST so nothing covers it.
+    if let Some(task) = task_dir
+        && task.is_dir()
+    {
+        a.extend(["--ro-bind".into(), s(task), s(task)]);
+        let candidate = task.join(farmerbob_core::kernel_trust::WRITABLE);
+        if candidate.is_file() {
+            a.extend(["--bind".into(), s(&candidate), s(&candidate)]);
+        }
+    }
+
     a.push("--".into());
     a.extend(cmd.iter().cloned());
     a
@@ -109,7 +144,23 @@ pub fn run(wt: &Path, cmd: &[String]) -> i32 {
         let repo = std::env::var_os("FB_REPO")
             .map(PathBuf::from)
             .unwrap_or_else(|| repo_of(&admin));
-        let argv = bwrap_argv(wt, &crate::paths::worktrees(), &admin, &repo, cmd);
+        // Set by dispatch for KernelBench runs (bead farmerbob-x81s.1): the
+        // task directory the agent may read but not rewrite. Absent for
+        // every other task, and then nothing is bound.
+        let task = std::env::var_os("FB_KERNEL_TASK_DIR").map(PathBuf::from);
+        let argv = match task.as_deref() {
+            Some(_) => bwrap_argv_with_kernel(
+                wt,
+                &crate::paths::worktrees(),
+                &admin,
+                &repo,
+                task.as_deref(),
+                cmd,
+            ),
+            // No task dir: the plain worktree confinement every other task
+            // has always had.
+            None => bwrap_argv(wt, &crate::paths::worktrees(), &admin, &repo, cmd),
+        };
         std::process::Command::new(&argv[0])
             .args(&argv[1..])
             .status()
@@ -295,5 +346,68 @@ mod tests {
             repo_of(Path::new("/x/y/.git/worktrees")),
             PathBuf::from("/x/y")
         );
+    }
+
+    /// A KernelBench task is read-only in the namespace except for its
+    /// candidate, which binds writable LAST (bead farmerbob-x81s.1).
+    #[test]
+    fn the_kernel_task_is_read_only_except_the_candidate() {
+        let base = std::env::temp_dir().join(format!("fb-isolated-kb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (repo, admin, root) = dirs("kb");
+        let task = base.join("task");
+        std::fs::create_dir_all(task.join("ref")).unwrap();
+        std::fs::write(task.join("candidate.py"), "agent code").unwrap();
+        std::fs::write(task.join("verify.sh"), "scorer").unwrap();
+        let wt = root.join("task--arm");
+        let a = bwrap_argv_with_kernel(&wt, &root, &admin, &repo, Some(&task), &["true".into()]);
+        let task_s = task.to_string_lossy().into_owned();
+        let cand_s = task.join("candidate.py").to_string_lossy().into_owned();
+        assert!(pairs(&a, "--ro-bind").contains(&task_s), "{a:?}");
+        assert!(pairs(&a, "--bind").contains(&cand_s), "{a:?}");
+        let ro = a.iter().position(|x| x == &task_s).unwrap();
+        let rw = a.iter().position(|x| x == &cand_s).unwrap();
+        assert!(
+            rw > ro,
+            "the candidate re-bind must follow the task ro-bind: {a:?}"
+        );
+        let sep = a.iter().position(|x| x == "--").unwrap();
+        assert!(
+            rw < sep,
+            "the candidate bind must precede the command separator: {a:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Without a task dir nothing kernel-shaped is bound.
+    #[test]
+    fn no_task_dir_means_no_kernel_binds() {
+        let (repo, admin, root) = dirs("nokb");
+        let a = bwrap_argv_with_kernel(
+            &root.join("task--arm"),
+            &root,
+            &admin,
+            &repo,
+            None,
+            &["true".into()],
+        );
+        assert!(!a.iter().any(|x| x.contains("candidate.py")), "{a:?}");
+    }
+
+    /// A missing task dir binds nothing: binding a missing path aborts
+    /// bwrap before the arm starts.
+    #[test]
+    fn a_missing_task_dir_binds_nothing() {
+        let base = std::env::temp_dir().join(format!("fb-isolated-kbgone-{}", std::process::id()));
+        let (repo, admin, root) = dirs("kbgone");
+        let a = bwrap_argv_with_kernel(
+            &root.join("task--arm"),
+            &root,
+            &admin,
+            &repo,
+            Some(&base.join("no-such-task")),
+            &["true".into()],
+        );
+        assert!(!a.iter().any(|x| x.contains("no-such-task")), "{a:?}");
     }
 }

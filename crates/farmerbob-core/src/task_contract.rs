@@ -30,6 +30,52 @@ pub struct TaskManifest {
     pub exclusive: Vec<String>,
     /// Minimum measured trials before a benchmark result may be scored.
     pub min_trials: u32,
+    /// Correctness precision: the dtype both models are cast to before
+    /// comparison, one of `fp32`, `fp16`, `bf16`. Audited from KernelBench's
+    /// `eval_kernel_against_ref` (bead farmerbob-x81s.3): it defaults to
+    /// fp32 and the harness used to inherit that silently. Stated here now.
+    #[serde(default = "default_correctness_precision")]
+    pub correctness_precision: String,
+    /// Correctness trials: every trial must pass. Upstream seeds them
+    /// deterministically from 42 with inputs from the reference's
+    /// `get_inputs` (the candidate's own are ignored).
+    #[serde(default = "default_correctness_trials")]
+    pub correctness_trials: u32,
+    /// Determinism the task demands: `required` (a candidate whose two
+    /// runs under one seed differ bitwise fails with the nondeterminism
+    /// axis) or `allowed` (racy-but-accurate passes, recorded as
+    /// nondeterministic). Audited default: upstream assumes determinism
+    /// without stating it (bead farmerbob-x81s.7), so required is the
+    /// default and allowed is the explicit opt-out.
+    #[serde(default = "default_determinism")]
+    pub determinism: String,
+}
+
+/// Audited upstream defaults for manifests written before the correctness
+/// knobs existed (also the TOML parser's fallback).
+fn default_correctness_precision() -> String {
+    "fp32".to_string()
+}
+
+/// Audited upstream default trial count.
+fn default_correctness_trials() -> u32 {
+    1
+}
+
+/// Audited upstream default: determinism assumed, never stated.
+fn default_determinism() -> String {
+    "required".to_string()
+}
+
+/// The tolerance table, audited from KernelBench's
+/// `get_tolerance_for_precision` (torchbench-inspired): atol and rtol are
+/// always equal, fp32 pins 1e-4, fp16 and bf16 pin 1e-2.
+pub fn tolerance_for_precision(precision: &str) -> Option<f64> {
+    match precision {
+        "fp32" => Some(1e-4),
+        "fp16" | "bf16" => Some(1e-2),
+        _ => None,
+    }
 }
 
 /// The output printed by `bench.sh`.
@@ -48,6 +94,40 @@ pub struct VerifyOutput {
     pub correct: bool,
     /// Human readable verification detail.
     pub detail: String,
+    /// Tolerance the comparison enforced (atol == rtol). Unstated (0.0)
+    /// for outputs written before the harness recorded it.
+    #[serde(default)]
+    pub tolerance: f64,
+    /// Correctness precision the comparison ran under (`fp32`/`fp16`/`bf16`).
+    /// Empty for outputs written before the harness recorded it.
+    #[serde(default)]
+    pub precision: String,
+    /// Correctness trials run. Zero for outputs written before the harness
+    /// recorded it.
+    #[serde(default)]
+    pub trials: u32,
+    /// Which comparison axis failed (`shape`, `dtype`, `device`,
+    /// `values`), or `None` when nothing failed. A stored verdict that
+    /// cannot say what it checked cannot be re-checked later -- and
+    /// re-checking later is the whole point of the artifact store.
+    #[serde(default)]
+    pub failed_axis: Option<String>,
+    /// Passed the visible inputs and failed the held-out set: input
+    /// specialisation, not ordinary incorrectness (bead farmerbob-x81s.4).
+    /// False for outputs written before the harness checked it.
+    #[serde(default)]
+    pub specialised: bool,
+    /// The candidate executed the task's own reference code during the run
+    /// (bead farmerbob-x81s.5): it IS the reference, so its correctness
+    /// says nothing about the arm. Its own verdict, never incorrect.
+    /// False for outputs written before the harness checked it.
+    #[serde(default)]
+    pub reference_call: bool,
+    /// Two runs under one seed compared bitwise: Some(true) deterministic,
+    /// Some(false) racy, None when the check never ran -- eval failed
+    /// first, or the output predates the check (bead farmerbob-x81s.7).
+    #[serde(default)]
+    pub deterministic: Option<bool>,
 }
 
 /// The score assigned to an experiment.
@@ -72,6 +152,12 @@ impl TaskManifest {
         let mut timeout_s = 0;
         let mut exclusive = Vec::new();
         let mut min_trials = 0;
+        // Audited upstream defaults (bead farmerbob-x81s.3): fp32, and
+        // every trial must pass. Determinism required (bead
+        // farmerbob-x81s.7): upstream assumes it without stating it.
+        let mut correctness_precision = "fp32".to_string();
+        let mut correctness_trials = 1u32;
+        let mut determinism = "required".to_string();
         for raw in toml_src.lines() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
@@ -103,6 +189,28 @@ impl TaskManifest {
                         .map_err(|_| "invalid min_trials".to_string())?
                 }
                 "exclusive" => exclusive = parse_array(value)?,
+                "correctness_precision" => {
+                    let v = parse_string(value)?;
+                    if tolerance_for_precision(&v).is_none() {
+                        return Err("invalid correctness_precision".to_string());
+                    }
+                    correctness_precision = v;
+                }
+                "correctness_trials" => {
+                    correctness_trials = value
+                        .parse()
+                        .map_err(|_| "invalid correctness_trials".to_string())?;
+                    if correctness_trials == 0 {
+                        return Err("correctness_trials must be at least 1".to_string());
+                    }
+                }
+                "determinism" => {
+                    let v = parse_string(value)?;
+                    if v != "required" && v != "allowed" {
+                        return Err("invalid determinism".to_string());
+                    }
+                    determinism = v;
+                }
                 _ => {}
             }
         }
@@ -121,6 +229,9 @@ impl TaskManifest {
             timeout_s,
             exclusive,
             min_trials,
+            correctness_precision,
+            correctness_trials,
+            determinism,
         })
     }
 }
@@ -231,6 +342,9 @@ mod tests {
             timeout_s: 0,
             exclusive: vec![],
             min_trials,
+            correctness_precision: "fp32".to_string(),
+            correctness_trials: 1,
+            determinism: "required".to_string(),
         }
     }
     #[test]
@@ -240,7 +354,14 @@ mod tests {
                 &manifest(1),
                 &VerifyOutput {
                     correct: false,
-                    detail: "bad".into()
+                    detail: "bad".into(),
+                    tolerance: 0.0,
+                    precision: String::new(),
+                    trials: 0,
+                    failed_axis: None,
+                    specialised: false,
+                    reference_call: false,
+                    deterministic: None,
                 },
                 &[1.0],
                 100.0,
@@ -258,7 +379,14 @@ mod tests {
                 &manifest(2),
                 &VerifyOutput {
                     correct: true,
-                    detail: String::new()
+                    detail: String::new(),
+                    tolerance: 0.0,
+                    precision: String::new(),
+                    trials: 0,
+                    failed_axis: None,
+                    specialised: false,
+                    reference_call: false,
+                    deterministic: None,
                 },
                 &[1.0],
                 100.0,
@@ -274,7 +402,14 @@ mod tests {
                 &manifest(1),
                 &VerifyOutput {
                     correct: true,
-                    detail: String::new()
+                    detail: String::new(),
+                    tolerance: 0.0,
+                    precision: String::new(),
+                    trials: 0,
+                    failed_axis: None,
+                    specialised: false,
+                    reference_call: false,
+                    deterministic: None,
                 },
                 &[0.0],
                 100.0,
@@ -290,7 +425,14 @@ mod tests {
                 &manifest(2),
                 &VerifyOutput {
                     correct: true,
-                    detail: String::new()
+                    detail: String::new(),
+                    tolerance: 0.0,
+                    precision: String::new(),
+                    trials: 0,
+                    failed_axis: None,
+                    specialised: false,
+                    reference_call: false,
+                    deterministic: None,
                 },
                 &[1.0, 10.0],
                 100.0,
@@ -308,5 +450,67 @@ mod tests {
     fn benchmark_zero_trials_rejected() {
         let src = "name = \"x\"\nverification = \"Benchmark\"\nmin_trials = 0";
         assert!(TaskManifest::parse(src).is_err());
+    }
+
+    /// Manifests written before the correctness knobs existed parse with
+    /// the audited upstream defaults: fp32, and every trial must pass.
+    #[test]
+    fn correctness_knobs_default_to_audited_upstream() {
+        let src = "name = \"x\"\nverification = \"Benchmark\"\nmin_trials = 3";
+        let m = TaskManifest::parse(src).expect("parse");
+        assert_eq!(m.correctness_precision, "fp32");
+        assert_eq!(m.correctness_trials, 1);
+        assert_eq!(
+            tolerance_for_precision(&m.correctness_precision),
+            Some(1e-4)
+        );
+    }
+
+    /// Stated knobs parse, and the tolerance table is the audited one.
+    #[test]
+    fn stated_correctness_knobs_parse() {
+        let src = "name = \"x\"\nverification = \"Benchmark\"\nmin_trials = 3\ncorrectness_precision = \"bf16\"\ncorrectness_trials = 5";
+        let m = TaskManifest::parse(src).expect("parse");
+        assert_eq!(m.correctness_precision, "bf16");
+        assert_eq!(m.correctness_trials, 5);
+        assert_eq!(tolerance_for_precision("fp32"), Some(1e-4));
+        assert_eq!(tolerance_for_precision("fp16"), Some(1e-2));
+        assert_eq!(tolerance_for_precision("bf16"), Some(1e-2));
+        assert_eq!(tolerance_for_precision("fp8"), None);
+    }
+
+    /// Unknown precisions and zero trials are refused, and a stale dtype
+    /// policy line is ignored: a typo must not silently widen the gate,
+    /// and an old knob must not break new parses.
+    #[test]
+    fn bad_correctness_knobs_are_refused() {
+        let base = "name = \"x\"\nverification = \"Benchmark\"\nmin_trials = 3\n";
+        assert!(TaskManifest::parse(&format!("{base}correctness_precision = \"fp8\"")).is_err());
+        assert!(TaskManifest::parse(&format!("{base}correctness_trials = 0")).is_err());
+        assert!(
+            TaskManifest::parse(&format!("{base}correctness_dtype = \"require\""))
+                .expect("stale knob parses")
+                .correctness_precision
+                == "fp32"
+        );
+        assert!(TaskManifest::parse(&format!("{base}determinism = \"maybe\"")).is_err());
+    }
+
+    /// Determinism defaults to required and opts into allowed: the task
+    /// declares the property, the candidate is measured against it (bead
+    /// farmerbob-x81s.7).
+    #[test]
+    fn determinism_defaults_required_opts_allowed() {
+        let base = "name = \"x\"\nverification = \"Benchmark\"\nmin_trials = 3\n";
+        assert_eq!(
+            TaskManifest::parse(base).expect("parse").determinism,
+            "required"
+        );
+        assert_eq!(
+            TaskManifest::parse(&format!("{base}determinism = \"allowed\""))
+                .expect("parse")
+                .determinism,
+            "allowed"
+        );
     }
 }

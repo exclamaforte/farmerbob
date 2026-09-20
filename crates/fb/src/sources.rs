@@ -102,6 +102,17 @@ pub struct Source {
     pub price_in: Option<f64>,
     #[serde(default)]
     pub price_out: Option<f64>,
+    /// USD per million cache-read tokens (bead farmerbob-xsa). Absent
+    /// until the owner fills it from provider billing; the pricing model
+    /// falls back to the input rate and the board carries the error bar.
+    /// Held for the reconciliation follow-up, like context/notes below.
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub price_cache_read: Option<f64>,
+    /// USD per million cache-write tokens, same fallback.
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub price_cache_write: Option<f64>,
     #[allow(dead_code)]
     #[serde(default)]
     pub context: Option<u64>,
@@ -399,6 +410,36 @@ model = "vendor/y"
         assert_eq!(names.first(), Some(&"free-arm"), "free arms come first");
         assert!(!names.contains(&"paid-twin"));
         assert!(!names.contains(&"switched-off"));
+    }
+
+    /// Cache prices parse when stated and default absent otherwise: the
+    /// registry models them explicitly (bead farmerbob-xsa) so the
+    /// pricing computation can stop assuming the input rate.
+    #[test]
+    fn cache_prices_parse_explicit_absent_by_default() {
+        let r = reg(r#"
+[source.cached]
+status = "verified"
+model = "vendor/cached"
+quota = "metered"
+price_in = 2.00
+price_out = 4.00
+price_cache_read = 0.50
+price_cache_write = 1.00
+
+[source.legacy]
+status = "verified"
+model = "vendor/legacy"
+quota = "metered"
+price_in = 2.00
+price_out = 4.00
+"#);
+        let cached = r.get("cached").expect("cached arm");
+        assert_eq!(cached.price_cache_read, Some(0.50));
+        assert_eq!(cached.price_cache_write, Some(1.00));
+        let legacy = r.get("legacy").expect("legacy arm");
+        assert_eq!(legacy.price_cache_read, None);
+        assert_eq!(legacy.price_cache_write, None);
     }
 
     #[test]

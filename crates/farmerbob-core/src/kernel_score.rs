@@ -110,6 +110,22 @@ pub fn reliable(summary: &Summary, max_iqr_ratio: f64) -> bool {
     summary.iqr / summary.median <= max_iqr_ratio
 }
 
+/// Physics floor in milliseconds: no implementation moves `io_bytes`
+/// through `bandwidth_gbps` faster than this, whatever the clock reported
+/// (bead farmerbob-x81s.6). `None` for non-positive inputs: a floor built
+/// on zero bytes or zero bandwidth is not a floor.
+///
+/// Deliberately a lower bound, never an estimate: real kernels move more
+/// than inputs-plus-output (weights, temporaries, halo reads), so a result
+/// above the floor is merely not-impossible, while a result below it did
+/// not happen.
+pub fn floor_ms(io_bytes: u64, bandwidth_gbps: f64) -> Option<f64> {
+    if io_bytes == 0 || !bandwidth_gbps.is_finite() || bandwidth_gbps <= 0.0 {
+        return None;
+    }
+    Some(io_bytes as f64 / (bandwidth_gbps * 1e9) * 1000.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +226,16 @@ mod tests {
             trials: 2,
         };
         assert!(!reliable(&zero, 99.0));
+    }
+
+    /// 8 GiB through 1792 GB/s is ~4.79 ms; degenerate inputs yield no
+    /// floor rather than a zero one.
+    #[test]
+    fn floor_is_bytes_over_bandwidth() {
+        let floor = floor_ms(8_589_934_592, 1792.0).expect("floor");
+        assert!((floor - 4.79).abs() < 0.01, "{floor}");
+        assert_eq!(floor_ms(0, 1792.0), None);
+        assert_eq!(floor_ms(100, 0.0), None);
+        assert_eq!(floor_ms(100, f64::INFINITY), None);
     }
 }

@@ -53,6 +53,13 @@ def _task_toml(name: str, description: str) -> str:
         "timeout_s = 600\n"
         "exclusive = [\"gpu\"]\n"
         "min_trials = 3\n"
+        # Correctness knobs, stated not inherited (bead farmerbob-x81s.3).
+        # Audited from KernelBench's eval_kernel_against_ref: fp32 inputs,
+        # and every trial must pass. Determinism required unless the task
+        # declares otherwise (bead farmerbob-x81s.7).
+        "correctness_precision = \"fp32\"\n"
+        "correctness_trials = 1\n"
+        "determinism = \"required\"\n"
     )
 
 

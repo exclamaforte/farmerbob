@@ -29,6 +29,13 @@ pub struct Usage {
     pub input_tokens: u64,
     /// Completion tokens billed at the output rate.
     pub output_tokens: u64,
+    /// Prompt-cache reads (bead farmerbob-xsa). Opencode's session store
+    /// reports these per run; a high cache-read-to-input ratio is where
+    /// price-table error hides, so the count rides with the usage rather
+    /// than being re-derived later.
+    pub cache_read_tokens: u64,
+    /// Prompt-cache writes, likewise.
+    pub cache_write_tokens: u64,
 }
 
 /// How an arm is billed. These five and no others.
@@ -36,12 +43,20 @@ pub struct Usage {
 pub enum Billing {
     /// Free route. A zero here is a real measured zero.
     Free,
-    /// Billed per million tokens, both prices known.
+    /// Billed per million tokens, all prices known.
     Metered {
         /// USD per million input tokens.
         input_per_mtok: f64,
         /// USD per million output tokens.
         output_per_mtok: f64,
+        /// USD per million cache-read tokens. `None` falls back to the
+        /// input rate: the pre-xsa assumption, now stated instead of
+        /// silent (bead farmerbob-xsa). A missing cache price with
+        /// cache-heavy usage is exactly the ~10% mixed-sign error, so
+        /// the board carries an error bar until these are filled.
+        cache_read_per_mtok: Option<f64>,
+        /// USD per million cache-write tokens, same fallback.
+        cache_write_per_mtok: Option<f64>,
     },
     /// Billed, but the price table has no entry. This must never read as
     /// free: a billed run whose price is unknown is not a free run.
@@ -78,14 +93,38 @@ pub fn price(route: &Route, usage: &Usage) -> Measurement<f64> {
         Billing::Metered {
             input_per_mtok,
             output_per_mtok,
-        } => match price_table_defect(*input_per_mtok, *output_per_mtok) {
-            Some(reason) => Measurement::untrusted(&reason),
-            None => {
-                let usd = usage.input_tokens as f64 / 1_000_000.0 * input_per_mtok
-                    + usage.output_tokens as f64 / 1_000_000.0 * output_per_mtok;
-                Measurement::observed(usd)
+            cache_read_per_mtok,
+            cache_write_per_mtok,
+        } => {
+            let rates = [
+                ("input_per_mtok", *input_per_mtok),
+                ("output_per_mtok", *output_per_mtok),
+            ];
+            let mut rates: Vec<(&str, f64)> = rates.to_vec();
+            rates.extend(
+                cache_read_per_mtok
+                    .iter()
+                    .map(|r| ("cache_read_per_mtok", *r)),
+            );
+            rates.extend(
+                cache_write_per_mtok
+                    .iter()
+                    .map(|r| ("cache_write_per_mtok", *r)),
+            );
+            if let Some(reason) = price_table_defect(&rates) {
+                return Measurement::untrusted(&reason);
             }
-        },
+            // Unpriced cache traffic falls back to the input rate: the
+            // pre-xsa assumption, now one line and documented rather than
+            // structural and silent.
+            let read_rate = cache_read_per_mtok.unwrap_or(*input_per_mtok);
+            let write_rate = cache_write_per_mtok.unwrap_or(*input_per_mtok);
+            let usd = usage.input_tokens as f64 / 1_000_000.0 * input_per_mtok
+                + usage.output_tokens as f64 / 1_000_000.0 * output_per_mtok
+                + usage.cache_read_tokens as f64 / 1_000_000.0 * read_rate
+                + usage.cache_write_tokens as f64 / 1_000_000.0 * write_rate;
+            Measurement::observed(usd)
+        }
         Billing::MeteredUnpriced => Measurement::instrument_failed(
             "the route is billed but the price table has no entry for it: a billed run whose price is unknown is not a free run",
         ),
@@ -96,17 +135,13 @@ pub fn price(route: &Route, usage: &Usage) -> Measurement<f64> {
     }
 }
 
-/// The reason a metered price pair cannot be trusted, naming the offending
-/// field, or [`None`] when both prices are finite and non-negative.
+/// The reason metered rates cannot be trusted, naming the offending
+/// field, or [`None`] when every stated rate is finite and non-negative.
 ///
 /// A price of exactly `0.0` (or `-0.0`) is not a defect: it prices normally
 /// as a real zero.
-fn price_table_defect(input_per_mtok: f64, output_per_mtok: f64) -> Option<String> {
-    let fields = [
-        ("input_per_mtok", input_per_mtok),
-        ("output_per_mtok", output_per_mtok),
-    ];
-    for (name, rate) in fields {
+fn price_table_defect(rates: &[(&str, f64)]) -> Option<String> {
+    for (name, rate) in rates {
         if rate.is_nan() {
             return Some(format!(
                 "{name} is NaN: the price table entry is corrupt, not a price"
@@ -117,7 +152,7 @@ fn price_table_defect(input_per_mtok: f64, output_per_mtok: f64) -> Option<Strin
                 "{name} is infinite: the price table entry is corrupt, not a price"
             ));
         }
-        if rate < 0.0 {
+        if *rate < 0.0 {
             return Some(format!(
                 "{name} is negative: a corrupt price table, not a discount"
             ));
@@ -223,13 +258,37 @@ mod tests {
         Usage {
             input_tokens,
             output_tokens,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
         }
     }
 
+    fn usage_cached(input_tokens: u64, output_tokens: u64, read: u64, write: u64) -> Usage {
+        Usage {
+            input_tokens,
+            output_tokens,
+            cache_read_tokens: read,
+            cache_write_tokens: write,
+        }
+    }
+
+    /// Legacy posture: cache prices unknown, billed at the input rate.
+    /// Every pre-xsa test below pins this behavior unchanged.
     fn metered(input_per_mtok: f64, output_per_mtok: f64) -> Route {
         route(Billing::Metered {
             input_per_mtok,
             output_per_mtok,
+            cache_read_per_mtok: None,
+            cache_write_per_mtok: None,
+        })
+    }
+
+    fn metered_full(input: f64, output: f64, read: f64, write: f64) -> Route {
+        route(Billing::Metered {
+            input_per_mtok: input,
+            output_per_mtok: output,
+            cache_read_per_mtok: Some(read),
+            cache_write_per_mtok: Some(write),
         })
     }
 
@@ -343,6 +402,60 @@ mod tests {
         let infinite_input = metered(f64::INFINITY, 2.0);
         let p = price(&infinite_input, &usage(1, 1));
         assert!(matches!(p, Measurement::Missing(Absent::Untrusted { .. })));
+    }
+
+    /// Full cache pricing bills all four terms at their own rates.
+    #[test]
+    fn cache_terms_price_at_their_own_rates() {
+        let r = metered_full(2.0, 4.0, 0.5, 1.0);
+        let u = usage_cached(1_000_000, 1_000_000, 2_000_000, 500_000);
+        // 2.0 + 4.0 + 2*0.5 + 0.5*1.0 = 7.5
+        assert_eq!(price(&r, &u), Measurement::observed(7.5));
+    }
+
+    /// Unpriced cache falls back to the input rate: the pre-xsa
+    /// assumption, now one documented line instead of structural silence.
+    #[test]
+    fn unpriced_cache_falls_back_to_input_rate() {
+        let r = metered(2.0, 4.0);
+        let u = usage_cached(1_000_000, 1_000_000, 2_000_000, 500_000);
+        // 2.0 + 4.0 + 2*2.0 + 0.5*2.0 = 11.0
+        assert_eq!(price(&r, &u), Measurement::observed(11.0));
+    }
+
+    /// The bead's shape: at 12.1x cache-reads-to-input, a small cache
+    /// misprice dominates the bill, while the input term barely moves.
+    /// or-qwen38-max counts, input $2/MTok, cache reads really $0.50.
+    #[test]
+    fn cache_ratio_dominates_cache_heavy_arms() {
+        let usage = usage_cached(387_462, 0, 4_695_808, 0);
+        let full = metered_full(2.0, 0.0, 0.5, 0.0);
+        let legacy = metered(2.0, 0.0);
+        let Measurement::Observed(modelled) = price(&full, &usage) else {
+            panic!("full prices");
+        };
+        let Measurement::Observed(inferred) = price(&legacy, &usage) else {
+            panic!("legacy prices");
+        };
+        let cache_term = 4_695_808f64 / 1_000_000.0 * 0.5;
+        assert!((modelled - (387_462f64 / 1_000_000.0 * 2.0 + cache_term)).abs() < 1e-9);
+        assert!(cache_term > modelled / 2.0, "cache dominates: {modelled}");
+        assert!(
+            inferred > modelled * 2.0,
+            "legacy overbills: {inferred} vs {modelled}"
+        );
+    }
+
+    /// A corrupt cache price is untrusted and names its field.
+    #[test]
+    fn corrupt_cache_price_is_untrusted() {
+        let r = metered_full(1.0, 1.0, f64::NAN, 1.0);
+        match price(&r, &usage_cached(1, 1, 1, 1)) {
+            Measurement::Missing(Absent::Untrusted { reason }) => {
+                assert!(reason.contains("cache_read_per_mtok"), "{reason}");
+            }
+            other => panic!("expected Untrusted, got {other:?}"),
+        }
     }
 
     #[test]

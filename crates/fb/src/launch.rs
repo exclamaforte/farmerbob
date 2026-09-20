@@ -287,6 +287,36 @@ fn isolated() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| crate::paths::repo().join("target/debug/fb"))
 }
 
+/// Fit captured output into the run log without losing either end.
+///
+/// A timeout kills a productive run mid-sentence: the findings it just
+/// discovered sit at the TAIL, while how it started (and any error) sits
+/// at the HEAD. Keeping only a short head is why a killed run's
+/// discoveries were unrecoverable without sqlite spelunking (bead
+/// farmerbob-x81s.17). Keep 32 KiB of head and 224 KiB of tail with the
+/// elided byte count named. Short output passes through byte-identical.
+pub fn fit_for_log(text: &str) -> String {
+    const HEAD: usize = 32 * 1024;
+    const TAIL: usize = 224 * 1024;
+    if text.len() <= HEAD + TAIL {
+        return text.to_string();
+    }
+    let mut head_end = HEAD;
+    while !text.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = text.len() - TAIL;
+    while !text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    format!(
+        "{}[...{} bytes elided...]{}",
+        &text[..head_end],
+        tail_start - head_end,
+        &text[tail_start..]
+    )
+}
+
 /// The model an arm runs, from the registry. Empty when the registry does not say, which
 /// the launchers that need it will reject for themselves.
 pub fn model_for(arm: &str) -> String {
@@ -387,7 +417,7 @@ pub fn launch_in(
                 Measurement::instrument_failed(&format!(
                     "{arm} exited with {}: {}",
                     out.status,
-                    text.chars().take(400).collect::<String>()
+                    fit_for_log(&text)
                 ))
             }
         }
@@ -801,5 +831,38 @@ mod tests {
             declared_launch_argv(text, "ghost", Path::new("/w"), "P", false).is_none(),
             "no declared program, no launch"
         );
+    }
+
+    /// Short output passes through byte-identical: the common case costs
+    /// nothing and reads exactly.
+    #[test]
+    fn short_output_passes_through_identical() {
+        assert_eq!(fit_for_log(""), "");
+        assert_eq!(fit_for_log("rc=1 boom"), "rc=1 boom");
+        assert_eq!(fit_for_log(&"x".repeat(256 * 1024)), "x".repeat(256 * 1024));
+    }
+
+    /// Long output keeps both ends with the elided count named: head for
+    /// how it started, tail for what a timeout killed mid-sentence.
+    #[test]
+    fn long_output_keeps_head_and_tail() {
+        let text = format!("{}MID{}", "h".repeat(40 * 1024), "t".repeat(300 * 1024));
+        let fitted = fit_for_log(&text);
+        assert!(fitted.starts_with(&"h".repeat(100)), "{fitted:.100}");
+        assert!(fitted.ends_with(&"t".repeat(100)));
+        assert!(!fitted.contains("MID"), "the middle is what goes");
+        assert!(fitted.contains("bytes elided"), "{fitted:.200}");
+        assert!(fitted.len() < text.len());
+    }
+
+    /// Multibyte characters never split: the cut walks to boundaries.
+    #[test]
+    fn multibyte_cuts_land_on_boundaries() {
+        let text = format!("{}ok", "é".repeat(200 * 1024));
+        let fitted = fit_for_log(&text);
+        assert!(fitted.is_char_boundary(0));
+        // Must not panic, and must still name the elision.
+        let _ = fitted.len();
+        assert!(fitted.contains("bytes elided") || fitted.len() == text.len());
     }
 }

@@ -102,13 +102,108 @@ pub fn render(task: &str, o: &Outcome) -> String {
         Outcome::Incorrect(verify) => {
             format!("{prefix}incorrect: {}", verify.detail)
         }
+        Outcome::Specialised(verify) => {
+            format!("{prefix}specialised: {}", verify.detail)
+        }
+        Outcome::ReferenceCall(verify) => {
+            format!("{prefix}reference-call: {}", verify.detail)
+        }
+        Outcome::Clock(verdict) => {
+            format!("{prefix}clock: {verdict}")
+        }
         Outcome::Instrument(reason) => {
             format!("{prefix}instrument: {reason}")
         }
     }
 }
 
-/// Read, run and render. Returns the exit code the caller should use.
+/// Render one outcome as machine JSON: everything `fb kernel-score
+/// --bench-json` needs, so a wave pipes bench into scoring without
+/// hand-parsing log chatter (bead farmerbob-x81s.15). One object, one
+/// line: task, status, samples, the widened verify record, the clock
+/// verdict, and io_bytes when a trial reported it. Nulls where absent,
+/// never missing keys.
+pub fn render_json(task: &str, o: &Outcome) -> String {
+    use farmerbob_core::task_contract::VerifyOutput;
+    let verify_json = |v: &VerifyOutput| {
+        serde_json::json!({
+            "correct": v.correct,
+            "detail": v.detail,
+            "tolerance": v.tolerance,
+            "precision": v.precision,
+            "trials": v.trials,
+            "failed_axis": v.failed_axis,
+            "specialised": v.specialised,
+            "reference_call": v.reference_call,
+            "deterministic": v.deterministic,
+        })
+    };
+    let io_bytes_json = |io_bytes: &Option<u64>| match io_bytes {
+        Some(n) => serde_json::json!(n),
+        None => serde_json::Value::Null,
+    };
+    let value = match o {
+        Outcome::Measured {
+            verify,
+            samples,
+            io_bytes,
+        } => serde_json::json!({
+            "task": task,
+            "status": "measured",
+            "samples": samples,
+            "verify": verify_json(verify),
+            "clock": serde_json::Value::Null,
+            "io_bytes": io_bytes_json(io_bytes),
+            "detail": verify.detail,
+        }),
+        Outcome::Incorrect(verify) => serde_json::json!({
+            "task": task,
+            "status": "incorrect",
+            "samples": [],
+            "verify": verify_json(verify),
+            "clock": serde_json::Value::Null,
+            "io_bytes": serde_json::Value::Null,
+            "detail": verify.detail,
+        }),
+        Outcome::Specialised(verify) => serde_json::json!({
+            "task": task,
+            "status": "specialised",
+            "samples": [],
+            "verify": verify_json(verify),
+            "clock": serde_json::Value::Null,
+            "io_bytes": serde_json::Value::Null,
+            "detail": verify.detail,
+        }),
+        Outcome::ReferenceCall(verify) => serde_json::json!({
+            "task": task,
+            "status": "reference",
+            "samples": [],
+            "verify": verify_json(verify),
+            "clock": serde_json::Value::Null,
+            "io_bytes": serde_json::Value::Null,
+            "detail": verify.detail,
+        }),
+        Outcome::Clock(verdict) => serde_json::json!({
+            "task": task,
+            "status": "clock",
+            "samples": [],
+            "verify": serde_json::Value::Null,
+            "clock": verdict,
+            "io_bytes": serde_json::Value::Null,
+            "detail": verdict,
+        }),
+        Outcome::Instrument(reason) => serde_json::json!({
+            "task": task,
+            "status": "instrument",
+            "samples": [],
+            "verify": serde_json::Value::Null,
+            "clock": serde_json::Value::Null,
+            "io_bytes": serde_json::Value::Null,
+            "detail": reason,
+        }),
+    };
+    value.to_string()
+}
 pub fn run(dir: &Path, p: &BenchPlan, out: &mut dyn Write) -> i32 {
     let manifest = match manifest_in(dir) {
         Ok(m) => m,
@@ -142,6 +237,83 @@ pub fn run(dir: &Path, p: &BenchPlan, out: &mut dyn Write) -> i32 {
     match outcome {
         Outcome::Measured { .. } => 0,
         Outcome::Incorrect(_) => 1,
+        // A reference call outranks every other candidate verdict: the
+        // run measured the answer key, not the arm.
+        Outcome::ReferenceCall(_) => 6,
+        // Its own verdict, distinct from incorrect: the arm memorised, it
+        // did not merely fail.
+        Outcome::Specialised(_) => 5,
+        // Distinct from slow (0) and incorrect (1): the number is not
+        // trusted at all, and it must not read as either.
+        Outcome::Clock(_) => 3,
+        Outcome::Instrument(_) => 4,
+    }
+}
+
+/// Read, run and render as machine JSON. Same outcomes and exit codes as
+/// [`run`]: the JSON is the machine-readable twin of the human line, for
+/// piping bench into `fb kernel-score --bench-json` (bead
+/// farmerbob-x81s.15).
+pub fn run_json(dir: &Path, p: &BenchPlan, out: &mut dyn Write) -> i32 {
+    let manifest = match manifest_in(dir) {
+        Ok(m) => m,
+        Err(GatherError::Unreadable(reason)) => {
+            let _ = writeln!(
+                out,
+                "{}",
+                serde_json::json!({
+                    "task": dir.display().to_string(),
+                    "status": "unreadable",
+                    "samples": [],
+                    "verify": serde_json::Value::Null,
+                    "clock": serde_json::Value::Null,
+                    "io_bytes": serde_json::Value::Null,
+                    "detail": reason,
+                })
+            );
+            return 4;
+        }
+        Err(GatherError::Malformed(reason)) => {
+            let _ = writeln!(
+                out,
+                "{}",
+                serde_json::json!({
+                    "task": dir.display().to_string(),
+                    "status": "malformed",
+                    "samples": [],
+                    "verify": serde_json::Value::Null,
+                    "clock": serde_json::Value::Null,
+                    "io_bytes": serde_json::Value::Null,
+                    "detail": reason,
+                })
+            );
+            return 4;
+        }
+    };
+
+    let effective_plan;
+    let plan_ref = if p.dir == dir {
+        p
+    } else {
+        effective_plan = BenchPlan {
+            dir: dir.to_path_buf(),
+            timeout_s: p.timeout_s,
+            max_attempts: p.max_attempts,
+            max_bad: p.max_bad,
+        };
+        &effective_plan
+    };
+
+    let outcome = bench_cmd::run_bench(&manifest, plan_ref);
+    let text = render_json(&manifest.name.0, &outcome);
+    let _ = writeln!(out, "{text}");
+
+    match outcome {
+        Outcome::Measured { .. } => 0,
+        Outcome::Incorrect(_) => 1,
+        Outcome::ReferenceCall(_) => 6,
+        Outcome::Specialised(_) => 5,
+        Outcome::Clock(_) => 3,
         Outcome::Instrument(_) => 4,
     }
 }
@@ -232,6 +404,10 @@ mod tests {
             vec!["gpu0".to_string(), "pstate".to_string()]
         );
         assert_eq!(manifest.min_trials, 7);
+        // Legacy manifests predate the correctness knobs and parse with
+        // the audited upstream defaults rather than failing.
+        assert_eq!(manifest.correctness_precision, "fp32");
+        assert_eq!(manifest.correctness_trials, 1);
     }
 
     #[test]
@@ -382,15 +558,22 @@ mod tests {
         assert_eq!(code_instrument, 4);
         assert_eq!(code_gather_err, code_instrument);
     }
-
     #[test]
-    fn clause_9_render_never_returns_empty_string_for_all_three_outcomes() {
+    fn clause_9_render_never_returns_empty_string_for_all_six_outcomes() {
         let measured = Outcome::Measured {
             verify: VerifyOutput {
                 correct: true,
                 detail: "ok".to_string(),
+                tolerance: 1e-4,
+                precision: "fp32".to_string(),
+                trials: 1,
+                failed_axis: None,
+                specialised: false,
+                reference_call: false,
+                deterministic: None,
             },
             samples: vec![10.2, 11.4],
+            io_bytes: Some(1_000_000),
         };
         let r_measured = render("task_m", &measured);
         assert!(!r_measured.is_empty());
@@ -399,6 +582,13 @@ mod tests {
         let incorrect = Outcome::Incorrect(VerifyOutput {
             correct: false,
             detail: "mismatch".to_string(),
+            tolerance: 1e-4,
+            precision: "fp32".to_string(),
+            trials: 1,
+            failed_axis: Some("values".to_string()),
+            specialised: false,
+            reference_call: false,
+            deterministic: None,
         });
         let r_incorrect = render("task_i", &incorrect);
         assert!(!r_incorrect.is_empty());
@@ -408,6 +598,159 @@ mod tests {
         let r_instrument = render("task_inst", &instrument);
         assert!(!r_instrument.is_empty());
         assert!(!r_instrument.ends_with('\n'));
+
+        // The clock verdict renders named, never empty: a corrupted clock
+        // must read as clock-tamper, not as slow or incorrect.
+        let clock = Outcome::Clock("tampered:time.perf_counter: rebound".to_string());
+        let r_clock = render("task_c", &clock);
+        assert!(r_clock.contains("clock"), "{r_clock}");
+        assert!(r_clock.contains("tampered"), "{r_clock}");
+        assert!(!r_clock.ends_with('\n'));
+
+        // Specialisation renders under its own name, never as incorrect.
+        let specialised = Outcome::Specialised(VerifyOutput {
+            correct: false,
+            detail: "heldout".to_string(),
+            tolerance: 1e-4,
+            precision: "fp32".to_string(),
+            trials: 1,
+            failed_axis: Some("specialised".to_string()),
+            specialised: true,
+            reference_call: false,
+            deterministic: None,
+        });
+        let r_specialised = render("task_s", &specialised);
+        assert!(r_specialised.contains("specialised"), "{r_specialised}");
+        assert!(!r_specialised.ends_with('\n'));
+
+        // A reference call renders under its own name, never as
+        // incorrect and never as slow.
+        let reference = Outcome::ReferenceCall(VerifyOutput {
+            correct: false,
+            detail: "ref".to_string(),
+            tolerance: 1e-4,
+            precision: "fp32".to_string(),
+            trials: 1,
+            failed_axis: None,
+            specialised: false,
+            reference_call: true,
+            deterministic: None,
+        });
+        let r_reference = render("task_r", &reference);
+        assert!(r_reference.contains("reference-call"), "{r_reference}");
+        assert!(!r_reference.ends_with('\n'));
+    }
+
+    /// A clock verdict exits 3: distinct from measured (0), incorrect (1)
+    /// and instrument (4). Pinned end to end through real scripts.
+    #[test]
+    fn boundary_clock_verdict_exits_3_and_names_itself() {
+        let scratch = ScratchDir::new("b-clock");
+        scratch.write_file("manifest.json", &manifest_json("bench_clock", 1));
+        scratch.write_file("verify.sh", OK_VERIFY);
+        scratch.write_file(
+            "bench.sh",
+            "echo '{\"clock\":\"tampered:torch.cuda.Event\",\"detail\":\"rebound\"}'\nexit 1\n",
+        );
+
+        let mut out = Vec::new();
+        let code = run(&scratch.path, &plan(&scratch.path, 0, 10, 5), &mut out);
+        assert_eq!(code, 3);
+
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("clock"), "{text}");
+        assert!(text.contains("tampered"), "{text}");
+    }
+
+    /// A specialised verification exits 5 with its own name: distinct from
+    /// incorrect (1). Pinned end to end through real scripts (bead
+    /// farmerbob-x81s.4).
+    #[test]
+    fn boundary_specialised_verification_exits_5_and_names_itself() {
+        let scratch = ScratchDir::new("b-specialised");
+        scratch.write_file("manifest.json", &manifest_json("bench_spec", 1));
+        scratch.write_file(
+            "verify.sh",
+            "echo '{\"correct\":false,\"detail\":\"heldout\",\"specialised\":true}'\n",
+        );
+        scratch.write_file("bench.sh", "touch marker_must_not_run\n");
+
+        let mut out = Vec::new();
+        let code = run(&scratch.path, &plan(&scratch.path, 0, 10, 2), &mut out);
+        assert_eq!(code, 5);
+
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("specialised"), "{text}");
+        assert!(!scratch.path.join("marker_must_not_run").exists());
+    }
+
+    /// A reference call exits 6 with its own name: distinct from
+    /// incorrect (1), slow (0) and specialised (5). Pinned end to end
+    /// through real scripts (bead farmerbob-x81s.5).
+    #[test]
+    fn boundary_reference_call_exits_6_and_names_itself() {
+        let scratch = ScratchDir::new("b-reference");
+        scratch.write_file("manifest.json", &manifest_json("bench_ref", 1));
+        scratch.write_file(
+            "verify.sh",
+            "echo '{\"correct\":false,\"detail\":\"ref\",\"reference_call\":true}'\n",
+        );
+        scratch.write_file("bench.sh", "touch marker_must_not_run\n");
+
+        let mut out = Vec::new();
+        let code = run(&scratch.path, &plan(&scratch.path, 0, 10, 2), &mut out);
+        assert_eq!(code, 6);
+
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("reference-call"), "{text}");
+        assert!(!scratch.path.join("marker_must_not_run").exists());
+    }
+
+    /// The JSON twin carries everything scoring needs: samples, the
+    /// widened verify record, and io_bytes when a trial reported it.
+    #[test]
+    fn json_twin_carries_samples_verify_and_io_bytes() {
+        let scratch = ScratchDir::new("b-json");
+        scratch.write_file("manifest.json", &manifest_json("bench_json", 1));
+        scratch.write_file("verify.sh", OK_VERIFY);
+        scratch.write_file(
+            "bench.sh",
+            "echo '{\"ms\":2.0,\"metrics\":{\"io_bytes\":800}}'\n",
+        );
+
+        let mut out = Vec::new();
+        let code = run_json(&scratch.path, &plan(&scratch.path, 0, 10, 5), &mut out);
+        assert_eq!(code, 0);
+        let value: serde_json::Value =
+            serde_json::from_str(&String::from_utf8_lossy(&out)).expect("one JSON object");
+        assert_eq!(value["status"], "measured");
+        assert_eq!(value["samples"], serde_json::json!([2.0]));
+        assert_eq!(value["verify"]["correct"], true);
+        assert_eq!(value["io_bytes"], 800);
+        assert_eq!(value["task"], "bench_json");
+    }
+
+    /// Non-measured outcomes JSON-ify with empty samples and named
+    /// details, same exit codes as the human path.
+    #[test]
+    fn json_twin_names_non_measured_outcomes() {
+        let scratch = ScratchDir::new("b-json-inc");
+        scratch.write_file("manifest.json", &manifest_json("bench_json_inc", 1));
+        scratch.write_file(
+            "verify.sh",
+            "echo '{\"correct\":false,\"detail\":\"mismatch\",\"failed_axis\":\"values\"}'\n",
+        );
+        scratch.write_file("bench.sh", "touch marker_must_not_run\n");
+
+        let mut out = Vec::new();
+        let code = run_json(&scratch.path, &plan(&scratch.path, 0, 10, 2), &mut out);
+        assert_eq!(code, 1);
+        let value: serde_json::Value =
+            serde_json::from_str(&String::from_utf8_lossy(&out)).expect("one JSON object");
+        assert_eq!(value["status"], "incorrect");
+        assert_eq!(value["samples"], serde_json::json!([]));
+        assert_eq!(value["verify"]["failed_axis"], "values");
+        assert!(!scratch.path.join("marker_must_not_run").exists());
     }
 
     #[test]
