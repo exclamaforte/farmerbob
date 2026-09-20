@@ -54,10 +54,25 @@ fn declared_for(task: &str) -> Measurement<Vec<String>> {
         Measurement::Observed(text) => text,
         Measurement::Missing(reason) => return Measurement::Missing(reason),
     };
-    match target_decl::declared(&text) {
-        Ok(declaration) => Measurement::observed(vec![target_decl::path(&declaration).to_string()]),
+    // EVERY deliverable, not one. `declared` answers only for the single-deliverable case
+    // and reports two markers as `Ambiguous`, which was correct while a task could declare
+    // exactly one file and has not been since 2026-09-19. This caller was missed in that
+    // migration, so scope-universe -- the first two-deliverable task -- could not have a
+    // single follow-up routed: `fb followups scope-universe` refused outright with
+    // "declares no single deliverable: Ambiguous([score.rs, scope_cmd.rs])".
+    //
+    // Two deliverables is not an unreadable spec. It is a spec with two deliverables, and
+    // the follow-up router wants the SET, which is exactly what it compares a proposal's
+    // touched paths against.
+    match target_decl::declared_all(&text) {
+        Ok(ds) if !ds.is_empty() => Measurement::observed(
+            ds.iter()
+                .map(|d| target_decl::path(d).to_string())
+                .collect(),
+        ),
+        Ok(_) => Measurement::nothing_to_measure(&format!("{task}'s spec declares no deliverable")),
         Err(reason) => Measurement::nothing_to_measure(&format!(
-            "{task}'s spec declares no single deliverable: {reason:?}"
+            "{task}'s spec declares no readable deliverable: {reason:?}"
         )),
     }
 }
