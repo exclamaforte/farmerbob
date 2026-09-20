@@ -115,6 +115,28 @@ fn run(dir: &Path, args: &[&str]) -> (bool, String) {
     run_bounded("cargo", dir, args, CARGO_TIMEOUT)
 }
 
+/// The test column: what the ARM contributed, with the crate's total as context.
+///
+/// THE ARM'S CONTRIBUTION, NOT THE CRATE'S TOTAL. This column printed the crate total, so an
+/// arm that wrote nine tests showed `tests=1938` and one that wrote six showed `tests=547` --
+/// the crate's number presented as the candidate's work, on the line an adjudicator reads to
+/// compare candidates. The delta was already measured and already in score.json; only the
+/// display was wrong. (bead farmerbob-apxp)
+///
+/// The total stays, in parentheses, because it is the denominator that makes the delta mean
+/// something and because a suite that shrank needs both numbers to read.
+fn tests_note(delta: Option<&Contribution>, crate_total: u32) -> String {
+    match delta {
+        Some(Contribution::Added(n)) => format!("+{n} ({crate_total} in crate)"),
+        // A suite that SHRANK is not a contribution and must not read like one.
+        Some(Contribution::Removed(n)) => format!("-{n} ({crate_total} in crate)"),
+        Some(Contribution::Unchanged) => format!("+0 ({crate_total} in crate)"),
+        // `?`, never 0: an unmeasured contribution is not a contribution of none, and this
+        // column is read to decide which arm did more.
+        None => format!("? ({crate_total} in crate)"),
+    }
+}
+
 /// Run a program in `dir`, bounded, draining its output while it works.
 ///
 /// DRAIN THE PIPES WHILE WAITING. A pipe holds about 64KB; once it is full the child BLOCKS
@@ -651,8 +673,19 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
         Some(_) => String::new(),
         None => "  scope=?".to_string(),
     };
+    // THE ARM'S CONTRIBUTION, NOT THE CRATE'S TOTAL. This printed `tests=<crate total>`, so
+    // an arm that wrote nine tests showed `tests=1938` and one that wrote six showed
+    // `tests=547` -- the crate's number presented as the candidate's work, on the line an
+    // adjudicator reads to compare candidates. (bead farmerbob-apxp)
+    //
+    // The delta was already measured and already in score.json; only the display was wrong.
+    // The crate total stays, in parentheses, because it is the denominator that makes the
+    // delta mean something -- and because a suite that shrank needs both numbers to read.
+    //
+    // Missing prints `?`, never 0: an unmeasured contribution is not a contribution of none.
+    let delta_note = tests_note(tests_delta.value(), tests_run);
     println!(
-        "{src:<22} {:<11} tests={tests_run:<3} clippy={:<4} {:>5}L crates={:<2} {:>4}s{scope_note}",
+        "{src:<22} {:<11} tests {delta_note:<18} clippy={:<4} {:>5}L crates={:<2} {:>4}s{scope_note}",
         wire(verdict),
         clippy
             .value()
@@ -1975,5 +2008,37 @@ mod deleted_list {
                 .is_none(),
             "a killed run must not report a test count"
         );
+    }
+
+    /// THE ARM'S CONTRIBUTION, NOT THE CRATE'S TOTAL. This column printed the crate total,
+    /// so an arm that wrote nine tests showed `tests=1938`. That is the line an adjudicator
+    /// reads to compare candidates, and it showed every arm the same number.
+    #[test]
+    fn the_test_column_shows_what_the_arm_added() {
+        assert_eq!(
+            tests_note(Some(&Contribution::Added(9)), 1938),
+            "+9 (1938 in crate)"
+        );
+        assert_eq!(
+            tests_note(Some(&Contribution::Unchanged), 1938),
+            "+0 (1938 in crate)"
+        );
+    }
+
+    /// A SUITE THAT SHRANK IS NOT A CONTRIBUTION. It must not read like one, and `-3` is
+    /// the only honest way to say it.
+    #[test]
+    fn a_shrinking_suite_reads_as_negative() {
+        assert_eq!(
+            tests_note(Some(&Contribution::Removed(3)), 1935),
+            "-3 (1935 in crate)"
+        );
+    }
+
+    /// `?`, never 0. An unmeasured contribution is not a contribution of none, and this
+    /// column decides which arm is judged to have done more.
+    #[test]
+    fn an_unmeasured_contribution_is_not_zero() {
+        assert_eq!(tests_note(None, 1938), "? (1938 in crate)");
     }
 }
