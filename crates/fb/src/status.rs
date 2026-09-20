@@ -392,26 +392,31 @@ fn passing_display(m: &Measurement<u32>) -> String {
 /// `fb-target.sh`. `None` when the spec is unreadable or declares neither a `creates` nor a
 /// `modifies` target -- a fact about the spec, not an instrument failure, so this is `Option`
 /// rather than `Measurement`.
+/// What a spec declares, from THE one reader.
+///
+/// This scanned the lines itself and was FENCE-BLIND, so a spec documenting the marker
+/// format would be read as declaring whatever its example named -- the wave60 defect, which
+/// `precondition` was fixed for and this private copy never was. It also knew only
+/// `fb:creates`, which is the fault six of the seven retired shell readers shared.
+/// (bead farmerbob-9mh)
+///
+/// Only the FIRST declaration is returned, because the one caller asks a question about a
+/// single deliverable. A task may declare several since 2026-09-19; answering that question
+/// properly is `spec_fate`'s job, and `render_unspent_specs` already uses it.
 fn target_declaration(spec_path: &Path) -> Option<(String, String)> {
     let text = std::fs::read_to_string(spec_path).ok()?;
-    for line in text.lines() {
-        let Some(inner) = line
-            .trim()
-            .strip_prefix("<!--")
-            .and_then(|r| r.strip_suffix("-->"))
-        else {
-            continue;
-        };
-        let tokens: Vec<&str> = inner.split_whitespace().collect();
-        let [tag, path] = tokens[..] else { continue };
-        let verb = match tag {
-            "fb:creates" => "creates",
-            "fb:modifies" => "modifies",
-            _ => continue,
-        };
-        return Some((verb.to_string(), path.to_string()));
-    }
-    None
+    let first = farmerbob_core::target_decl::declared_all(&text)
+        .ok()?
+        .into_iter()
+        .next()?;
+    let verb = match first {
+        farmerbob_core::target_decl::Declaration::Creates(_) => "creates",
+        farmerbob_core::target_decl::Declaration::Modifies(_) => "modifies",
+    };
+    Some((
+        verb.to_string(),
+        farmerbob_core::target_decl::path(&first).to_string(),
+    ))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -653,6 +658,30 @@ fn shell_glob(dir: &Path, pattern: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A MARKER INSIDE A FENCE IS AN EXAMPLE. This reader scanned lines itself and was
+    /// fence-blind, so a spec documenting the marker format read as declaring whatever its
+    /// example named. It asks `target_decl` now, which is the one reader.
+    #[test]
+    fn a_fenced_example_is_not_the_declaration() {
+        let dir = tempdir("status-fence");
+        fs::create_dir_all(&dir).unwrap();
+        let f = "`".repeat(3);
+        let spec = dir.join("s.md");
+        fs::write(
+            &spec,
+            format!(
+                "# Task\n\n{f}text\n<!-- fb:creates EXAMPLE.rs -->\n{f}\n\n\
+                 <!-- fb:modifies real.rs -->\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            target_declaration(&spec),
+            Some(("modifies".to_string(), "real.rs".to_string()))
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
     use std::fs;
     use std::path::PathBuf;
 
