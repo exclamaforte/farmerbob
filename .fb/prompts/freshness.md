@@ -103,9 +103,13 @@ pub fn assess(artefact_present: bool, recorded: Option<&str>, input: &Key) -> Fr
    - FNV-1a over bytes, seeded `0xcbf2_9ce4_8422_2325`, exactly as `pipeline_cmd` does.
    - rendered `format!("{:012x}", ..)`: twelve lowercase hex digits, zero-padded.
 
-   Pin the format with a literal: `Key::of("")` must be twelve characters, all of
-   `0123456789abcdef`. A change to either the seed or the rendering fails here, rather than
-   silently invalidating every sidecar in the store.
+   The exact value is fixed here so no arm has to choose one. FNV-1a over no bytes is the
+   seed unchanged, so:
+
+       Key::of("").as_str() == "cbf29ce484222325"
+
+   A change to either the seed or the rendering fails that assertion, rather than silently
+   invalidating every sidecar in the store.
 
 ## Boundaries, at N and at zero
 
