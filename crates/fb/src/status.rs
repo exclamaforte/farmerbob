@@ -425,12 +425,31 @@ fn render_queue(repo: &Path, logs: &Path) -> String {
     s
 }
 
-/// Specs with no `.score.json` yet. A `creates` spec whose target already exists is dead --
-/// dispatch's precondition rejects it, or every arm correctly no-ops and measures nothing --
-/// so it is flagged STALE rather than listed as ordinary available work.  (bead farmerbob-m71)
+/// The repository tree, as `spec_fate` asks about it.
+struct RepoBase<'a>(&'a Path);
+
+impl farmerbob_core::spec_fate::Base for RepoBase<'_> {
+    fn exists(&self, path: &str) -> bool {
+        self.0.join(path).exists()
+    }
+}
+
+/// Specs with no `.score.json` yet, each judged against the live tree.
+///
+/// THE RULE LIVES IN `farmerbob_core::spec_fate`, AND NOW SO DOES THIS CALLER. This function
+/// used to decide staleness inline -- `verb == "creates" && repo.join(&path).is_file()` --
+/// citing the same bead the core module was written for. Two implementations of one rule,
+/// and the inline one was the weaker: it never flagged a `modifies` spec whose file had
+/// gone, and it could only ever see the first of several declared deliverables.
+///
+/// `spec_fate` handled both verbs and every declaration from the day it merged, and had
+/// ZERO callers, so production ran the worse copy. That is farmerbob-lzae's defect exactly,
+/// and it is one of the 44 unreached core modules farmerbob-oa5w counts.
 fn render_unspent_specs(repo: &Path, logs: &Path) -> String {
+    use farmerbob_core::spec_fate::{Fate, fate};
     let mut s = String::new();
     let prompts_dir = repo.join(".fb/prompts");
+    let base = RepoBase(repo);
     for name in shell_glob(&prompts_dir, "*.md") {
         let Some(b) = name.strip_suffix(".md") else {
             continue;
@@ -441,13 +460,27 @@ fn render_unspent_specs(repo: &Path, logs: &Path) -> String {
         if logs.join(format!("{b}.score.json")).is_file() {
             continue;
         }
-        let spec_path = prompts_dir.join(&name);
-        match target_declaration(&spec_path) {
-            Some((verb, path))
-                if verb == "creates" && !path.is_empty() && repo.join(&path).is_file() =>
-            {
+        let Ok(text) = std::fs::read_to_string(prompts_dir.join(&name)) else {
+            // An unreadable spec is not an ordinary one. Listing it as available work would
+            // offer something nothing can dispatch.
+            s.push_str(&format!("  unspent spec: {b}   ** UNREADABLE **\n"));
+            continue;
+        };
+        match fate(&text, &base) {
+            Fate::Stale { settled } => {
+                let grounds = settled
+                    .iter()
+                    .map(|(_, why)| why.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                s.push_str(&format!("  unspent spec: {b}   ** STALE: {grounds} **\n"));
+            }
+            // `settled` on a Runnable is a WARNING, not a verdict: the arm still has work,
+            // and these are the files it will find already done when it arrives.
+            Fate::Runnable { settled } if !settled.is_empty() => {
                 s.push_str(&format!(
-                    "  unspent spec: {b}   ** STALE: {path} already exists, a creates-task would no-op **\n"
+                    "  unspent spec: {b}   (already done: {})\n",
+                    settled.join(", ")
                 ));
             }
             _ => s.push_str(&format!("  unspent spec: {b}\n")),
@@ -1015,10 +1048,35 @@ mod tests {
         .unwrap();
         fs::write(dir.join("already-there.rs"), "//\n").unwrap();
         let out = render_unspent_specs(&dir, &logs);
-        assert_eq!(
-            out,
-            "  unspent spec: dead   ** STALE: already-there.rs already exists, a creates-task would no-op **\n"
-        );
+        // The grounds text now comes from `spec_fate::grounds`, which is the point: one
+        // rule, one wording, one place to change it. This asserts the BEHAVIOUR -- the spec
+        // is flagged stale and the offending path is named -- rather than a literal that
+        // belonged to the copy this function used to keep.
+        assert!(out.contains("unspent spec: dead"), "{out}");
+        assert!(out.contains("STALE"), "{out}");
+        assert!(out.contains("already-there.rs"), "{out}");
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&logs).ok();
+    }
+
+    /// The half the inline copy never had. It tested `verb == "creates"` only, so a
+    /// `modifies` spec whose file had been deleted -- by a merge, a rename, a reap -- was
+    /// listed as ordinary available work and dispatched, and every arm correctly no-ops on
+    /// a file that is not there. `spec_fate` has handled both verbs since the day it
+    /// merged, and had no callers.
+    #[test]
+    fn a_modifies_spec_whose_file_is_gone_is_also_stale() {
+        let dir = tempdir("stale-mod");
+        let logs = tempdir("stale-mod-logs");
+        fs::create_dir_all(dir.join(".fb/prompts")).unwrap();
+        fs::write(
+            dir.join(".fb/prompts/gone.md"),
+            "<!-- fb:modifies vanished.rs -->\n",
+        )
+        .unwrap();
+        let out = render_unspent_specs(&dir, &logs);
+        assert!(out.contains("STALE"), "{out}");
+        assert!(out.contains("vanished.rs"), "{out}");
         fs::remove_dir_all(&dir).ok();
         fs::remove_dir_all(&logs).ok();
     }
