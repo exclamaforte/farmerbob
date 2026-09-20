@@ -11,6 +11,58 @@ pub struct Lint {
     pub sentence: String,
 }
 
+/// The heading under which a spec discloses what will be measured.
+pub const RUBRIC_HEADING: &str = "## How this will be scored";
+
+/// Whether a spec tells the arm what it will be judged on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disclosure {
+    /// The spec carries the scoring rubric.
+    Disclosed,
+    /// The spec declares a deliverable -- so it can be dispatched and scored -- and does
+    /// not say what it will be scored on.
+    Undisclosed,
+    /// The spec declares no deliverable, so nothing can be dispatched against it and there
+    /// is nothing to disclose to.
+    NotDispatchable,
+}
+
+/// Whether a spec discloses its scoring rubric to the arm that will be measured by it.
+///
+/// UNDISCLOSED MEASURES MEASURE STYLE PRIORS, NOT CAPABILITY. In the round-1 bakeoff the
+/// winner was selected largely on 108 doc comments and a 10-module structure. Nobody asked
+/// for doc comments; six arms wrote zero, not because they cannot write documentation but
+/// because the task did not request it and they optimised for what it did. Clippy warnings,
+/// doc comments, `unwrap()` count and speed were all ranked and none were disclosed.
+/// (bead farmerbob-vg0)
+///
+/// The rubric reaches specs today by being appended to each one by hand, which is a
+/// convention rather than a mechanism, and four specs have already been written without it.
+///
+/// Only a spec that DECLARES a deliverable can be dispatched, so only those can have an arm
+/// measured against them; a spec with no declaration is `NotDispatchable` rather than
+/// undisclosed, because there is no arm to disclose anything to.
+///
+/// A heading inside a fenced code block does not count: a spec that shows the rubric as an
+/// EXAMPLE has not disclosed it, and this project has already been bitten by an example
+/// parsed as the real thing (the wave60 declaration defect).
+pub fn rubric_disclosed(text: &str, declares_deliverable: bool) -> Disclosure {
+    if !declares_deliverable {
+        return Disclosure::NotDispatchable;
+    }
+    let fences = fenced_ranges(text);
+    let mut at = 0usize;
+    for line in text.lines() {
+        if line.trim_start().starts_with(RUBRIC_HEADING)
+            && !fences.iter().any(|&(a, b)| at >= a && at < b)
+        {
+            return Disclosure::Disclosed;
+        }
+        at += line.len() + 1;
+    }
+    Disclosure::Undisclosed
+}
+
 /// The rules this module checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rule {
@@ -325,12 +377,24 @@ fn handle_fence_line(
     if marker_end > line_start && text.as_bytes()[marker_end - 1] == b'\r' {
         marker_end -= 1;
     }
-    if &text[line_start..marker_end] != "```" {
+    let line = &text[line_start..marker_end];
+    // AN OPENING FENCE MAY CARry AN INFO STRING. This required the line to be exactly
+    // "```", so ```rust, ```text and ```markdown were not seen as fences AT ALL and
+    // everything inside them was linted as prose. Every spec in this project pins its API
+    // in a ```rust block, so the lints were firing on example code -- an example read as
+    // the real thing, which is the wave60 defect in a second reader.
+    //
+    // A CLOSING fence must be bare, as CommonMark requires: otherwise a second ```rust
+    // inside a block would close it early.
+    if !line.trim_end().starts_with("```") {
         return;
     }
 
     match *opening {
         Some(start) => {
+            if line.trim_end() != "```" {
+                return;
+            }
             ranges.push((start, next_line_start));
             *opening = None;
         }
@@ -340,7 +404,7 @@ fn handle_fence_line(
 
 #[cfg(test)]
 mod tests {
-    use super::{Rule, decision_verbs, format_nouns, lint};
+    use super::{Disclosure, Rule, decision_verbs, format_nouns, lint, rubric_disclosed};
 
     #[test]
     fn detects_decision_and_format_shapes() {
@@ -406,5 +470,76 @@ mod tests {
         );
         assert!(lint("Restated text and reorder it, then pin it.").is_empty());
         assert!(lint("Stating a choice and pinning it.").is_empty());
+    }
+
+    /// UNDISCLOSED MEASURES MEASURE STYLE PRIORS. The round-1 winner was picked largely on
+    /// doc comments and module count, neither of which the task asked for; six arms wrote
+    /// zero doc comments because nothing requested any.  (bead farmerbob-vg0)
+    #[test]
+    fn a_dispatchable_spec_without_the_rubric_is_undisclosed() {
+        assert_eq!(
+            rubric_disclosed("# Task\nDo the thing.\n", true),
+            Disclosure::Undisclosed
+        );
+        assert_eq!(
+            rubric_disclosed("# Task\n## How this will be scored\ntests, clippy\n", true),
+            Disclosure::Disclosed
+        );
+    }
+
+    /// A spec that declares no deliverable cannot be dispatched, so there is no arm to
+    /// disclose anything to. Reporting it as Undisclosed would bury the real cases in a
+    /// list of notes and templates.
+    #[test]
+    fn a_spec_that_declares_nothing_is_not_dispatchable_rather_than_undisclosed() {
+        assert_eq!(
+            rubric_disclosed("# Notes\n", false),
+            Disclosure::NotDispatchable
+        );
+        // Even one that HAS the rubric: without a deliverable it still dispatches nothing.
+        assert_eq!(
+            rubric_disclosed("## How this will be scored\nx\n", false),
+            Disclosure::NotDispatchable
+        );
+    }
+
+    /// A rubric shown as an EXAMPLE inside a fence has not been disclosed. This project has
+    /// already been bitten by an example parsed as the real thing: the wave60 defect, where
+    /// a spec documenting the marker format was refused on its own example.
+    #[test]
+    fn a_rubric_heading_inside_a_fence_is_an_example_not_a_disclosure() {
+        let text = "# Task\n\n```markdown\n## How this will be scored\n```\n";
+        assert_eq!(rubric_disclosed(text, true), Disclosure::Undisclosed);
+    }
+
+    /// An opening fence may carry an INFO STRING. This required the line to be exactly
+    /// "```", so ```rust, ```text and ```markdown were not recognised as fences at all and
+    /// their contents were linted as prose. Every spec in this project pins its API in a
+    /// ```rust block, so the lints fired on example code -- an example read as the real
+    /// thing, which is the wave60 declaration defect appearing in a second reader.
+    #[test]
+    fn a_typed_fence_is_still_a_fence() {
+        let f = "`".repeat(3);
+        let sentence = "The arm must state the shape of the output and pin it.";
+        for info in ["rust", "text", "markdown", ""] {
+            let text = format!("# Task\n\n{f}{info}\n{sentence}\n{f}\n");
+            assert!(
+                lint(&text).is_empty(),
+                "a sentence inside a ```{info} fence is an EXAMPLE: {:?}",
+                lint(&text)
+            );
+        }
+        // The same sentence outside any fence still lints.
+        assert!(!lint(&format!("# Task\n{sentence}\n")).is_empty());
+    }
+
+    /// A closing fence must be BARE. If an info-string line could close a block, a second
+    /// ```rust inside one would end it early and the rest would lint as prose.
+    #[test]
+    fn a_closing_fence_must_be_bare() {
+        let f = "`".repeat(3);
+        let sentence = "The arm must state the shape of the output and pin it.";
+        let text = format!("# Task\n\n{f}rust\n{f}rust\n{sentence}\n{f}\n");
+        assert!(lint(&text).is_empty(), "{:?}", lint(&text));
     }
 }
