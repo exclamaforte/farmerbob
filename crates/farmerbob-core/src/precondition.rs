@@ -108,12 +108,33 @@ pub struct Violation {
     pub exists: bool,
 }
 
+/// Marker words this module does not answer for, and must not refuse.
+///
+/// Each is read by another part of the harness, and each was checked: `fb:reads` by
+/// `dispatch_cmd::reads_of` (dispatch_cmd.rs:85), `fb:case` and `fb:differential` by
+/// `differential` (differential.rs:96 and :86).
+///
+/// `fb:deletes` is deliberately NOT here. It has no reader anywhere in this tree -- every
+/// occurrence is this module's own test fixture for an unknown word -- so it stays
+/// `UnknownWord`, which is what a typo should be.
+///
+/// A SUPERSET, never a closed world -- a family added here without being added there, or
+/// the reverse, is how `fb:reads` came to make fifteen specs undispatchable.
+/// (bead farmerbob-2ve)
+pub const OTHER_MARKER_FAMILIES: [&str; 3] = ["reads", "case", "differential"];
+
+/// Whether `word` is one of the two deliverable verbs this module answers for.
+fn is_deliverable_word(word: &str) -> bool {
+    word == "creates" || word == "modifies"
+}
+
 /// Why a line that looks like a declaration is not one.
 ///
 /// Reported so a spec author sees the difference between "you wrote no marker" and
 /// "you wrote a marker I refused", which are otherwise indistinguishable from
 /// [`Precondition::Undeclared`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+
 pub enum Rejected {
     /// A tab appeared where the grammar requires spaces.
     Tab,
@@ -304,10 +325,25 @@ fn determine_rejection(trimmed_start: &str) -> Option<Rejected> {
         return Some(Rejected::TrailingText);
     }
 
-    // 3. UnknownWord: The marker word was neither `creates` nor `modifies`.
-    let has_unknown_word = markers
-        .iter()
-        .any(|m| m.word != "creates" && m.word != "modifies");
+    // 3. UnknownWord: the marker word names no family this project uses.
+    //
+    // A WORD FROM ANOTHER FAMILY IS NOT A MALFORMED DELIVERABLE MARKER. This refused every
+    // `fb:` word that was not `creates` or `modifies`, and the harness emits several others:
+    // `fb:reads` (28 uses, consumed by `dispatch_cmd::reads_of`), `fb:case` and
+    // `fb:differential` (19 and 12, consumed by `differential`), `fb:deletes` (9).
+    //
+    // So a spec carrying `<!-- fb:reads sources.toml -->` was REFUSED outright, and because
+    // the refusal is silent it simply could not be dispatched, pipelined, or have its fate
+    // decided, with nothing saying why. Fifteen specs in `.fb/prompts` carry `fb:reads`;
+    // five were checked and all five were silently refused.  (bead farmerbob-9mh, t8a5)
+    //
+    // This module answers ONE question -- what does this spec declare as its deliverable --
+    // and a marker addressed to a different reader is not its business. It is skipped, not
+    // refused. A word belonging to NO family is still `UnknownWord`, because that is a typo
+    // and `fb:createsx` appears once in this tree.
+    let has_unknown_word = markers.iter().any(|m| {
+        !is_deliverable_word(&m.word) && !OTHER_MARKER_FAMILIES.contains(&m.word.as_str())
+    });
     if has_unknown_word {
         return Some(Rejected::UnknownWord);
     }
@@ -1114,5 +1150,52 @@ mod escalated_marker_grammar_or_inkling {
         let prompt = "~~~\n<!-- fb:creates x.rs -->\n~~~";
         assert!(declarations(prompt).is_empty());
         assert_eq!(check(prompt, &[]), Precondition::Undeclared);
+    }
+
+    /// A WORD FROM ANOTHER FAMILY IS NOT A MALFORMED DELIVERABLE MARKER. This module refused
+    /// every `fb:` word that was not `creates` or `modifies`, and the harness emits several
+    /// others -- `fb:reads` is consumed by `dispatch_cmd::reads_of` and appears in fifteen
+    /// specs. Each of those specs was REFUSED outright, and silently, so it could not be
+    /// dispatched, pipelined or have its fate decided, with nothing saying why.
+    #[test]
+    fn a_marker_from_another_family_is_skipped_not_refused() {
+        let prompt = "<!-- fb:reads sources.toml -->\n<!-- fb:creates a.rs -->\n";
+        assert_eq!(
+            rejections(prompt),
+            Vec::new(),
+            "fb:reads is not this module's business"
+        );
+        assert_eq!(
+            declarations(prompt)
+                .iter()
+                .map(|d| d.path.clone())
+                .collect::<Vec<_>>(),
+            vec!["a.rs".to_string()]
+        );
+    }
+
+    /// Every family in the exempt list is skipped, checked by ITERATING the list rather than
+    /// restating it, so a family added without a reader is still caught by the doc's claim.
+    #[test]
+    fn every_exempt_family_is_skipped() {
+        for word in OTHER_MARKER_FAMILIES {
+            let prompt = format!("<!-- fb:{word} x -->\n<!-- fb:creates a.rs -->\n");
+            assert_eq!(
+                rejections(&prompt),
+                Vec::new(),
+                "fb:{word} should be skipped"
+            );
+        }
+    }
+
+    /// A word belonging to NO family is still a typo, and `fb:createsx` appears once in this
+    /// tree. Exempting the unknown would turn a misspelling into a spec that declares
+    /// nothing, silently.
+    #[test]
+    fn a_word_in_no_family_is_still_an_unknown_word() {
+        assert_eq!(
+            rejections("<!-- fb:createsx a.rs -->"),
+            vec![(1, Rejected::UnknownWord)]
+        );
     }
 }

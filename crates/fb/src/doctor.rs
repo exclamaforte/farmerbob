@@ -1374,23 +1374,21 @@ struct SpecTargets {
 /// themselves. A spec with neither verb yields two empty lists; that is the "no target
 /// declared" case `check_spec_targets` reports.
 fn parse_spec_targets(text: &str) -> SpecTargets {
+    // ASK THE ONE READER. This scanned the lines itself and was FENCE-BLIND, so a marker
+    // shown as an EXAMPLE inside a ``` block was reported as a live declaration. Demonstrated
+    // on 2026-09-19: a spec whose fenced example named `crates/fb/src/score.rs` and whose
+    // real marker named something else made `fb doctor` report the example, while `fb decl`
+    // correctly reported the real target. That is the wave60 defect -- an example parsed as
+    // the real thing -- which `precondition` was fixed for and this private copy never was.
+    //
+    // Seven shell scripts once each reimplemented this reader and six knew only `creates`.
+    // The scripts are retired; three Rust copies replaced them. (bead farmerbob-9mh)
     let mut creates = Vec::new();
     let mut modifies = Vec::new();
-    for line in text.lines() {
-        let Some(rest) = line.trim().strip_prefix("<!--") else {
-            continue;
-        };
-        let rest = rest.trim_start();
-        if let Some(after) = rest.strip_prefix("fb:creates")
-            && let Some(path) = after.trim_start().strip_suffix("-->")
-            && !path.trim().is_empty()
-        {
-            creates.push(path.trim().to_string());
-        } else if let Some(after) = rest.strip_prefix("fb:modifies")
-            && let Some(path) = after.trim_start().strip_suffix("-->")
-            && !path.trim().is_empty()
-        {
-            modifies.push(path.trim().to_string());
+    for declaration in farmerbob_core::target_decl::declared_all(text).unwrap_or_default() {
+        match declaration {
+            farmerbob_core::target_decl::Declaration::Creates(path) => creates.push(path),
+            farmerbob_core::target_decl::Declaration::Modifies(path) => modifies.push(path),
         }
     }
     SpecTargets { creates, modifies }
@@ -2363,5 +2361,26 @@ esac
             "farmerbob_core",
         );
         assert!(dead.is_empty(), "{dead:?}");
+    }
+
+    /// A MARKER INSIDE A FENCE IS AN EXAMPLE. This parser scanned lines itself and was
+    /// fence-blind, so a spec DOCUMENTING the marker format was reported as declaring
+    /// whatever its example named -- the wave60 defect, which `precondition` was fixed for
+    /// and this private copy never was. Demonstrated live: `fb doctor` named a fenced
+    /// example's path while `fb decl` named the real one. (bead farmerbob-9mh)
+    #[test]
+    fn a_fenced_example_is_not_a_declaration() {
+        let f = "`".repeat(3);
+        let text = format!(
+            "# Task\n\n{f}text\n<!-- fb:creates crates/fb/src/EXAMPLE.rs -->\n{f}\n\n\
+             <!-- fb:modifies crates/fb/src/real.rs -->\n"
+        );
+        let targets = parse_spec_targets(&text);
+        assert!(
+            targets.creates.is_empty(),
+            "the fenced example is not a declaration: {:?}",
+            targets.creates
+        );
+        assert_eq!(targets.modifies, vec!["crates/fb/src/real.rs".to_string()]);
     }
 }
