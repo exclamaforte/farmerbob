@@ -40,6 +40,36 @@ fn core_registry(reg: &crate::sources::Registry) -> Registry {
     Registry { sources }
 }
 
+/// The exit status a log records, when the run left no run record.
+///
+/// A critic writes no run json, so `run_facts` finds nothing and `fb park` refuses -- which
+/// is right in general: "a run with no recorded facts is not a run that succeeded, and
+/// guessing would park arms on evidence nobody gathered."
+///
+/// But the exit code is not a guess here. `launch_in` records it in the log itself:
+///
+///     InstrumentFailed { reason: "agy-sonnet-46 exited with exit status: 3: ..." }
+///
+/// and the code is load-bearing evidence, not a formality: `limit_signal::classify` returns
+/// `Ambiguous` for a refusal-shaped phrase seen with exit code 0, precisely so a caller
+/// cannot park on wording alone. Reading the recorded status is using evidence the harness
+/// gathered; inventing one would be the thing the refusal exists to prevent.
+///
+/// (bead farmerbob-4uha: agy-opus-46 and agy-sonnet-46 each burned a critic dispatch on the
+/// same account-wide quota on 2026-09-19, twelve minutes apart, and neither was parked.)
+pub fn exit_code_from_log(head: &str) -> Option<i32> {
+    const MARKER: &str = "exited with exit status: ";
+    let at = head.find(MARKER)? + MARKER.len();
+    let digits: String = head[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 /// Where a run's log lives, for either kind of run.
 ///
 /// An implementer writes `<task>--<arm>.log` at the logs root; a CRITIC writes
@@ -168,13 +198,49 @@ pub fn run_cmd(task: &str, arm: &str, apply: bool, default_backoff_secs: u64) ->
         );
         return 2;
     };
-    let Some(facts) = run_facts(&logs, task, arm) else {
-        // Refusing is the point. A run with no recorded facts is not a run that
-        // succeeded, and guessing would park arms on evidence nobody gathered.
-        eprintln!("fb park: no run record for {task}--{arm}; refusing to guess");
-        return 2;
+    let class = match run_facts(&logs, task, arm) {
+        Some(facts) => classify(&facts, &rules(default_backoff_secs)),
+        None => {
+            // No run record -- a critic writes none. The log may still carry the exit
+            // status the launcher recorded, and that is evidence, not a guess.
+            let Some(code) = exit_code_from_log(&head) else {
+                // Refusing is the point. A run with no recorded facts and no recorded exit
+                // status is not a run that succeeded, and guessing would park arms on
+                // evidence nobody gathered.
+                eprintln!(
+                    "fb park: no run record for {task}--{arm}, and its log records no exit \
+                     status; refusing to guess"
+                );
+                return 2;
+            };
+            let now_s = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            match farmerbob_core::limit_signal::classify(
+                &rules(default_backoff_secs),
+                code,
+                &head,
+                now_s,
+            ) {
+                farmerbob_core::limit_signal::Classification::Limited { .. } => {
+                    println!(
+                        "{task}--{arm}: no run record; classified from the log, which \
+                         records exit status {code}"
+                    );
+                    farmerbob_core::outcome::OutcomeClass::QuotaLimited
+                }
+                // Ambiguous exists so a caller cannot park on wording alone.
+                other => {
+                    eprintln!(
+                        "fb park: no run record for {task}--{arm}; its log (exit {code}) \
+                         classifies as {other:?}, which is not a refusal to park on"
+                    );
+                    return 2;
+                }
+            }
+        }
     };
-    let class = classify(&facts, &rules(default_backoff_secs));
 
     let now_ms = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(d) => d.as_millis() as u64,
@@ -331,6 +397,39 @@ mod tests {
         assert!(
             paths[0].to_string_lossy().ends_with("t--a.log"),
             "{paths:?}"
+        );
+    }
+
+    /// A CRITIC WRITES NO RUN RECORD, so `fb park` refused and nothing could park it. The
+    /// exit status is in the log all the same -- `launch_in` records it -- and that is
+    /// evidence the harness gathered rather than a guess.
+    ///
+    /// agy-opus-46 and agy-sonnet-46 each burned a critic dispatch on the same account-wide
+    /// quota on 2026-09-19, twelve minutes apart, and neither was parked. (farmerbob-4uha)
+    #[test]
+    fn the_exit_status_is_read_from_a_critics_log() {
+        let head = "InstrumentFailed { reason: \"agy-sonnet-46 exited with exit status: 3: \
+                    \\n=== stderr ===\\nerror: Individual quota reached.\" }";
+        assert_eq!(exit_code_from_log(head), Some(3));
+    }
+
+    /// A log with no recorded status yields None, and the caller refuses rather than
+    /// inventing one. The exit code is load-bearing: `limit_signal::classify` returns
+    /// Ambiguous for refusal-shaped wording seen with code 0, precisely so nothing parks on
+    /// wording alone.
+    #[test]
+    fn a_log_without_a_recorded_status_yields_nothing() {
+        assert_eq!(exit_code_from_log("error: Individual quota reached."), None);
+        assert_eq!(exit_code_from_log(""), None);
+        assert_eq!(exit_code_from_log("exited with exit status: "), None);
+    }
+
+    /// Zero is a real recorded status and must come back as such, not as "absent".
+    #[test]
+    fn a_recorded_zero_is_a_status_not_an_absence() {
+        assert_eq!(
+            exit_code_from_log("arm exited with exit status: 0 fine"),
+            Some(0)
         );
     }
 }

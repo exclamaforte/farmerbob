@@ -401,6 +401,82 @@ fn leading_digits(text: &str) -> &str {
 // out of the past even for `0` or saturating inputs. The keyword list is a
 // known subset of the phrasings that introduce a relative reset, not a closed
 // set; see `parse_reset`.
+/// A duration written after a retry keyword, in seconds.
+///
+/// UNITS ARE NOT OPTIONAL TO READ. This used to take the leading digits and call them
+/// seconds, which is right for an HTTP `Retry-After: 120` and wrong for every duration a
+/// provider writes for a human. agy says
+///
+///     Individual quota reached ... Resets in 3h46m52s.
+///
+/// and that parsed as THREE SECONDS. So a park computed from it expired the moment it was
+/// written, and the longer the refusal the more completely the park did nothing -- exactly
+/// inverted. Both agy arms were refused on 2026-09-19 with hour-scale resets, and the park
+/// this would have applied was under four seconds.  (bead farmerbob-4uha)
+///
+/// A bare number keeps its old meaning, seconds, so `Retry-After` is unaffected. A number
+/// followed by a unit is scaled, and adjacent `<number><unit>` pairs accumulate, because
+/// `3h46m52s` is one duration written in three parts.
+fn parse_duration_secs(tail: &str) -> Option<u64> {
+    let mut rest = tail;
+    let mut total: u64 = 0;
+    let mut saw_any = false;
+
+    loop {
+        let digits = leading_digits(rest);
+        if digits.is_empty() {
+            break;
+        }
+        let value: u64 = digits.parse().ok()?;
+        rest = rest.get(digits.len()..).unwrap_or("");
+        // An optional space between the number and its unit: "5 minutes".
+        let after_space = skip_while(rest, |c| c == ' ');
+        let (multiplier, consumed) = unit_at(after_space);
+        total = total.saturating_add(value.saturating_mul(multiplier));
+        saw_any = true;
+        if consumed == 0 {
+            // No unit: a bare number is seconds, and nothing can follow it.
+            break;
+        }
+        rest = after_space.get(consumed..).unwrap_or("");
+    }
+
+    saw_any.then_some(total)
+}
+
+/// The unit at the head of `s`: its multiplier in seconds, and how many bytes it occupies.
+///
+/// `(1, 0)` means no unit was found, so the caller treats the number as bare seconds.
+/// Longest spellings are tried first, or `m` would match the start of `minutes`.
+fn unit_at(s: &str) -> (u64, usize) {
+    const UNITS: &[(&str, u64)] = &[
+        ("hours", 3600),
+        ("hour", 3600),
+        ("hrs", 3600),
+        ("hr", 3600),
+        ("h", 3600),
+        ("minutes", 60),
+        ("minute", 60),
+        ("mins", 60),
+        ("min", 60),
+        ("m", 60),
+        ("seconds", 1),
+        ("second", 1),
+        ("secs", 1),
+        ("sec", 1),
+        ("s", 1),
+    ];
+    for (name, mult) in UNITS {
+        if s.len() >= name.len()
+            && s.get(..name.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(name))
+        {
+            return (*mult, name.len());
+        }
+    }
+    (1, 0)
+}
+
 fn parse_relative_seconds(output: &str, now: u64) -> Option<u64> {
     const KEYWORDS: &[&str] = &[
         "retry-after",
@@ -428,12 +504,9 @@ fn parse_relative_seconds(output: &str, now: u64) -> Option<u64> {
             {
                 tail = tail.get(3..).unwrap_or("");
             }
-            let digits = leading_digits(tail);
-            if digits.is_empty() {
-                continue;
-            }
-            if let Ok(seconds) = digits.parse::<u64>() {
-                return Some(now.saturating_add(seconds));
+            match parse_duration_secs(tail) {
+                Some(seconds) => return Some(now.saturating_add(seconds)),
+                None => continue,
             }
         }
     }
@@ -1296,5 +1369,52 @@ mod osc_regression {
     #[test]
     fn an_unterminated_osc_consumes_the_rest() {
         assert_eq!(strip_ansi("keep\u{1b}]0;never closed"), "keep");
+    }
+
+    /// UNITS ARE NOT OPTIONAL TO READ. The leading digits used to be taken as seconds, which
+    /// is right for `Retry-After: 120` and wrong for every duration a provider writes for a
+    /// human. agy's real refusal -- "Resets in 3h46m52s" -- parsed as THREE SECONDS, so the
+    /// park expired the moment it was written, and the LONGER the refusal the more
+    /// completely the park did nothing.  (bead farmerbob-4uha)
+    #[test]
+    fn a_compound_duration_is_read_whole() {
+        let text = "error: Individual quota reached. Please upgrade your subscription to \
+                    increase your limits. Resets in 3h46m52s.";
+        assert_eq!(
+            parse_reset(text, 1_000),
+            Some(1_000 + 3 * 3600 + 46 * 60 + 52),
+            "3h46m52s is 13612 seconds, not 3"
+        );
+    }
+
+    /// A BARE NUMBER KEEPS ITS OLD MEANING. HTTP states `Retry-After` in seconds with no
+    /// unit, and that must not change.
+    #[test]
+    fn a_bare_number_is_still_seconds() {
+        assert_eq!(parse_reset("retry-after: 120", 1_000), Some(1_120));
+    }
+
+    /// Spelled-out units, with and without a space.
+    #[test]
+    fn spelled_units_are_read() {
+        assert_eq!(parse_reset("try again in 5 minutes", 0), Some(300));
+        assert_eq!(parse_reset("retry in 2 hours", 0), Some(7_200));
+        assert_eq!(parse_reset("resets in 90s", 0), Some(90));
+        assert_eq!(parse_reset("resets in 1h30m", 0), Some(5_400));
+    }
+
+    /// `m` must not swallow the start of `minutes`, and the longest spelling wins.
+    #[test]
+    fn a_unit_prefix_does_not_shadow_a_longer_spelling() {
+        assert_eq!(parse_reset("retry in 1 minute", 0), Some(60));
+        assert_eq!(parse_reset("retry in 1 min", 0), Some(60));
+        assert_eq!(parse_reset("retry in 1m", 0), Some(60));
+    }
+
+    /// A keyword with no number after it yields nothing, rather than a park of zero. A park
+    /// that expires immediately is indistinguishable from no park at all.
+    #[test]
+    fn a_keyword_with_no_duration_yields_nothing() {
+        assert_eq!(parse_reset("resets in a little while", 1_000), None);
     }
 }
