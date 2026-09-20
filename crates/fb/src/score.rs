@@ -749,7 +749,26 @@ fn tests_delta_json(delta: &Measurement<Contribution>) -> serde_json::Value {
         Measurement::Observed(Contribution::Unchanged) => {
             serde_json::json!({"kind": "Unchanged"})
         }
-        Measurement::Missing(_) => serde_json::Value::Null,
+        // NULL DISCARDS THE REASON. `Absent` distinguishes NotAttempted from
+        // InstrumentFailed from NothingToMeasure from Untrusted, and a consumer reading
+        // `null` can tell none of them apart -- so "the baseline archive could not be
+        // extracted" and "this run was never measured" arrive identically, which is the
+        // whole distinction `Measurement` exists to carry. (bead farmerbob-evuz)
+        Measurement::Missing(absent) => serde_json::json!({
+            "kind": "Missing",
+            "why": absent_reason(absent),
+        }),
+    }
+}
+
+/// One `Absent` as a short reason string, for a record a person or a tool reads back.
+fn absent_reason(absent: &farmerbob_core::measurement::Absent) -> String {
+    use farmerbob_core::measurement::Absent;
+    match absent {
+        Absent::NotAttempted => "not attempted".to_string(),
+        Absent::InstrumentFailed { reason } => format!("instrument failed: {reason}"),
+        Absent::NothingToMeasure { reason } => format!("nothing to measure: {reason}"),
+        Absent::Untrusted { reason } => format!("untrusted: {reason}"),
     }
 }
 
@@ -2040,5 +2059,37 @@ mod deleted_list {
     #[test]
     fn an_unmeasured_contribution_is_not_zero() {
         assert_eq!(tests_note(None, 1938), "? (1938 in crate)");
+    }
+
+    /// NULL DISCARDS THE REASON. `Absent` separates NotAttempted from InstrumentFailed from
+    /// NothingToMeasure from Untrusted, and a consumer reading `null` can tell none of them
+    /// apart -- so "the baseline archive could not be extracted" and "this was never
+    /// measured" arrive identically. That is the whole distinction `Measurement` exists to
+    /// carry, thrown away at the moment the record is written. (bead farmerbob-evuz)
+    #[test]
+    fn a_missing_delta_records_why_rather_than_null() {
+        use farmerbob_core::measurement::Absent;
+        let failed = tests_delta_json(&Measurement::Missing(Absent::InstrumentFailed {
+            reason: "the baseline archive could not be extracted".to_string(),
+        }));
+        assert_eq!(failed["kind"], "Missing");
+        assert!(
+            failed["why"].as_str().unwrap().contains("baseline archive"),
+            "{failed}"
+        );
+
+        // And the four Absent kinds do not collapse into one another.
+        let never = tests_delta_json(&Measurement::Missing(Absent::NotAttempted));
+        assert_ne!(never["why"], failed["why"]);
+        assert!(never["why"].as_str().unwrap().contains("not attempted"));
+    }
+
+    /// An observed delta is unchanged: this is about the Missing arm only, and a consumer
+    /// reading `count` and `kind` must keep working.
+    #[test]
+    fn an_observed_delta_keeps_its_shape() {
+        let added = tests_delta_json(&Measurement::Observed(Contribution::Added(9)));
+        assert_eq!(added["kind"], "Added");
+        assert_eq!(added["count"], 9);
     }
 }
