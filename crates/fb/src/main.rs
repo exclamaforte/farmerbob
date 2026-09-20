@@ -1626,8 +1626,12 @@ mod tests {
                 task_suffix
             );
             let logs_dir = paths::logs();
-            let _ = std::fs::create_dir_all(&logs_dir);
             let path = logs_dir.join(format!("{task}.score.json"));
+            // `create_dir_all` on the file's PARENT, not on the logs root: a task name may
+            // carry a separator, and then the score file lives a level down.
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
             std::fs::write(&path, contents).expect("write temp verify score file");
             TempVerifyScore { task, path }
         }
@@ -1644,7 +1648,42 @@ mod tests {
     impl Drop for TempVerifyScore {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.path);
+            // A task name may carry a separator, which puts the score file in a
+            // subdirectory. Remove it if it is now empty; `remove_dir` refuses a
+            // non-empty one, so this cannot take anything with it.
+            if let Some(parent) = self.path.parent()
+                && parent != paths::logs()
+            {
+                let _ = std::fs::remove_dir(parent);
+            }
         }
+    }
+
+    /// A task name containing a path separator is passed through to
+    /// `paths::logs().join(...)` unchanged, which places the score file in a subdirectory.
+    ///
+    /// The spec neither permits nor forbids this, and `PathBuf::join` handles an embedded
+    /// separator on every platform, so it works. This test exists to record that it is
+    /// KNOWN to work rather than an accident nobody has looked at -- the critic's point
+    /// being that a reader six months from now cannot otherwise tell the two apart.
+    ///
+    /// It goes through `TempVerifyScore`, whose `Drop` cleans up on every exit path. The
+    /// version this came from did its own `remove_file`/`remove_dir` at the end of the
+    /// test body, so a failing assertion leaked both the file and the directory.
+    #[test]
+    fn a_task_name_with_a_separator_is_passed_through_to_a_subdirectory() {
+        let temp = TempVerifyScore::new("sub/task_boundary", "[]");
+        assert!(
+            temp.path().parent() != Some(paths::logs().as_path()),
+            "the separator should have produced a subdirectory: {}",
+            temp.path().display()
+        );
+        let (rc, stdout) =
+            run_verify_from_args(&[temp.task()]).expect("run verify with a separator in the task");
+        let mut expected = Vec::new();
+        let expected_code = verify_gather::run(temp.path(), &mut expected);
+        assert_eq!(rc, expected_code);
+        assert_eq!(stdout, expected);
     }
 
     fn run_verify_from_args(args: &[&str]) -> Result<(i32, Vec<u8>), clap::Error> {
