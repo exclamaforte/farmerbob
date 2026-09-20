@@ -11,12 +11,28 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Whether a directory entry is a stage's OUTPUT rather than its input or its transcript.
+///
+/// A critique run writes three files per critic: `<critic>.prompt.md` (what it was asked),
+/// `<critic>.log` (what it said while working) and `<critic>.on.<subject>.md` (the review).
+/// Only the last is the artefact.
+pub fn is_stage_output(name: &str) -> bool {
+    !(name.ends_with(".prompt.md") || name.ends_with(".log"))
+}
+
 /// Whether a stage's artefact exists in a form that counts.
 ///
-/// A non-empty FILE, or a DIRECTORY holding at least one entry. critique writes a
-/// directory, and the pipeline declared its artefact as a file it has never written -- so
+/// A non-empty FILE, or a DIRECTORY holding at least one non-empty OUTPUT. critique writes
+/// a directory, and the pipeline declared its artefact as a file it has never written -- so
 /// the stage reported "RAN BUT PRODUCED NOTHING" on every run where it had in fact written
 /// every review asked of it.
+///
+/// "At least one entry" was the fix for that and went one step too far: the prompt is
+/// written BEFORE the critic is dispatched, so a critic that dies -- or is killed, as I
+/// killed one today -- leaves a directory holding its own input, and the stage reads as
+/// complete for ever after. The pipeline then skips it on every later run, and the task's
+/// subjective tier is dark with nothing reporting a failure. A stage's input must never be
+/// able to satisfy the test for its output.
 pub fn have_artefact(path: &Path) -> bool {
     if let Ok(m) = fs::metadata(path) {
         if m.is_file() {
@@ -24,7 +40,12 @@ pub fn have_artefact(path: &Path) -> bool {
         }
         if m.is_dir() {
             return fs::read_dir(path)
-                .map(|mut d| d.next().is_some())
+                .map(|d| {
+                    d.flatten().any(|e| {
+                        e.file_name().to_str().is_some_and(is_stage_output)
+                            && e.metadata().map(|m| m.len() > 0).unwrap_or(false)
+                    })
+                })
                 .unwrap_or(false);
         }
     }
@@ -427,5 +448,46 @@ mod tests {
     #[test]
     fn a_spec_that_declares_nothing_constrains_nothing() {
         assert!(target_is_declared("anything", &[]));
+    }
+
+    /// A critic that dies after its prompt is written leaves the directory holding its own
+    /// INPUT. That used to satisfy "at least one entry", so the stage read as complete for
+    /// ever after, the pipeline skipped it on every later run, and the task's subjective
+    /// tier stayed dark with nothing reporting a failure.
+    #[test]
+    fn a_prompt_alone_is_not_a_critique() {
+        let d = std::env::temp_dir().join(format!("fb-artefact-a-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("agy-opus-46.prompt.md"), "ask me this").unwrap();
+        fs::write(d.join("agy-opus-46.log"), "thinking out loud").unwrap();
+        assert!(
+            !have_artefact(&d),
+            "a prompt and a transcript are not a review"
+        );
+        fs::write(d.join("agy-opus-46.on.codex-luna.md"), "### CLAIMS\n").unwrap();
+        assert!(have_artefact(&d), "the review itself counts");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// An EMPTY review is not a review. A critic that created the file and wrote nothing
+    /// must not mark the stage done.
+    #[test]
+    fn an_empty_review_does_not_count() {
+        let d = std::env::temp_dir().join(format!("fb-artefact-b-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("x.on.y.md"), "").unwrap();
+        assert!(!have_artefact(&d));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// The rule names inputs and transcripts, so anything else a stage writes still counts.
+    #[test]
+    fn inputs_and_transcripts_are_named_and_nothing_else_is_excluded() {
+        assert!(!is_stage_output("gemini-38-flash.prompt.md"));
+        assert!(!is_stage_output("gemini-38-flash.log"));
+        assert!(is_stage_output("gemini-38-flash.on.codex-luna.md"));
+        assert!(is_stage_output("claims.json"));
     }
 }
