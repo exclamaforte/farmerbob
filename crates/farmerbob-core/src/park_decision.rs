@@ -4,7 +4,7 @@
 //! - [`crate::quota::park_after`] decides WHETHER a refused run should park and
 //!   until when. Its own doc says it decides about ONE ARM FROM ONE RUN and that
 //!   a caller parking a whole provider is doing something it never authorised.
-//! - [`crate::quota::blast_of`] and [`crate::quota::arms_in_blast`] decide HOW
+//! - [`crate::quota::blast_call`] and [`crate::quota::arms_in_blast`] decide HOW
 //!   WIDE a refusal reaches: the arm, its vendor bucket, or the whole credential.
 //! - [`crate::availability::availability`] reads a park back out and distinguishes
 //!   a live park from one whose instant has passed and which nothing revisited.
@@ -14,7 +14,7 @@
 //! dispatcher can act on.
 
 use crate::outcome::OutcomeClass;
-use crate::quota::{Blast, Park, Registry, arms_in_blast, blast_of, park_after};
+use crate::quota::{Blast, BlastCall, Park, Registry, arms_in_blast, blast_call, park_after};
 
 /// What a dispatcher should do to the registry after one run ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +25,13 @@ pub enum Decision {
     /// about availability must not name a blast radius: naming one invites a
     /// caller to use it.
     Leave,
+    /// A refusal was seen, but its wording did not identify a known blast width.
+    UnknownBlast {
+        /// The arm that was refused.
+        arm: String,
+        /// The refusal evidence, carried verbatim.
+        evidence: String,
+    },
     /// Park these arms until this instant. Arms sorted, deduplicated, and
     /// always containing the refused arm itself.
     ParkUntil {
@@ -93,6 +100,7 @@ impl Decision {
 pub fn grounds(d: &Decision) -> Option<&str> {
     match d {
         Decision::Leave => None,
+        Decision::UnknownBlast { evidence, .. } => Some(evidence.as_str()),
         Decision::ParkUntil { grounds, .. } | Decision::ParkFor { grounds, .. } => {
             Some(grounds.as_str())
         }
@@ -104,11 +112,10 @@ pub fn grounds(d: &Decision) -> Option<&str> {
 /// `arm` is the arm that ran. `class` and `log_head` come from the finished
 /// run. `registry` supplies the provider and bucket of every arm.
 ///
-/// This function never widens beyond what [`blast_of`] returned. An
-/// unrecognised refusal is [`Blast::Arm`] and the decision parks exactly one
-/// arm. Widening on a guess benches arms that would have worked, and a day of
-/// this project's dispatch has already been spent proving a wrong confident
-/// answer costs more than an admitted narrow one.
+/// This function never widens beyond what [`blast_call`] recognised. An
+/// unrecognised refusal becomes [`Decision::UnknownBlast`] rather than being
+/// assigned a guessed width. A refusal is distinguished from a run that did
+/// not classify as a provider refusal at all.
 ///
 /// The `grounds` string from [`quota::Park`](crate::quota::Park) is carried byte for byte into the
 /// decision. This function never synthesises a reason: an empty `grounds` from
@@ -123,12 +130,24 @@ pub fn decide(
     now_ms: u64,
     default_backoff_ms: u64,
 ) -> Decision {
+    let call = blast_call(log_head);
+    let unknown = || Decision::UnknownBlast {
+        arm: arm.to_string(),
+        evidence: log_head.to_string(),
+    };
+    if matches!(class, OutcomeClass::QuotaLimited) && matches!(call, BlastCall::Unrecognised) {
+        return unknown();
+    }
+
     let park = park_after(class, log_head, now_ms, default_backoff_ms);
 
     match park {
         Park::No => Decision::Leave,
         Park::Until { at_ms, grounds } => {
-            let blast = blast_of(log_head);
+            let blast = match call {
+                BlastCall::Recognised(blast) => blast,
+                BlastCall::Unrecognised => return unknown(),
+            };
             let arms = arms_in_blast(arm, blast, registry);
             Decision::ParkUntil {
                 at_ms,
@@ -138,7 +157,10 @@ pub fn decide(
             }
         }
         Park::Backoff { until_ms, grounds } => {
-            let blast = blast_of(log_head);
+            let blast = match call {
+                BlastCall::Recognised(blast) => blast,
+                BlastCall::Unrecognised => return unknown(),
+            };
             let arms = arms_in_blast(arm, blast, registry);
             let backoff_ms = until_ms.saturating_sub(now_ms);
             Decision::ParkFor {
@@ -191,7 +213,7 @@ mod tests {
         let decision = decide(
             "or-hy3",
             OutcomeClass::Infrastructure,
-            "Error: rate limit exceeded; retry-after: 3600",
+            "model is overloaded; Error: rate limit exceeded; retry-after: 3600",
             &registry(),
             NOW_MS,
             BACKOFF_MS,
@@ -241,7 +263,7 @@ mod tests {
     // Clause 2: Park::Until yields ParkUntil carrying that exact at_ms.
     #[test]
     fn stated_relative_reset_parks_until_exact_instant() {
-        let log = "Error: rate limit exceeded; retry-after: 3600";
+        let log = "model is overloaded; Error: rate limit exceeded; retry-after: 3600";
         let decision = decide(
             "or-hy3",
             OutcomeClass::QuotaLimited,
@@ -264,7 +286,7 @@ mod tests {
 
     #[test]
     fn stated_absolute_reset_parks_until_exact_instant() {
-        let log = r#"{"error": "quota", "reset_at": 1789603200}"#;
+        let log = r#"model is overloaded; {"error": "quota", "reset_at": 1789603200}"#;
         let decision = decide(
             "or-hy3",
             OutcomeClass::QuotaLimited,
@@ -287,7 +309,8 @@ mod tests {
 
     #[test]
     fn stated_rfc3339_reset_parks_until_exact_instant() {
-        let log = "usage limit hit, resets at 2026-09-17T00:00:00Z please wait";
+        let log =
+            "model is overloaded; usage limit hit, resets at 2026-09-17T00:00:00Z please wait";
         let decision = decide(
             "or-hy3",
             OutcomeClass::QuotaLimited,
@@ -310,7 +333,7 @@ mod tests {
         let decision = decide(
             "or-hy3",
             OutcomeClass::QuotaLimited,
-            "quota exceeded for project",
+            "model is overloaded; quota exceeded for project",
             &registry(),
             NOW_MS,
             BACKOFF_MS,
@@ -330,7 +353,7 @@ mod tests {
         }
     }
 
-    // Clause 4: arms are exactly arms_in_blast(arm, blast_of(log_head), registry).
+    // Clause 4: arms are exactly arms_in_blast(arm, blast_call(log_head), registry).
     #[test]
     fn credential_blast_reaches_every_arm_on_key() {
         let log = "error: key limit exceeded (total limit)";
@@ -397,7 +420,7 @@ mod tests {
 
     #[test]
     fn arm_blast_is_exactly_the_refused_arm() {
-        let log = "error: connection reset by peer";
+        let log = "model is overloaded";
         let decision = decide(
             "or-hy3",
             OutcomeClass::QuotaLimited,
@@ -441,7 +464,7 @@ mod tests {
         for log in [
             "error: key limit exceeded (total limit)",
             "error: token limit exceeded: tokens per day limit reached",
-            "error: connection reset by peer",
+            "model is overloaded",
         ] {
             let decision = decide(
                 "no-such-arm",
@@ -455,6 +478,7 @@ mod tests {
                 Decision::ParkFor { arms, .. } | Decision::ParkUntil { arms, .. } => {
                     assert_eq!(arms, vec!["no-such-arm"]);
                 }
+                Decision::UnknownBlast { .. } => {}
                 Decision::Leave => panic!("unregistered arm must park, got Leave"),
             }
         }
@@ -479,11 +503,7 @@ mod tests {
                 Blast::Bucket,
                 vec!["ifm-k2", "ifm-k2-think", "or-deepseek"],
             ),
-            (
-                "error: connection reset by peer",
-                Blast::Arm,
-                vec!["or-hy3"],
-            ),
+            ("model is overloaded", Blast::Arm, vec!["or-hy3"]),
         ];
 
         for (log, expected_blast, expected_arms) in test_cases {
@@ -504,28 +524,32 @@ mod tests {
                     assert_eq!(blast, expected_blast, "log: {log}");
                     assert_eq!(arms, expected_arms, "log: {log}");
                 }
-                Decision::Leave => panic!("expected park for QuotaLimited, log: {log}"),
+                Decision::UnknownBlast { .. } => {
+                    panic!("recognised refusal became unknown, log: {log}")
+                }
+                Decision::Leave => panic!("recognised refusal was left, log: {log}"),
             }
         }
     }
 
-    // Clause 8: This module never widens beyond what blast_of returned.
+    // Clause 7: An unrecognised refusal is recorded without guessing a width.
     #[test]
-    fn unrecognised_refusal_stays_narrow() {
+    fn unrecognised_refusal_is_unknown_blast_with_evidence() {
+        let log = "error: something completely unknown";
         let decision = decide(
             "or-hy3",
             OutcomeClass::QuotaLimited,
-            "error: something completely unknown",
+            log,
             &registry(),
             NOW_MS,
             BACKOFF_MS,
         );
         match decision {
-            Decision::ParkFor { arms, blast, .. } | Decision::ParkUntil { arms, blast, .. } => {
-                assert_eq!(blast, Blast::Arm);
-                assert_eq!(arms, vec!["or-hy3"]);
+            Decision::UnknownBlast { arm, evidence } => {
+                assert_eq!(arm, "or-hy3");
+                assert_eq!(evidence, log);
             }
-            Decision::Leave => panic!("unrecognised refusal must still park the arm"),
+            other => panic!("expected UnknownBlast, got {other:?}"),
         }
     }
 
@@ -535,7 +559,7 @@ mod tests {
         let decision = decide(
             "or-hy3",
             OutcomeClass::QuotaLimited,
-            "quota exceeded",
+            "model is overloaded",
             &registry(),
             NOW_MS,
             0,
@@ -546,7 +570,7 @@ mod tests {
     // Boundary: reset instant exactly equal to now_ms -> Leave.
     #[test]
     fn reset_exactly_at_now_is_leave() {
-        let log = r#"{"error": "quota", "reset_at": 1789000000}"#; // 1789000000 * 1000 = NOW_MS
+        let log = r#"key limit; {"error": "quota", "reset_at": 1789000000}"#; // 1789000000 * 1000 = NOW_MS
         let decision = decide(
             "or-hy3",
             OutcomeClass::QuotaLimited,
@@ -565,7 +589,7 @@ mod tests {
         let decision = decide(
             "or-hy3",
             OutcomeClass::QuotaLimited,
-            "quota exceeded",
+            "key limit exceeded",
             &empty,
             NOW_MS,
             BACKOFF_MS,
@@ -574,13 +598,14 @@ mod tests {
             Decision::ParkFor { arms, .. } | Decision::ParkUntil { arms, .. } => {
                 assert_eq!(arms, vec!["or-hy3"]);
             }
+            Decision::UnknownBlast { .. } => panic!("recognised refusal became unknown"),
             Decision::Leave => panic!("empty registry must still park the refused arm"),
         }
     }
 
-    // Boundary: empty log_head with QuotaLimited -> ParkFor over one arm.
+    // Boundary: empty log_head with QuotaLimited records an unknown blast.
     #[test]
-    fn empty_log_head_with_quota_limited_is_parkfor_over_one_arm() {
+    fn empty_log_head_with_quota_limited_is_unknown_blast() {
         let decision = decide(
             "or-hy3",
             OutcomeClass::QuotaLimited,
@@ -589,19 +614,7 @@ mod tests {
             1_000,
             1,
         );
-        match decision {
-            Decision::ParkFor {
-                backoff_ms,
-                arms,
-                blast,
-                ..
-            } => {
-                assert_eq!(backoff_ms, 1);
-                assert_eq!(arms, vec!["or-hy3"]);
-                assert_eq!(blast, Blast::Arm);
-            }
-            other => panic!("expected ParkFor, got {other:?}"),
-        }
+        assert!(matches!(decision, Decision::UnknownBlast { .. }));
     }
 
     // Boundary: now_ms == 0 - no arithmetic underflows.
@@ -610,7 +623,7 @@ mod tests {
         let decision = decide(
             "or-hy3",
             OutcomeClass::QuotaLimited,
-            r#""reset_at": 500"#,
+            r#"model is overloaded; "reset_at": 500"#,
             &registry(),
             0,
             0,
@@ -656,6 +669,7 @@ mod tests {
                 deduped.dedup();
                 assert_eq!(arms, deduped);
             }
+            Decision::UnknownBlast { .. } => panic!("recognised refusal became unknown"),
             Decision::Leave => panic!("expected park"),
         }
     }
@@ -665,7 +679,7 @@ mod tests {
     // Clause 1: ParkUntil carries grounds from Park::Until byte for byte.
     #[test]
     fn clause1_park_until_carries_grounds_byte_for_byte_relative_reset() {
-        let log = "Error: rate limit exceeded; retry-after: 3600";
+        let log = "model is overloaded; Error: rate limit exceeded; retry-after: 3600";
         let park = park_after(OutcomeClass::QuotaLimited, log, NOW_MS, BACKOFF_MS);
         let expected_grounds = match park {
             Park::Until { grounds, .. } => grounds,
@@ -699,7 +713,8 @@ mod tests {
 
     #[test]
     fn clause1_park_until_carries_grounds_byte_for_byte_rfc3339_reset() {
-        let log = "usage limit hit, resets at 2026-09-17T00:00:00Z please wait";
+        let log =
+            "model is overloaded; usage limit hit, resets at 2026-09-17T00:00:00Z please wait";
         let park = park_after(OutcomeClass::QuotaLimited, log, NOW_MS, BACKOFF_MS);
         let expected_grounds = match park {
             Park::Until { grounds, .. } => grounds,
@@ -728,7 +743,7 @@ mod tests {
 
     #[test]
     fn clause1_park_until_carries_grounds_byte_for_byte_json_reset() {
-        let log = r#"{"error": "quota", "reset_at": 1789603200}"#;
+        let log = r#"model is overloaded; {"error": "quota", "reset_at": 1789603200}"#;
         let park = park_after(OutcomeClass::QuotaLimited, log, NOW_MS, BACKOFF_MS);
         let expected_grounds = match park {
             Park::Until { grounds, .. } => grounds,
@@ -758,7 +773,7 @@ mod tests {
     // Clause 2: ParkFor carries grounds from Park::Backoff byte for byte.
     #[test]
     fn clause2_park_for_carries_grounds_byte_for_byte_default_window() {
-        let log = "quota exceeded for project";
+        let log = "model is overloaded; quota exceeded for project";
         let park = park_after(OutcomeClass::QuotaLimited, log, NOW_MS, BACKOFF_MS);
         let expected_grounds = match park {
             Park::Backoff { grounds, .. } => grounds,
@@ -788,7 +803,7 @@ mod tests {
 
     #[test]
     fn clause2_park_for_carries_grounds_byte_for_byte_empty_log() {
-        let log = "";
+        let log = "model is overloaded";
         let park = park_after(OutcomeClass::QuotaLimited, log, NOW_MS, BACKOFF_MS);
         let expected_grounds = match park {
             Park::Backoff { grounds, .. } => grounds,
@@ -819,7 +834,7 @@ mod tests {
     #[test]
     fn clause3_decide_never_synthesises_grounds() {
         // decide carries grounds from park_after verbatim without inventing its own
-        let log = "quota exceeded";
+        let log = "model is overloaded; quota exceeded";
         let park = park_after(OutcomeClass::QuotaLimited, log, NOW_MS, BACKOFF_MS);
         let park_grounds = match park {
             Park::Backoff { grounds, .. } => grounds,
@@ -874,7 +889,7 @@ mod tests {
             let decision = decide(
                 "or-hy3",
                 class,
-                "Error: rate limit exceeded; retry-after: 3600",
+                "model is overloaded; Error: rate limit exceeded; retry-after: 3600",
                 &registry(),
                 NOW_MS,
                 BACKOFF_MS,
@@ -888,7 +903,7 @@ mod tests {
         let past_reset = decide(
             "or-hy3",
             OutcomeClass::QuotaLimited,
-            r#"{"error": "quota", "reset_at": 100}"#,
+            r#"model is overloaded; {"error": "quota", "reset_at": 100}"#,
             &registry(),
             NOW_MS,
             BACKOFF_MS,
@@ -900,7 +915,7 @@ mod tests {
         let now_reset = decide(
             "or-hy3",
             OutcomeClass::QuotaLimited,
-            r#"{"error": "quota", "reset_at": 1789000000}"#,
+            r#"model is overloaded; {"error": "quota", "reset_at": 1789000000}"#,
             &registry(),
             NOW_MS,
             BACKOFF_MS,
@@ -912,7 +927,7 @@ mod tests {
         let zero_backoff = decide(
             "or-hy3",
             OutcomeClass::QuotaLimited,
-            "quota exceeded",
+            "model is overloaded; quota exceeded",
             &registry(),
             NOW_MS,
             0,
@@ -1071,13 +1086,14 @@ mod tests {
         let d = Decision::Leave;
         match d {
             Decision::Leave => {}
+            Decision::UnknownBlast { .. } => panic!("expected a non-unknown variant"),
             Decision::ParkUntil { .. } | Decision::ParkFor { .. } => {
                 panic!("expected unit variant Leave")
             }
         }
     }
 
-    // Boundary: Decision is a closed set of three variants.
+    // Boundary: Decision includes the explicit unknown-blast variant.
     #[test]
     fn boundary_decision_is_closed_three_variants() {
         let variants = [
@@ -1094,6 +1110,10 @@ mod tests {
                 blast: Blast::Arm,
                 grounds: "r".into(),
             },
+            Decision::UnknownBlast {
+                arm: "a".into(),
+                evidence: "e".into(),
+            },
         ];
 
         for v in variants {
@@ -1101,6 +1121,7 @@ mod tests {
                 Decision::Leave => {}
                 Decision::ParkUntil { .. } => {}
                 Decision::ParkFor { .. } => {}
+                Decision::UnknownBlast { .. } => {}
             }
         }
     }

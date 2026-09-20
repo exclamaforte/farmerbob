@@ -612,52 +612,61 @@ pub fn arms_in_blast(arm: &str, blast: Blast, registry: &Registry) -> Vec<String
     }
 }
 
-/// Infer the blast radius from the refusal text.
+/// How wide a refusal reaches, and whether the wording was actually recognised.
 ///
-/// The phrasings recognised here are a KNOWN SUBSET -- an open one, grown only
-/// when a real refusal teaches a new string; four distinct refusal strings
-/// have been learned this week alone. The set of radii, by contrast, is
-/// closed: see [`Blast`]. Anything unrecognised is [`Blast::Arm`], and that is
-/// a decision, not a convenience fallback: a guess that widens benches arms
-/// that would have worked, and this project has already spent a day proving
-/// that a wrong confident answer costs more than an admitted narrow one.
-/// [`Blast::Arm`] is the safe failure -- it costs a repeated dispatch, while
-/// the alternative costs a benched fleet.
-///
-/// Matching is case-insensitive over the whole log head, the way this crate
-/// matches every other marker. When a log carries phrasings for two radii the
-/// credential reading wins: a spent key refuses every arm paying through it,
-/// whatever the vendor behind it said about tokens.
-///
-/// # Example
-///
-/// ```
-/// use farmerbob_core::quota::{Blast, blast_of};
-///
-/// // The key reached its cap: every arm on the credential is refused.
-/// assert_eq!(
-///     blast_of("error: key limit exceeded (total limit)"),
-///     Blast::Credential
-/// );
-///
-/// // The vendor capped the account's daily tokens: the bucket, not the key.
-/// assert_eq!(
-///     blast_of("error: token limit exceeded: tokens per day limit reached"),
-///     Blast::Bucket
-/// );
-///
-/// // Anything unrecognised: the narrowest answer, never a widening guess.
-/// assert_eq!(blast_of("error: connection reset by peer"), Blast::Arm);
-/// ```
-pub fn blast_of(log_head: &str) -> Blast {
+/// This list is closed: a new outcome is a change to this enum, not an
+/// extension that callers can silently ignore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlastCall {
+    /// The wording was recognised and the width is known.
+    Recognised(Blast),
+    /// The refusal wording is unknown, so no blast width is supplied.
+    Unrecognised,
+}
+
+const KNOWN_PHRASES: &[(&str, Blast)] = &[
+    ("key limit", Blast::Credential),
+    ("token limit", Blast::Bucket),
+    ("individual quota reached", Blast::Credential),
+    ("model is overloaded", Blast::Arm),
+];
+
+fn is_phrase_word(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn contains_phrase(text: &str, phrase: &str) -> bool {
+    text.match_indices(phrase).any(|(start, _)| {
+        let end = start + phrase.len();
+        text[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_phrase_word(c))
+            && text[end..]
+                .chars()
+                .next()
+                .is_none_or(|c| !is_phrase_word(c))
+    })
+}
+
+/// Decide the blast width from a run's log, saying whether the wording was recognised.
+pub fn blast_call(log_head: &str) -> BlastCall {
     let lowered = log_head.to_lowercase();
-    if lowered.contains("key limit") {
-        Blast::Credential
-    } else if lowered.contains("token limit") {
-        Blast::Bucket
-    } else {
-        Blast::Arm
-    }
+    KNOWN_PHRASES
+        .iter()
+        .filter(|(phrase, _)| contains_phrase(&lowered, phrase))
+        .map(|(_, blast)| *blast)
+        .max_by_key(|blast| match blast {
+            Blast::Arm => 0,
+            Blast::Bucket => 1,
+            Blast::Credential => 2,
+        })
+        .map_or(BlastCall::Unrecognised, BlastCall::Recognised)
+}
+
+/// Every refusal phrasing recognised by [`blast_call`], with its implied width.
+pub fn known_phrasings() -> &'static [(&'static str, Blast)] {
+    KNOWN_PHRASES
 }
 
 #[cfg(test)]
@@ -1399,38 +1408,100 @@ mod blast_tests {
         assert_eq!(arms_in_blast("a", Blast::Bucket, &r), ["a"]);
     }
 
-    // Clauses 5 and 6: the two refusals this week's outages taught.
+    // Clauses 1, 2, 5, and 6: recognised refusal phrasings and their widths.
     #[test]
     fn a_spent_key_is_a_credential_refusal() {
         assert_eq!(
-            blast_of("error: key limit exceeded (total limit)"),
-            Blast::Credential
+            blast_call("error: key limit exceeded (total limit)"),
+            BlastCall::Recognised(Blast::Credential)
         );
     }
 
     #[test]
     fn a_daily_token_cap_is_a_bucket_refusal() {
         assert_eq!(
-            blast_of("error: token limit exceeded: tokens per day limit reached"),
-            Blast::Bucket
+            blast_call("error: token limit exceeded: tokens per day limit reached"),
+            BlastCall::Recognised(Blast::Bucket)
         );
     }
 
-    // Clause 7: the narrowest answer on anything unrecognised.
     #[test]
-    fn an_unrecognised_refusal_stays_narrow() {
-        for head in [
-            "error: connection reset by peer",
-            "exit code 1 with no output",
-            "the run produced no verdict",
-        ] {
-            assert_eq!(blast_of(head), Blast::Arm, "{head} should stay narrow");
+    fn individual_quota_is_a_credential_refusal_case_insensitively() {
+        assert_eq!(
+            blast_call("Individual Quota Reached; resets soon"),
+            BlastCall::Recognised(Blast::Credential)
+        );
+    }
+
+    #[test]
+    fn successful_cargo_output_is_unrecognised() {
+        assert_eq!(
+            blast_call("Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s"),
+            BlastCall::Unrecognised
+        );
+    }
+
+    #[test]
+    fn invented_refusal_is_unrecognised() {
+        assert_eq!(
+            blast_call("error: monthly allowance consumed"),
+            BlastCall::Unrecognised
+        );
+    }
+
+    #[test]
+    fn overloaded_model_is_recognised_as_arm_only() {
+        assert_eq!(
+            blast_call("error: MODEL IS OVERLOADED"),
+            BlastCall::Recognised(Blast::Arm)
+        );
+    }
+
+    #[test]
+    fn known_phrasings_are_complete_and_self_consistent() {
+        assert!(!known_phrasings().is_empty());
+        for (phrase, blast) in known_phrasings() {
+            assert_eq!(
+                blast_call(&format!("provider refusal: {phrase}")),
+                BlastCall::Recognised(*blast)
+            );
         }
     }
 
-    // Boundary at zero: an empty log head recognises nothing.
     #[test]
-    fn an_empty_log_head_is_narrow() {
-        assert_eq!(blast_of(""), Blast::Arm);
+    fn widest_recognised_phrasing_wins() {
+        assert_eq!(
+            blast_call("token limit and key limit reached"),
+            BlastCall::Recognised(Blast::Credential)
+        );
+    }
+
+    #[test]
+    fn phrase_inside_longer_word_does_not_match() {
+        assert_eq!(blast_call("keylimit"), BlastCall::Unrecognised);
+
+        // STRENGTHENED after gemini-38-flash's critique of this task, which is right:
+        // "keylimit" passes under NAIVE substring matching too, because the phrase "key
+        // limit" contains a space -- so that assertion alone cannot fail if
+        // `is_phrase_word` is deleted, and a test that cannot detect the bug it is about
+        // establishes nothing. The weak example came from my own spec.
+        //
+        // These two DO require the boundary check: each contains "key limit" as a literal
+        // substring and must still be refused.
+        assert_eq!(
+            blast_call("donkey limit"),
+            BlastCall::Unrecognised,
+            "a phrase whose start is inside a longer word is not that phrase"
+        );
+        assert_eq!(
+            blast_call("key limited"),
+            BlastCall::Unrecognised,
+            "a phrase whose end is inside a longer word is not that phrase"
+        );
+        // And the real phrase, surrounded by punctuation, still matches.
+        assert_eq!(
+            blast_call("error: (key limit) reached"),
+            BlastCall::Recognised(Blast::Credential)
+        );
     }
 }
