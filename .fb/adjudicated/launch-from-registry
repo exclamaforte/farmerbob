@@ -1,0 +1,16 @@
+MERGED glm-53-flash (after one follow-up turn)
+PASS, +16 tests, clippy 0, 645L. The registry is the one launch table: the hardcoded
+`match arm` is deleted, and an arm launches only the way sources.toml declares.
+VERIFIED FUNCTIONALLY, which is the whole point of the task:
+  codex exec --dangerously-bypass-approvals-and-sandbox --strict-config
+        -c model_reasoning_effort="xhigh" -m gpt-5.6-luna PROMPT
+Those two flags were absent from every codex-luna run today, so the bandit's cost and ability
+figures for this arm were attributed to a configuration that never ran.
+codex-luna critiqued it and filed a CLAIM I confirmed: registry_text treated every read error
+as "file absent" and walked to the parent directory, so an FB_REPO whose sources.toml exists
+but cannot be read silently launched from an ancestor registry and reported success. Fixed in
+the follow-up turn: only ErrorKind::NotFound walks. That was the third appearance of "absent
+is not unreadable" today, after repo_file in critique.rs and imported_names in doctor.rs.
+Its judgement was also right: the declared_launch_argv compatibility path was untested and
+launches 32 of 38 arms. Tests added; migrating those 32 entries is registry-migration
+(wave168), which uses the old path as an executable oracle.
