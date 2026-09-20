@@ -21,6 +21,21 @@ pub enum Conformance {
     /// The suite compiled and executed nothing. A harness fault, NOT a result about the
     /// candidate, and reporting it as a zero score would blame the arm for our bug.
     NoTestsRan,
+    /// The suite compiled and executed a DIFFERENT number of tests than it declares.
+    ///
+    /// This was reported as `Failed(passed, expected - passed)` -- tests that never ran,
+    /// counted as tests that failed. Those are not the same thing and the difference decides
+    /// whose fault it is: a failing test is the candidate's, a test that did not execute is
+    /// ours. `farmerbob_core::conform` has drawn that distinction since it merged, as
+    /// `Short { expected, executed }`, and this module reimplemented the classification
+    /// without it -- one of the 43 unreached core modules (bead farmerbob-oa5w), and this
+    /// caller was written in the same session that counted them.
+    Short {
+        /// Tests the suite declares.
+        expected: u32,
+        /// Tests that actually executed.
+        executed: u32,
+    },
     /// The run is still in flight; measuring it would race the arm.
     Live,
     /// The candidate has no such crate to test.
@@ -59,16 +74,31 @@ pub fn classify(ok: bool, output: &str, expected: u32) -> Conformance {
         let failed = failed_count(output);
         return Conformance::Failed(passed, failed.max(1));
     }
+    // THE DECISION LIVES IN CORE. This module parses cargo's output; what the numbers MEAN
+    // is `farmerbob_core::conform::read`, which is where it already was.
     let passed = passed_count(output);
-    if passed == 0 {
-        // Cargo succeeded and ran nothing. The suite was filtered out, or never reached the
-        // crate. Either way nothing was measured about this candidate.
-        return Conformance::NoTestsRan;
+    let failed = failed_count(output);
+    let ran = farmerbob_core::conform::Ran {
+        expected,
+        executed: passed + failed,
+        failed,
+    };
+    match farmerbob_core::conform::read(true, &ran) {
+        farmerbob_core::conform::Conformance::Full => Conformance::Conformed(passed),
+        farmerbob_core::conform::Conformance::Broke { failed } => {
+            Conformance::Failed(passed, failed)
+        }
+        // Zero executed keeps its own name: "the suite ran nothing" is a different thing to
+        // report than "it ran the wrong number", even though core rightly treats both as
+        // saying nothing about the arm.
+        farmerbob_core::conform::Conformance::Short { executed: 0, .. } => Conformance::NoTestsRan,
+        farmerbob_core::conform::Conformance::Short { expected, executed } => {
+            Conformance::Short { expected, executed }
+        }
+        // `read` returns NotGrafted only for `compiled = false`, and the non-compiling paths
+        // were handled above.
+        farmerbob_core::conform::Conformance::NotGrafted => Conformance::NoTestsRan,
     }
-    if passed < expected {
-        return Conformance::Failed(passed, expected - passed);
-    }
-    Conformance::Conformed(passed)
 }
 
 fn count_before(output: &str, word: &str) -> u32 {
@@ -107,6 +137,13 @@ pub fn render(arm: &str, c: &Conformance, expected: u32) -> String {
         Conformance::NoTestsRan => (
             "NO-TESTS".to_string(),
             "suite did not execute -- harness fault, not a result".to_string(),
+        ),
+        Conformance::Short { expected, executed } => (
+            "SHORT".to_string(),
+            format!(
+                "{executed} of {expected} tests executed -- the suite did not run as \
+                 written, so this says nothing about the candidate"
+            ),
         ),
         Conformance::Live => ("LIVE".to_string(), String::new()),
         Conformance::NoCrate => ("NO-CRATE".to_string(), String::new()),
@@ -209,8 +246,14 @@ mod tests {
     }
 
     /// Full conformance and partial conformance are different answers over the same
-    /// expectation. Pinned as a pair: a run that passes fewer than expected has NOT
+    /// expectation. Pinned as a pair: a run that executes fewer than expected has NOT
     /// conformed, however many it passed.
+    ///
+    /// CORRECTED 2026-09-19. The second assertion read `Failed(3, 2)` -- two tests that
+    /// never executed, recorded as two failures. I wrote that in the same session that
+    /// counted `farmerbob_core::conform` among 43 unreached core modules, and core has
+    /// drawn the distinction since it merged: a failing test is the candidate's fault, a
+    /// test that did not run is ours, and the second "says nothing about the arm".
     #[test]
     fn passing_fewer_than_expected_is_not_conformance() {
         assert_eq!(
@@ -219,7 +262,10 @@ mod tests {
         );
         assert_eq!(
             classify(true, "3 passed; 0 failed", 5),
-            Conformance::Failed(3, 2)
+            Conformance::Short {
+                expected: 5,
+                executed: 3
+            }
         );
     }
 
@@ -264,5 +310,56 @@ mod tests {
             5,
             "FAIL is shared by two, the rest distinct: {words:?}"
         );
+    }
+
+    /// TESTS THAT NEVER RAN ARE NOT TESTS THAT FAILED. A suite declaring 7 tests of which 5
+    /// executed and all passed was reported `Failed(5, 2)` -- two failures that did not
+    /// happen. The difference decides whose fault it is: a failing test is the candidate's,
+    /// a test that did not execute is ours, and `farmerbob_core::conform` has said so since
+    /// it merged.
+    #[test]
+    fn a_suite_that_ran_short_is_not_reported_as_failures() {
+        let out = "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out";
+        assert_eq!(
+            classify(true, out, 7),
+            Conformance::Short {
+                expected: 7,
+                executed: 5
+            }
+        );
+        // And it says so in words, rather than printing a score.
+        let line = render(
+            "some-arm",
+            &Conformance::Short {
+                expected: 7,
+                executed: 5,
+            },
+            7,
+        );
+        assert!(line.contains("SHORT"), "{line}");
+        assert!(line.contains("says nothing about the candidate"), "{line}");
+    }
+
+    /// A genuine failure is still a genuine failure, and still the candidate's.
+    #[test]
+    fn real_failures_are_still_attributed_to_the_candidate() {
+        let out = "test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured";
+        assert_eq!(classify(true, out, 7), Conformance::Failed(5, 2));
+    }
+
+    /// Every declared test ran and passed.
+    #[test]
+    fn a_full_suite_conforms() {
+        let out = "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured";
+        assert_eq!(classify(true, out, 7), Conformance::Conformed(7));
+    }
+
+    /// Zero executed keeps its own name: "ran nothing" is worth reporting differently from
+    /// "ran the wrong number", though core rightly treats both as saying nothing about the
+    /// arm.
+    #[test]
+    fn a_suite_that_executed_nothing_is_still_no_tests_ran() {
+        let out = "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1440 filtered out";
+        assert_eq!(classify(true, out, 7), Conformance::NoTestsRan);
     }
 }
