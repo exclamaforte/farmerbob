@@ -187,24 +187,62 @@ fn logs_dir() -> PathBuf {
     crate::paths::logs()
 }
 
+/// Whether an explicitly-passed target is one of the deliverables the spec declares.
+///
+/// A TARGET that names none of them is almost always a misplaced argument -- `fb pipeline
+/// <task> fb` puts the crate name in the target slot, because `--krate` is an option and
+/// TARGET is the second positional.
+///
+/// That argument used to travel all the way down. `score` shrugged it off and derived the
+/// right deliverable itself, so its line looked correct; `critique` used it, found no file
+/// called `fb` in any worktree, and reported
+///
+///     0 candidate(s) with an implementation
+///
+/// which is a definite claim about the ARMS made by an instrument that had been handed a
+/// path that cannot exist. promote and prove then stood down in turn, and the whole
+/// subjective tier went dark on two tasks with every line reading like a normal result.
+///
+/// A spec that declares nothing cannot contradict anything, so any target is allowed there.
+pub fn target_is_declared(target: &str, declared: &[String]) -> bool {
+    declared.is_empty() || declared.iter().any(|d| d == target)
+}
+
 /// Run every stage for one task.
 pub fn run(task: &str, krate: &str, target: Option<&str>) -> i32 {
     let repo = crate::paths::repo();
     let logs = logs_dir();
     let wt_root = crate::paths::worktrees();
+    let spec =
+        fs::read_to_string(repo.join(".fb/prompts").join(format!("{task}.md"))).unwrap_or_default();
+    let declared: Vec<String> = match target_decl::declared_all(&spec) {
+        Ok(ds) => ds
+            .iter()
+            .map(|d| target_decl::path(d).to_string())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
     let target = match target {
-        Some(t) if !t.is_empty() => t.to_string(),
-        _ => {
-            let spec = fs::read_to_string(repo.join(".fb/prompts").join(format!("{task}.md")))
-                .unwrap_or_default();
-            match target_decl::declared_all(&spec) {
-                Ok(ds) if !ds.is_empty() => target_decl::path(&ds[0]).to_string(),
-                _ => {
-                    eprintln!("{task}: the spec declares no deliverable");
-                    return 2;
-                }
+        Some(t) if !t.is_empty() => {
+            if !target_is_declared(t, &declared) {
+                eprintln!(
+                    "{task}: target {t:?} is not a deliverable this spec declares.\n  \
+                     declared: {}\n  \
+                     Did you mean `--krate {t}`? TARGET is the second positional; the crate \
+                     is an option.",
+                    declared.join(", ")
+                );
+                return 2;
             }
+            t.to_string()
         }
+        _ => match declared.first() {
+            Some(first) => first.clone(),
+            None => {
+                eprintln!("{task}: the spec declares no deliverable");
+                return 2;
+            }
+        },
     };
     println!("== pipeline {task} ({krate}, {target})");
 
@@ -357,5 +395,37 @@ mod tests {
         let _ = fs::write(&empty, "");
         assert!(!have_artefact(&empty), "empty file");
         let _ = fs::remove_dir_all(&d);
+    }
+
+    /// `fb pipeline <task> fb` puts the CRATE NAME in the target slot, because `--krate` is
+    /// an option and TARGET is the second positional. That argument used to travel all the
+    /// way down: `score` shrugged it off and derived the right deliverable, so its line
+    /// looked right, while `critique` used it, found no file called `fb` in any worktree,
+    /// and announced "0 candidate(s) with an implementation" -- a definite claim about the
+    /// ARMS from an instrument handed a path that cannot exist. The subjective tier went
+    /// dark on two tasks with every line reading like a normal result.
+    #[test]
+    fn a_crate_name_in_the_target_slot_is_refused() {
+        let declared = vec!["crates/fb/src/score.rs".to_string()];
+        assert!(!target_is_declared("fb", &declared));
+        assert!(target_is_declared("crates/fb/src/score.rs", &declared));
+    }
+
+    /// A task may declare several deliverables, and any one of them is a legitimate target.
+    #[test]
+    fn any_declared_deliverable_is_a_legitimate_target() {
+        let declared = vec![
+            "crates/fb/src/score.rs".to_string(),
+            "crates/fb/src/scope_cmd.rs".to_string(),
+        ];
+        assert!(target_is_declared("crates/fb/src/scope_cmd.rs", &declared));
+        assert!(!target_is_declared("crates/fb/src/other.rs", &declared));
+    }
+
+    /// A spec that declares nothing cannot contradict anything, so it constrains nothing --
+    /// refusing every target there would break tasks the check was never about.
+    #[test]
+    fn a_spec_that_declares_nothing_constrains_nothing() {
+        assert!(target_is_declared("anything", &[]));
     }
 }
