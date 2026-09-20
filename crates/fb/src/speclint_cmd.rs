@@ -87,6 +87,28 @@ pub fn run(specs: &[String]) -> i32 {
             .unwrap_or_else(|| spec.clone());
         match fs::read_to_string(path) {
             Ok(text) => {
+                // UNDISCLOSED MEASURES MEASURE STYLE PRIORS, NOT CAPABILITY. The round-1
+                // winner was selected largely on 108 doc comments and a 10-module
+                // structure, neither of which the task asked for; six arms wrote zero doc
+                // comments because nothing requested any. Clippy, doc comments, `unwrap()`
+                // count and speed were all ranked and none were disclosed.
+                // (bead farmerbob-vg0)
+                //
+                // The rubric reaches specs by being appended to each by hand, which is a
+                // convention and not a mechanism -- and specs have already been written
+                // without it.
+                let declares = farmerbob_core::target_decl::declared_all(&text)
+                    .map(|d| !d.is_empty())
+                    .unwrap_or(false);
+                if farmerbob_core::speclint_shape::rubric_disclosed(&text, declares)
+                    == farmerbob_core::speclint_shape::Disclosure::Undisclosed
+                {
+                    println!(
+                        "{name}: dispatchable, but does not disclose what it will be scored \
+                         on -- append .fb/prompts/_rubric.md"
+                    );
+                    rc = 1;
+                }
                 let (lines, ok) = lint_one(&name, &text);
                 for l in lines {
                     println!("{l}");
