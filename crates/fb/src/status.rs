@@ -257,6 +257,57 @@ fn render_results(repo: &Path, logs: &Path) -> String {
     s
 }
 
+/// The arm whose worktree copy of the declared deliverable is byte-identical to the
+/// repository's, if any: evidence that its work was merged.
+///
+/// Byte-identity is deliberately strict. A near-match could be an arm whose work was merged
+/// and then edited, or one whose work was never merged and happens to be close; those need
+/// different answers and this function refuses to guess between them. It reports only what
+/// it can show.
+///
+/// `farmerbob_core::novelty` makes the comparison, which is what that module is for: it
+/// distinguishes an unchanged file from one whose difference is confined to tests, and an
+/// unreadable side from an equal one.
+fn merged_from_worktree(repo: &Path, logs: &Path, task: &str) -> Option<String> {
+    use farmerbob_core::novelty::{Deliverable, Novelty, assess};
+    let spec = std::fs::read_to_string(repo.join(".fb/prompts").join(format!("{task}.md"))).ok()?;
+    let declared = farmerbob_core::target_decl::declared_all(&spec).ok()?;
+    if declared.is_empty() {
+        return None;
+    }
+    // Only a task that produced a passing run can have been merged.
+    if !logs.join(format!("{task}.score.json")).is_file() {
+        return None;
+    }
+    let root = crate::paths::worktrees();
+    let prefix = format!("{task}--");
+    for entry in std::fs::read_dir(&root).ok()?.flatten() {
+        let name = entry.file_name().to_str()?.to_string();
+        let Some(arm) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        // A critic's worktree is not a candidate's.
+        if arm.starts_with("critic--") {
+            continue;
+        }
+        let deliverables: Vec<Deliverable> = declared
+            .iter()
+            .map(|d| {
+                let rel = farmerbob_core::target_decl::path(d);
+                Deliverable {
+                    path: rel.to_string(),
+                    base: std::fs::read_to_string(repo.join(rel)).ok(),
+                    candidate: std::fs::read_to_string(entry.path().join(rel)).ok(),
+                }
+            })
+            .collect();
+        if assess(&deliverables) == Novelty::Unchanged {
+            return Some(arm.to_string());
+        }
+    }
+    None
+}
+
 /// A task is MERGED, adjudicated some other way, or awaiting review -- in that priority
 /// order, matching the script exactly:
 ///
@@ -283,6 +334,19 @@ fn adjudication_state(repo: &Path, logs: &Path, t: &str) -> String {
         && repo.join(&path).is_file()
     {
         return "MERGED".to_string();
+    }
+    // A MERGE NOBODY RECORDED IS NOT AN OUTSTANDING TASK. The record is a file written by
+    // hand, and between 2026-09-18 and 2026-09-19 five merges went unrecorded -- novelty,
+    // fate-set, blast-width, critique-roster and decl-cmd -- so every command reading this
+    // state told a person the work was still to do. Two of them then made a skip marker look
+    // like an abandonment and cost a tick of investigation. (bead farmerbob-hm8p)
+    //
+    // The evidence is on disk: if the winner's copy of the declared deliverable is
+    // byte-identical to the repository's, the merge happened. A `modifies` task cannot be
+    // decided by existence, which is why the rule above only covers `creates`; content
+    // covers both.
+    if let Some(arm) = merged_from_worktree(repo, logs, t) {
+        return format!("MERGED {arm} ** NO RECORD **");
     }
     if logs.join(format!("{t}.claims.json")).is_file() {
         "** NEEDS ADJUDICATION **".to_string()
@@ -675,6 +739,58 @@ fn shell_glob(dir: &Path, pattern: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A MERGE NOBODY RECORDED IS NOT AN OUTSTANDING TASK. The record is written by hand and
+    /// five merges went unrecorded across two days, so every command reading this state told
+    /// a person the work was still to do -- and twice that made a skip marker look like an
+    /// abandonment. The evidence is on disk: the winner's copy of the deliverable is
+    /// byte-identical to the repository's.
+    ///
+    /// This covers what the existing rule cannot. That rule reports MERGED when a `creates`
+    /// task's target exists, which says nothing about a `modifies` task -- whose file exists
+    /// either way -- and every one of the five unrecorded merges but one was `modifies`.
+    #[test]
+    fn a_modifies_task_whose_work_is_in_the_tree_is_merged_not_outstanding() {
+        use farmerbob_core::novelty::{Deliverable, Novelty, assess};
+        let same = "pub fn f() {}\n";
+        let merged = vec![Deliverable {
+            path: "x.rs".to_string(),
+            base: Some(same.to_string()),
+            candidate: Some(same.to_string()),
+        }];
+        assert_eq!(
+            assess(&merged),
+            Novelty::Unchanged,
+            "this is what merged looks like"
+        );
+
+        let not_merged = vec![Deliverable {
+            path: "x.rs".to_string(),
+            base: Some("pub fn f() {}\n".to_string()),
+            candidate: Some("pub fn f() { todo!() }\n".to_string()),
+        }];
+        assert_ne!(
+            assess(&not_merged),
+            Novelty::Unchanged,
+            "work not in the tree must not read as merged"
+        );
+    }
+
+    /// BYTE-IDENTITY IS DELIBERATELY STRICT, and the cost is real: I edited quota.rs after
+    /// merging blast-width, so its deliverable no longer matches and the detector stays
+    /// silent for it. That is the right failure. A near-match could be work merged and then
+    /// edited, or work never merged that happens to be close, and those need different
+    /// answers -- so it reports only what it can show, and says nothing otherwise.
+    #[test]
+    fn an_edited_deliverable_is_not_claimed_as_merged() {
+        use farmerbob_core::novelty::{Deliverable, Novelty, assess};
+        let edited = vec![Deliverable {
+            path: "x.rs".to_string(),
+            base: Some("pub fn f() {}\n// edited after the merge\n".to_string()),
+            candidate: Some("pub fn f() {}\n".to_string()),
+        }];
+        assert_ne!(assess(&edited), Novelty::Unchanged);
+    }
 
     /// A SILENT GIVE-UP IS WORSE THAN A LOUD SPIN. The autopilot retried a failing pipeline
     /// every five seconds and launched nothing (farmerbob-z1p); the cure writes a marker
