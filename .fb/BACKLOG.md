@@ -13,6 +13,29 @@ A grouped task declares every file it touches. That became possible on 2026-09-1
 `scope::Declared` went from one path to a set; before that a task spanning two files in one
 crate could not pass its own gate.
 
+> **PIVOT, 2026-09-19 — read this before picking up a tier below.**
+>
+> farmerbob is no longer a bakeoff of cheap coding agents against software specs. It is an
+> autoresearch harness: many agents attack one research problem, and the harness answers the two
+> questions a human cannot answer at scale — *is this result real, or did the agent cheat?* and
+> *are these N results N approaches, or one approach copied N times?* KernelBench is the testbed;
+> 100 level1 tasks are ingested and the GPU is real.
+>
+> The live backlog for that work is bead `farmerbob-x81s` and its children. Start there, and start
+> with `farmerbob-x81s.12` — no arm has ever been dispatched at a KernelBench task, so every other
+> bead in that epic is currently a guess.
+>
+> The tiers below are **not cancelled, but are secondary**. The ones that still pay for themselves
+> are about harness honesty, which an autoresearch harness needs more, not less:
+> **T10** (parking and re-probing), **T12** (artefacts recording what made them), **T16** (did the
+> arm do the work), **T17** (nothing rules on a spec before an arm is paid to read it).
+> **T8 and T9** (cross-examination of many implementations of one spec) are largely moot under
+> one-arm-per-task and should not be worked without a reason.
+>
+> Tier counts below are stale in the optimistic direction: auditing T10 on 2026-09-19 moved it
+> from 1/8 to 6/8 closed without dispatching anything, because five beads had been fixed by merged
+> work and never closed. Re-verify before trusting a count.
+
 ## T0 — Route every critic FOLLOWUP  (farmerbob-aqos, P0)
 
 **Files:** `crates/farmerbob-core/src/ledger.rs` + `crates/fb/src/adjudicate_cmd.rs` + fb-launch.sh  
