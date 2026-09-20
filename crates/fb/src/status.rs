@@ -377,16 +377,21 @@ fn render_queue(repo: &Path, logs: &Path) -> String {
     s
 }
 
-/// Tasks the autopilot gave up on, from the `.skip.<task>` markers it writes.
+/// Tasks the autopilot gave up on, from the `.skip.<task>` markers it writes, and whether
+/// that matters.
 ///
 /// A SILENT GIVE-UP IS WORSE THAN A LOUD SPIN. The autopilot used to retry a failing
 /// pipeline every five seconds for ever and launch nothing (bead farmerbob-z1p); the cure
-/// was to write a marker after one failure and never try again. That fixed the spin and
-/// replaced it with something quieter and no better: nine tasks had their subjective tier
-/// abandoned and no command anywhere said so. The spin was at least visible.
+/// writes a marker after one failure and never tries again.
 ///
-/// A marker file is the whole record, so the reason is not recoverable here -- that is
-/// itself worth saying, rather than implying the task was finished.
+/// BUT MOST SKIPS ARE FINE, and the first version of this said otherwise. It reported all
+/// nine markers as tasks whose "subjective tier never ran", and eight of the nine were
+/// already adjudicated -- six MERGED, two SUPERSEDED. Skipping a finished task is correct,
+/// and calling it an abandonment made a working harness look broken in the one command a
+/// person reads to find out.
+///
+/// So the adjudication state is shown beside each, and only an UNDECIDED skip is called out:
+/// that is the one where a pipeline failed and nothing has since decided the task.
 fn render_skipped(repo: &Path) -> String {
     let dir = repo.join(".fb/queue/dispatched");
     let mut names: Vec<String> = match std::fs::read_dir(&dir) {
@@ -412,18 +417,33 @@ fn render_skipped(repo: &Path) -> String {
         return String::new();
     }
     names.sort();
+
+    let decided = |t: &str| -> Option<String> {
+        std::fs::read_to_string(repo.join(".fb/adjudicated").join(t))
+            .ok()
+            .and_then(|text| text.lines().next().map(str::to_string))
+    };
+    let undecided: Vec<&String> = names.iter().filter(|t| decided(t).is_none()).collect();
+
     let mut s = format!(
-        "  {} task(s) the autopilot gave up on after one failed pipeline, and will not \
-         retry:\n",
+        "  {} task(s) skipped after one failed pipeline, not retried:\n",
         names.len()
     );
     for n in &names {
-        s.push_str(&format!("    {n}\n"));
+        match decided(n) {
+            Some(state) => s.push_str(&format!("    {n:<18} {state}\n")),
+            None => s.push_str(&format!("    {n:<18} ** NOT ADJUDICATED **\n")),
+        }
     }
-    s.push_str(
-        "    Their subjective tier never ran. Remove the marker in .fb/queue/dispatched/ to \
-         let it try again.\n",
-    );
+    if undecided.is_empty() {
+        s.push_str("    All are decided, so skipping them costs nothing.\n");
+    } else {
+        s.push_str(&format!(
+            "    {} of these was never decided. Remove its marker in \
+             .fb/queue/dispatched/ to let the pipeline try again.\n",
+            undecided.len()
+        ));
+    }
     s
 }
 
