@@ -566,7 +566,15 @@ quota_bucket = "agy-anthropic-sonnet"   # Owner-confirmed 2026-09-19: agy meters
 #   -> PONG, exit 0
 
 [source.agy-opus-46]
-parked_until = "2026-09-19T22:38:11Z"   # 2026-09-19: RESOURCE_EXHAUSTED 429 as a CRITIC, not as an implementer.
+parked_until = "2026-09-20T04:25:00Z"   # 2026-09-19 17:23 PDT: SECOND 429 today, again as a CRITIC.
+# "Individual quota reached. Please upgrade your subscription to increase your limits.
+#  Resets in 3h54m29s." -- captured from logs/critiques/novelty/agy-opus-46.log, where the
+# critic wrote a prompt and a transcript and no review at all.
+# PARKED BY HAND, and that is the bug: the earlier park below expired at 22:38Z, the arm was
+# cast again, and hit the same wall. Nothing applies a park automatically -- `fb park` is only
+# ever run from the CLI -- and it could not have helped here anyway, because it looks for an
+# implementer run log and cannot see a critic's.  (bead filed)
+# Previous park, now expired: 2026-09-19T22:38:11Z -- RESOURCE_EXHAUSTED 429 as a CRITIC.
 # "Individual quota reached. Please upgrade your subscription to increase your limits.
 # Resets in 2h0m10s." -- agy's own words, captured because fb critique now keeps the
 # launcher's stderr instead of writing a zero-byte log beside it. Before that this arm

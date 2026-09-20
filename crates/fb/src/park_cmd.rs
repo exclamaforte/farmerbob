@@ -40,11 +40,33 @@ fn core_registry(reg: &crate::sources::Registry) -> Registry {
     Registry { sources }
 }
 
+/// Where a run's log lives, for either kind of run.
+///
+/// An implementer writes `<task>--<arm>.log` at the logs root; a CRITIC writes
+/// `critiques/<task>/<arm>.log`. This resolved only the first, so `fb park <task> <critic>`
+/// answered "no log ... nothing to classify" -- the quota chain could not classify a critic
+/// run even when called by hand at the right moment with the right arguments.
+///
+/// Not hypothetical: agy-opus-46 hit a provider quota AS A CRITIC twice on 2026-09-19, and
+/// the park in `sources.toml` carries a hand-written note reading "429 as a CRITIC, not as
+/// an implementer" -- a human working around this.  (bead farmerbob-4uha)
+///
+/// The implementer path is tried FIRST, so nothing about existing callers changes.
+pub fn log_paths(logs: &std::path::Path, task: &str, arm: &str) -> Vec<std::path::PathBuf> {
+    vec![
+        logs.join(format!("{task}--{arm}.log")),
+        logs.join("critiques").join(task).join(format!("{arm}.log")),
+    ]
+}
+
 /// The first bytes of a run's log, where a refusal is stated if it is stated at all.
 fn log_head(logs: &std::path::Path, task: &str, arm: &str) -> Option<String> {
-    let p = logs.join(format!("{task}--{arm}.log"));
-    let text = std::fs::read_to_string(p).ok()?;
-    Some(text.chars().take(4000).collect())
+    for p in log_paths(logs, task, arm) {
+        if let Ok(text) = std::fs::read_to_string(&p) {
+            return Some(text.chars().take(4000).collect());
+        }
+    }
+    None
 }
 
 /// The facts a run recorded, as `outcome::classify` wants them.
@@ -136,7 +158,14 @@ pub fn run_cmd(task: &str, arm: &str, apply: bool, default_backoff_secs: u64) ->
     };
 
     let Some(head) = log_head(&logs, task, arm) else {
-        eprintln!("fb park: no log for {task}--{arm}; nothing to classify");
+        eprintln!(
+            "fb park: no log for {task}/{arm}; nothing to classify. Looked in: {}",
+            log_paths(&logs, task, arm)
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         return 2;
     };
     let Some(facts) = run_facts(&logs, task, arm) else {
@@ -245,4 +274,39 @@ fn apply_parks(when: &str, arms: &[String]) -> Result<usize, String> {
     }
     std::fs::write(&path, out).map_err(|e| format!("writing sources.toml: {e}"))?;
     Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A CRITIC writes `critiques/<task>/<arm>.log`, not `<task>--<arm>.log`. Resolving only
+    /// the implementer layout meant `fb park <task> <critic>` answered "nothing to classify"
+    /// -- so the quota chain could not classify a critic run even when called by hand at the
+    /// right moment with the right arguments. agy-opus-46 hit a provider quota as a critic
+    /// twice on 2026-09-19 and both parks had to be written by hand.  (bead farmerbob-4uha)
+    #[test]
+    fn a_critics_log_is_found_as_well_as_an_implementers() {
+        let logs = std::path::Path::new("/l");
+        let paths = log_paths(logs, "novelty", "agy-opus-46");
+        assert!(paths.contains(&logs.join("novelty--agy-opus-46.log")));
+        assert!(
+            paths.contains(
+                &logs
+                    .join("critiques")
+                    .join("novelty")
+                    .join("agy-opus-46.log")
+            )
+        );
+    }
+
+    /// The implementer layout is tried FIRST, so nothing about existing callers changes.
+    #[test]
+    fn the_implementer_layout_still_wins() {
+        let paths = log_paths(std::path::Path::new("/l"), "t", "a");
+        assert!(
+            paths[0].to_string_lossy().ends_with("t--a.log"),
+            "{paths:?}"
+        );
+    }
 }
