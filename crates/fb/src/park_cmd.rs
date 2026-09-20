@@ -73,7 +73,8 @@ pub fn exit_code_from_log(head: &str) -> Option<i32> {
 /// Where a run's log lives, for either kind of run.
 ///
 /// An implementer writes `<task>--<arm>.log` at the logs root; a CRITIC writes
-/// `critiques/<task>/<arm>.log`. This resolved only the first, so `fb park <task> <critic>`
+/// `critiques/<task>/<arm>.log`; a SPECCHECK run writes `speccheck/<task>/<arm>.log`.
+/// This resolved only the first, so `fb park <task> <critic>`
 /// answered "no log ... nothing to classify" -- the quota chain could not classify a critic
 /// run even when called by hand at the right moment with the right arguments.
 ///
@@ -81,11 +82,17 @@ pub fn exit_code_from_log(head: &str) -> Option<i32> {
 /// the park in `sources.toml` carries a hand-written note reading "429 as a CRITIC, not as
 /// an implementer" -- a human working around this.  (bead farmerbob-4uha)
 ///
+/// The speccheck layout matters most for cost: `fb admit` runs speccheck BEFORE dispatch,
+/// so an arm that is out of quota fails at the CHEAPER stage first -- and because nothing
+/// could read that log, it was then dispatched anyway and burned the expensive launch
+/// discovering the same wall.  (bead farmerbob-dk7y)
+///
 /// The implementer path is tried FIRST, so nothing about existing callers changes.
 pub fn log_paths(logs: &std::path::Path, task: &str, arm: &str) -> Vec<std::path::PathBuf> {
     vec![
         logs.join(format!("{task}--{arm}.log")),
         logs.join("critiques").join(task).join(format!("{arm}.log")),
+        logs.join("speccheck").join(task).join(format!("{arm}.log")),
     ]
 }
 
