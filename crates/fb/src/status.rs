@@ -372,7 +372,58 @@ fn target_declaration(spec_path: &Path) -> Option<(String, String)> {
 fn render_queue(repo: &Path, logs: &Path) -> String {
     let mut s = String::from("== queue ==\n");
     s.push_str(&render_unspent_specs(repo, logs));
+    s.push_str(&render_skipped(repo));
     s.push_str(&render_wave_summaries(repo, logs));
+    s
+}
+
+/// Tasks the autopilot gave up on, from the `.skip.<task>` markers it writes.
+///
+/// A SILENT GIVE-UP IS WORSE THAN A LOUD SPIN. The autopilot used to retry a failing
+/// pipeline every five seconds for ever and launch nothing (bead farmerbob-z1p); the cure
+/// was to write a marker after one failure and never try again. That fixed the spin and
+/// replaced it with something quieter and no better: nine tasks had their subjective tier
+/// abandoned and no command anywhere said so. The spin was at least visible.
+///
+/// A marker file is the whole record, so the reason is not recoverable here -- that is
+/// itself worth saying, rather than implying the task was finished.
+fn render_skipped(repo: &Path) -> String {
+    let dir = repo.join(".fb/queue/dispatched");
+    let mut names: Vec<String> = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries
+            .flatten()
+            .filter_map(|e| {
+                e.file_name()
+                    .to_str()
+                    .and_then(|n| n.strip_prefix(".skip."))
+                    .map(str::to_string)
+            })
+            .collect(),
+        // Unreadable is not empty: reporting no skipped tasks because the directory could
+        // not be read is the failure this whole section exists to stop.
+        Err(e) => {
+            return format!(
+                "  skipped tasks: cannot read {} ({e}) -- this is not a count of zero\n",
+                dir.display()
+            );
+        }
+    };
+    if names.is_empty() {
+        return String::new();
+    }
+    names.sort();
+    let mut s = format!(
+        "  {} task(s) the autopilot gave up on after one failed pipeline, and will not \
+         retry:\n",
+        names.len()
+    );
+    for n in &names {
+        s.push_str(&format!("    {n}\n"));
+    }
+    s.push_str(
+        "    Their subjective tier never ran. Remove the marker in .fb/queue/dispatched/ to \
+         let it try again.\n",
+    );
     s
 }
 
@@ -604,6 +655,53 @@ fn shell_glob(dir: &Path, pattern: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A SILENT GIVE-UP IS WORSE THAN A LOUD SPIN. The autopilot retried a failing pipeline
+    /// every five seconds and launched nothing (farmerbob-z1p); the cure writes a marker
+    /// after one failure and never tries again. That fixed the spin and replaced it with
+    /// something quieter and no better -- nine tasks had their subjective tier abandoned
+    /// and no command said so.
+    #[test]
+    fn skipped_tasks_are_named_not_merely_counted() {
+        let repo = tempdir("status-skip");
+        let d = repo.join(".fb/queue/dispatched");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join(".skip.beta"), "").unwrap();
+        fs::write(d.join(".skip.alpha"), "").unwrap();
+        fs::write(d.join("wave1.tsv"), "").unwrap();
+        let out = render_skipped(&repo);
+        assert!(out.contains("alpha"), "{out}");
+        assert!(out.contains("beta"), "{out}");
+        assert!(
+            !out.contains("wave1"),
+            "only skip markers are skipped tasks: {out}"
+        );
+        assert!(
+            out.find("alpha") < out.find("beta"),
+            "sorted, so two runs read the same: {out}"
+        );
+        fs::remove_dir_all(&repo).ok();
+    }
+
+    /// Nothing skipped prints nothing: an empty section is noise in a status a person reads
+    /// every few minutes.
+    #[test]
+    fn no_skipped_tasks_prints_no_section() {
+        let repo = tempdir("status-skip-none");
+        fs::create_dir_all(repo.join(".fb/queue/dispatched")).unwrap();
+        assert_eq!(render_skipped(&repo), "");
+        fs::remove_dir_all(&repo).ok();
+    }
+
+    /// UNREADABLE IS NOT EMPTY. Reporting no skipped tasks because the directory could not
+    /// be read is exactly the failure this section exists to stop.
+    #[test]
+    fn an_unreadable_directory_says_so_rather_than_reporting_none() {
+        let repo = std::path::Path::new("/definitely/not/here/fb-skip-test");
+        let out = render_skipped(repo);
+        assert!(out.contains("cannot read"), "{out}");
+        assert!(out.contains("not a count of zero"), "{out}");
+    }
 
     /// A MARKER INSIDE A FENCE IS AN EXAMPLE. This reader scanned lines itself and was
     /// fence-blind, so a spec documenting the marker format read as declaring whatever its
