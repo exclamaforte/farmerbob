@@ -18,6 +18,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::scope_cmd::{arm_changed, harness_owned};
@@ -89,14 +90,68 @@ fn now_ms() -> u64 {
 }
 
 /// Runs a command in `dir`, returning (success, merged stdout+stderr).
+/// How long the scorer will wait for one cargo invocation.
+///
+/// A CANDIDATE'S TEST SUITE CAN DEADLOCK, AND ONE DID. critique-roster/glm-53-flash wrote a
+/// suite that blocks in `futex_do_wait`; the same filter passes in 0.07s on master. The
+/// ARM's run was bounded -- systemd caps its scope at 45 minutes -- but this function had no
+/// bound at all, so `fb score` on that worktree would wait for ever.
+///
+/// That is not one stuck command. `fb pipeline` calls score first, and `fb autopilot` calls
+/// the pipeline to catch up unscored tasks, so a single candidate with a hanging test wedges
+/// the whole machine: no scoring, no pipeline, no further waves, and nothing saying why.
+///
+/// Twenty minutes is far past any honest run here -- the slowest real suite in this
+/// workspace finishes in about one -- and well short of the arm's own 45.
+const CARGO_TIMEOUT: Duration = Duration::from_secs(1200);
+
+/// Run cargo in `dir`, bounded.
+///
+/// A timeout returns `false` with the reason IN THE LOG, because the caller reads that log
+/// to decide the verdict: a killed run must not look like a test failure, and
+/// `build_verdict::tests_run` must not read a truncated log as "0 tests ran", which is a
+/// measured zero rather than a measurement that never finished.
 fn run(dir: &Path, args: &[&str]) -> (bool, String) {
-    match Command::new("cargo").args(args).current_dir(dir).output() {
+    let child = Command::new("cargo")
+        .args(args)
+        .current_dir(dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => return (false, format!("error: cannot run cargo: {e}")),
+    };
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if started.elapsed() >= CARGO_TIMEOUT {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return (
+                        false,
+                        format!(
+                            "error: cargo {} did not finish within {}s and was killed -- \
+                             TIMED OUT, which is not a test result",
+                            args.join(" "),
+                            CARGO_TIMEOUT.as_secs()
+                        ),
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(e) => return (false, format!("error: waiting on cargo: {e}")),
+        }
+    }
+    match child.wait_with_output() {
         Ok(o) => {
             let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
             s.push_str(&String::from_utf8_lossy(&o.stderr));
             (o.status.success(), s)
         }
-        Err(e) => (false, format!("error: cannot run cargo: {e}")),
+        Err(e) => (false, format!("error: reading cargo output: {e}")),
     }
 }
 
@@ -1789,5 +1844,48 @@ mod deleted_list {
             .copied()
             .expect("clause 7: the line count survives the refusal");
         assert!(lines > 0, "the deliverable's own lines are a real count");
+    }
+
+    /// A CANDIDATE'S TEST SUITE CAN DEADLOCK, AND ONE DID. critique-roster/glm-53-flash
+    /// wrote a suite that blocks in `futex_do_wait`; the same filter passes in 0.07s on
+    /// master. The ARM's run is bounded by systemd at 45 minutes, but the SCORER had no
+    /// bound at all -- and `fb pipeline` calls score first, while `fb autopilot` calls the
+    /// pipeline to catch up unscored tasks. One candidate with a hanging test therefore
+    /// wedged the entire machine: no scoring, no pipeline, no further waves, nothing saying
+    /// why.
+    ///
+    /// The timeout must be legible as a TIMEOUT. `build_verdict::tests_run` reads the log to
+    /// count what executed, and a killed run whose log carries no `test result:` line must
+    /// come back Missing -- a measurement that never finished -- rather than Observed(0),
+    /// which is a measured zero and would be scored as the arm having run no tests.
+    #[test]
+    fn a_killed_cargo_run_is_unmeasured_not_a_measured_zero() {
+        let log = format!(
+            "error: cargo test -p fb did not finish within {}s and was killed -- \
+             TIMED OUT, which is not a test result",
+            CARGO_TIMEOUT.as_secs()
+        );
+        assert!(
+            farmerbob_core::build_verdict::tests_run(&log)
+                .value()
+                .is_none(),
+            "a timed-out run reported a test count: {log}"
+        );
+        assert!(log.contains("TIMED OUT"), "the log must say so in words");
+    }
+
+    /// The bound sits far past any honest run here and well short of the arm's own 45
+    /// minutes, so a slow-but-real suite is never cut off and a hung one never outlives the
+    /// run it belongs to.
+    #[test]
+    fn the_bound_is_looser_than_any_real_suite_and_tighter_than_the_arms_own() {
+        assert!(
+            CARGO_TIMEOUT.as_secs() >= 600,
+            "a real suite must not be cut off"
+        );
+        assert!(
+            CARGO_TIMEOUT.as_secs() < 2700,
+            "must expire before the arm's own scope does"
+        );
     }
 }
