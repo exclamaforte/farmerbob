@@ -104,6 +104,7 @@ fn run_all() -> Vec<Check> {
         check_spec_targets(&repo),
         decide_orphaned_modules(&orphan_sources(&scanned)),
         decide_unreachable_modules(&scanned),
+        check_name_collisions(&repo),
     ]
 }
 
@@ -354,6 +355,96 @@ pub fn unreachable_library_modules(
         .collect();
     dead.sort();
     dead
+}
+
+/// Public type names defined more than once inside one crate.
+///
+/// `farmerbob-core` has 48 of them, and four `pub enum Fate`. Two of those came from my own
+/// specs on the same day, and nothing compared a spec's proposed API against the names the
+/// crate already had -- so the collision was invisible until someone counted.
+/// (bead farmerbob-vtp1)
+///
+/// The cost is not aesthetic. Twice on 2026-09-19 a decision already implemented in
+/// `farmerbob-core` was implemented a second time in `fb`, because nobody knew the first
+/// existed; in both cases the core version was the more careful one and the harness ran the
+/// other.
+///
+/// `Warn`, not `Fail`: a colliding name compiles and runs. It is a hazard to the next person
+/// writing a spec, which is what `fb doctor` is for.
+fn check_name_collisions(repo: &Path) -> Check {
+    use farmerbob_core::name_collision::{Module, collisions};
+    let dir = repo.join("crates/farmerbob-core/src");
+    let entries = match fs::read_dir(&dir) {
+        Ok(e) => e,
+        // Unreadable is not "no collisions": reporting a clean crate because the directory
+        // could not be read is the failure this whole command exists to surface.
+        Err(e) => {
+            return Check::new(
+                "name collisions",
+                Status::Warn,
+                format!("cannot read {}: {e}", dir.display()),
+                None,
+            );
+        }
+    };
+    let mut modules = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|x| x != "rs") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if stem == "lib" || stem == "main" {
+            continue;
+        }
+        if let Ok(source) = fs::read_to_string(&path) {
+            modules.push(Module {
+                stem: stem.to_string(),
+                source,
+            });
+        }
+    }
+    let found = collisions(&modules);
+    if found.is_empty() {
+        return Check::new(
+            "name collisions",
+            Status::Ok,
+            format!(
+                "no public type name is defined twice across {}",
+                count_noun(modules.len(), "module")
+            ),
+            None,
+        );
+    }
+    // The worst first: a name in four modules is a worse trap than one in two.
+    let mut worst: Vec<&farmerbob_core::name_collision::Collision> = found.iter().collect();
+    worst.sort_by(|a, b| {
+        b.modules
+            .len()
+            .cmp(&a.modules.len())
+            .then(a.name.cmp(&b.name))
+    });
+    let shown: Vec<String> = worst
+        .iter()
+        .take(5)
+        .map(|c| format!("{} ({})", c.name, c.modules.join(", ")))
+        .collect();
+    Check::new(
+        "name collisions",
+        Status::Warn,
+        format!(
+            "{} public type name(s) defined in more than one module of farmerbob-core; worst: {}",
+            found.len(),
+            shown.join("; ")
+        ),
+        Some(
+            "before a spec proposes a type name, check it against these; two decisions with \
+             one name is how the same logic gets implemented twice"
+                .to_string(),
+        ),
+    )
 }
 
 /// Turn a crate scan into the unreachable-modules report, without touching the filesystem.
@@ -2382,5 +2473,28 @@ esac
             targets.creates
         );
         assert_eq!(targets.modifies, vec!["crates/fb/src/real.rs".to_string()]);
+    }
+
+    /// The check reports the REAL crate, so the number cannot drift from the tree while the
+    /// test stays green on a fixture.
+    #[test]
+    fn the_collision_check_reads_the_real_crate_and_finds_the_known_ones() {
+        let repo = crate::paths::repo();
+        if !repo.join("crates/farmerbob-core/src").is_dir() {
+            return; // not run from the repository; the check's own Warn branch covers this
+        }
+        let check = check_name_collisions(&repo);
+        assert_eq!(check.status, Status::Warn, "{}", check.message);
+        // `Fate` is the one the bead names, and there are four of it.
+        assert!(check.message.contains("Fate"), "{}", check.message);
+    }
+
+    /// AN UNREADABLE CRATE IS NOT A CLEAN ONE. Reporting no collisions because the directory
+    /// could not be read is the failure `fb doctor` exists to surface, not to commit.
+    #[test]
+    fn an_unreadable_crate_warns_rather_than_reporting_clean() {
+        let check = check_name_collisions(std::path::Path::new("/definitely/not/here/fb"));
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.message.contains("cannot read"), "{}", check.message);
     }
 }
