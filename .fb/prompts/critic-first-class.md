@@ -114,9 +114,20 @@ pub fn sections_of(body: &str) -> Sections;
    path, in the order declared. Pin it with two targets where only the second has changes:
    the result must contain the second's diff and name both paths. (fp7q)
 
-7. A target that does not exist in the worktree contributes a NAMED absence to the
-   concatenation, not silence. A critic told nothing about a file cannot tell whether it was
-   unchanged or missing.
+7. NON-EXISTENCE AND UNREADABILITY ARE DIFFERENT, and this clause contradicted the
+   Composition section until 2026-09-19; gemini-38-flash found the contradiction by filing a
+   CLAIM against the half the arm did not implement. Both readings were faithful to a spec
+   that disagreed with itself. The rule is:
+
+   - A declared target that DOES NOT EXIST contributes a NAMED absence to the concatenation
+     and the result stays `Observed`. That a file was never written is a FACT ABOUT THE
+     CANDIDATE and is exactly what a critic needs to see; refusing to show the rest because
+     of it hides the work that was done.
+   - A declared target that exists but cannot be READ -- git refused, permissions, a broken
+     worktree -- makes the whole result `Missing`. That is an instrument failure, and a
+     partial view presented as a whole is what fp7q is about.
+
+   Pin both, with two targets each way.
 
 ## Boundaries, at N and at zero
 
@@ -136,9 +147,9 @@ pub fn sections_of(body: &str) -> Sections;
 `run_critic` returns exactly one outcome: the review text, or one `NoReview`. It never
 returns both and never an empty `Ok`.
 
-`patches_for` returns ONE string for the whole set. `Missing` if the patch of ANY declared
-target could not be read -- a partial view of a split deliverable is what fp7q is about, and
-silently returning the readable half would reproduce it.
+`patches_for` returns ONE string for the whole set. `Missing` if any declared target exists
+but could not be READ -- a partial view of a split deliverable presented as a whole is what
+fp7q is about. A target that simply does not exist is not a read failure; see clause 7.
 
 ## Rules
 
