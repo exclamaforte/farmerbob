@@ -251,6 +251,35 @@ pub fn run_cmd(execute: bool, may_unregister: bool) -> i32 {
         }
     }
 
+    // ARCHIVE BEFORE DELETING. A candidate's work lives only in its worktree, uncommitted,
+    // and reaping removes it -- so a run that was never adjudicated is simply gone, and the
+    // better the arm the more there was to lose. `fb archive` exists precisely for this
+    // ("capture every candidate worktree's work as a patch, before anything reaps it") and
+    // had no caller, so nothing ever ran it before a reap. (bead farmerbob-5ar3)
+    //
+    // It runs on the DELETE steps only: unregistering leaves the files on disk, so there is
+    // nothing to lose there and archiving it would be work for nothing.
+    //
+    // A failed archive STOPS the reap. Deleting work we failed to capture is the outcome
+    // this exists to prevent, and a reap that is merely postponed costs disk.
+    let to_archive: Vec<String> = go
+        .iter()
+        .filter_map(|step| match step {
+            Step::Delete { dir } => Some((*dir).to_string()),
+            Step::Unregister { .. } => None,
+        })
+        .collect();
+    if execute && !to_archive.is_empty() {
+        println!("archiving {} worktree(s) before deletion", to_archive.len());
+        if crate::archive_cmd::run(&to_archive) != 0 {
+            eprintln!(
+                "fb reap: archiving failed, so nothing was deleted. The work is still on \
+                 disk; fix the archive and re-run."
+            );
+            return 1;
+        }
+    }
+
     if !execute {
         println!();
         println!("DRY RUN. Nothing was changed. Re-run with --execute to perform these steps.");
