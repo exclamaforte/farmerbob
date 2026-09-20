@@ -533,11 +533,22 @@ quota_bucket = "nex-agi"   # the upstream vendor is what rate-limits, not openro
 # timestamped either side of it.
 
 [source.agy-sonnet-46]
-parked_until = "2026-09-19T22:39:17Z"   # 2026-09-19: same 429 as agy-opus-46, minutes apart.
-# "Individual quota reached ... Resets in 1h54m3s." The quota is per ACCOUNT, not per model:
-# opus hit it at 2h0m10s remaining and sonnet reported 1h54m3s on the same countdown. The
-# separate-bucket assumption in these entries is wrong for the individual limit, whatever is
-# true of billing. Both agy arms are parked on one clock.
+parked_until = "2026-09-20T04:22:00Z"   # 2026-09-19 17:35 PDT: RESOURCE_EXHAUSTED 429 as a CRITIC.
+# "Individual quota reached ... Resets in 3h46m52s." -- captured from
+# logs/critiques/fate-set/agy-sonnet-46.log, where the critic wrote a prompt and a transcript
+# and no review.
+#
+# THE QUOTA IS PER ACCOUNT, NOT PER MODEL, and today is the second day it has proved so. The
+# `quota_bucket` fields below say agy meters Sonnet and Opus separately; that is about
+# BILLING and is not true of the individual rate limit. Earlier today opus hit it with
+# 2h0m10s remaining and sonnet reported 1h54m3s on the same countdown. It happened again this
+# evening: opus reported 3h54m29s at 17:23 and sonnet 3h46m52s at 17:35 -- twelve minutes
+# later, seven and a half minutes less left. One clock.
+#
+# So parking opus alone did not protect anything: the cast simply fell through to sonnet and
+# hit the same wall twelve minutes later. Both agy arms are parked together, on one clock.
+# PARKED BY HAND, both of them. The harness captured each refusal as InstrumentFailed at the
+# launch site and did nothing with it -- that is the whole of farmerbob-4uha.
 status      = "verified"
 kind        = "cli"
 cmd         = "agy"
