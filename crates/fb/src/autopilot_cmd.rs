@@ -236,6 +236,25 @@ fn available_mb() -> u64 {
 }
 
 /// Run the loop. `once` does a single tick, which is what the tests and a cron would want.
+/// Whether this process is running a binary that has since been replaced on disk.
+///
+/// `cargo build` replaces the file, and the kernel then appends " (deleted)" to
+/// /proc/self/exe for every process still running the old inode.
+///
+/// THIS HAS STOPPED THE AUTOPILOT TWICE IN ONE DAY. The first time it failed loudly -- the
+/// wave launch was ENOENT because `current_exe()` handed back the deleted path -- and
+/// `wave_cmd::runnable_exe` fixed that. The second time it failed SILENTLY: a process built
+/// before that fix went on ticking with the old logic, printed "busy" every two minutes, and
+/// launched nothing. A queued wave sat for fourteen minutes until I restarted it by hand.
+///
+/// Fixing the spawn was not enough, because the stale process is still running stale
+/// DECISIONS. The only safe answer is to stop being that process.
+pub fn binary_was_replaced() -> bool {
+    std::fs::read_link("/proc/self/exe")
+        .map(|p| p.to_string_lossy().ends_with(" (deleted)"))
+        .unwrap_or(false)
+}
+
 pub fn run(once: bool) -> i32 {
     let repo = crate::paths::repo();
     let logs = crate::paths::logs();
@@ -244,6 +263,23 @@ pub fn run(once: bool) -> i32 {
         .and_then(|v| v.parse().ok())
         .unwrap_or(4);
     loop {
+        // RE-EXEC RATHER THAN RUN STALE. Exiting would leave no autopilot at all, which is
+        // worse than stale logic and is the one thing this loop must never do. Re-exec
+        // replaces this process with the current binary, keeping the loop alive across a
+        // rebuild -- which happens many times an hour while the harness is being worked on.
+        if !once && binary_was_replaced() {
+            let current = repo.join("target/debug/fb");
+            println!(
+                "autopilot: my binary was replaced on disk; re-execing {}",
+                current.display()
+            );
+            let err = std::os::unix::process::CommandExt::exec(
+                std::process::Command::new(&current).arg("autopilot"),
+            );
+            // `exec` only returns on failure. Say so and carry on with the old code rather
+            // than dying: stale decisions beat no autopilot.
+            eprintln!("autopilot: re-exec failed ({err}); continuing on the old binary");
+        }
         let launched = run_once(&repo, &logs, max_waves);
         if once {
             return 0;
@@ -360,5 +396,28 @@ mod tests {
             "already has claims"
         );
         assert!(!needs_pipeline(true, false, false, true), "skipped");
+    }
+
+    /// THIS HAS STOPPED THE AUTOPILOT TWICE IN ONE DAY. `cargo build` replaces the binary
+    /// and the kernel appends " (deleted)" to /proc/self/exe for every process still on the
+    /// old inode. The first failure was loud -- an ENOENT wave launch. The second was
+    /// silent: a process built before that fix ticked on with old logic, printed "busy"
+    /// every two minutes, and launched nothing while a queued wave sat for fourteen minutes.
+    #[test]
+    fn a_live_binary_is_not_reported_as_replaced() {
+        // This test process's own binary exists, so the check must be false for it.
+        assert!(!binary_was_replaced());
+    }
+
+    /// The marker is the kernel's exact suffix, not a substring that could appear in a path.
+    #[test]
+    fn the_deleted_marker_is_a_suffix_not_a_contains() {
+        let deleted = "/repo/target/debug/fb (deleted)";
+        let innocent = "/repo/target/debug/fb (deleted)-backup/fb";
+        assert!(deleted.ends_with(" (deleted)"));
+        assert!(
+            !innocent.ends_with(" (deleted)"),
+            "a path merely CONTAINING the marker is not a replaced binary"
+        );
     }
 }
