@@ -1,0 +1,8 @@
+MERGED codex-luna
+PASS, 1921 tests, clippy 0, 188L. gemini-38-flash critiqued it: NO MATERIAL DEFECTS, with one
+observation that was right and was MINE. It found that the boundary test used "keylimit",
+which passes under naive substring matching anyway because "key limit" contains a space -- so
+the assertion could not fail if is_phrase_word were deleted. My spec handed the arm that weak
+example. Strengthened with the critic's own suggestions ("donkey limit", "key limited").
+Closes today's repeated quota burn: blast_of is gone, blast_call returns
+Recognised|Unrecognised, and "individual quota reached" is Credential-wide.

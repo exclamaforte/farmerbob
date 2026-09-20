@@ -1,21 +1,11 @@
-critique-roster SUPERSEDED -- implemented by the orchestrator directly (4f5b20b, 7ec3e41, 5886367).
-
-Three attempts, three failures, all on the same boundary:
-  attempt 1  codex-luna  NO-TESTS    pre-existing zero_candidates test got InstrumentFailed, expected 4
-  attempt 2  codex-luna  TESTS-FAIL  its own missing_worktree_root test got Observed(vec![]), expected 1
-  attempt 3  codex-luna  NO-TESTS    +340 lines, suite did not pass
-
-Everything else passed every time. The task was not too hard; my spec kept asking arms to
-pin a distinction that is not reliably reachable from a test.
-
-Doing it directly found three defects no arm would have been asked about, because they
-were not in the spec:
-  - prompt() used ONE path for both the prompt and the {OUT} the critic writes to, so every
-    critic has been instructed to overwrite its own prompt. No critique this stage ever ran
-    was reported.
-  - launch() discarded stdout and stderr while writing a zero-byte log, so a critic that
-    crashed and one that ran silently were byte-identical.
-  - Source had no parked_until field, so the Rust registry was blind to every park ever
-    recorded and cast a rate-limited arm twice in a row.
-
-That is the argument for dogfooding this particular path rather than dispatching it.
+MERGED glm-53-flash
+PASS, 856 tests, clippy 0, 766L. Makes the subjective tier work on a ONE-ARM field: critique
+casts from the roster via stage_cast instead of requiring two implementations.
+codex-luna critiqued it and found a REAL DEFECT, verified and fixed on merge: repo_file fell
+back to the hard-coded repository whenever the configured path was not a file, so an FB_REPO
+pointing at a tree with no sources.toml silently read the REAL roster and cast critics from
+it. FB_REPO is the isolation override; the fallback defeated exactly that while making a
+misconfigured run indistinguishable from a correct one.
+This arm also earned its continuation: its first run was killed at 45 minutes by a deadlock
+in its own test suite, and the follow-up turn found and fixed it. 22 critique tests now pass
+in 0.02s, up from 17 on the base.

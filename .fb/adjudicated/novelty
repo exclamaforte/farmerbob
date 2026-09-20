@@ -1,0 +1,7 @@
+MERGED codex-luna
+PASS, 1906 tests, clippy 0, 438L. No critique: agy-opus-46 hit an account-wide provider
+quota as its critic and wrote a prompt and a transcript and no review. I read the
+implementation myself instead. Every clause holds, including the one the module exists for:
+`without_tests` returning None yields Unmeasured and never falls back to a byte comparison,
+which would report Implemented for a change that may be entirely in tests -- wrong in the
+direction that credits the arm.

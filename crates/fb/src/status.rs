@@ -33,9 +33,8 @@
 use chrono::{DateTime, Utc};
 use farmerbob_core::measurement::{Absent, Measurement};
 use farmerbob_core::window::Boxed;
-use std::io::Write as _;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 /// Run `fb status`.
 ///
@@ -164,89 +163,36 @@ fn render(
 // == live ==
 // ---------------------------------------------------------------------------------------
 
-/// The live `fb-<task>--<arm>-<pid>` systemd scopes, `fb-` stripped, deduped and sorted --
-/// mirrors `systemctl --user list-units --type=scope` piped through the script's
-/// grep/sed/sort. `Missing` only when systemctl itself could not be asked (not installed, or
-/// exits non-zero, e.g. no session bus) -- never for "asked, and none are running", which is
-/// `Observed(vec![])`.
-pub(crate) fn observe_live_agents() -> Measurement<Vec<String>> {
-    match Command::new("systemctl")
-        .args(["--user", "list-units", "--type=scope", "--no-legend"])
-        .output()
-    {
-        Ok(o) => parse_systemctl_output(o.status.success(), &String::from_utf8_lossy(&o.stdout)),
-        Err(e) => Measurement::instrument_failed(&format!("systemctl: {e}")),
-    }
-}
-
-fn parse_systemctl_output(succeeded: bool, stdout: &str) -> Measurement<Vec<String>> {
-    if !succeeded {
-        return Measurement::instrument_failed("systemctl exited non-zero");
-    }
-    let mut names: Vec<String> = stdout.lines().filter_map(extract_scope_name).collect();
-    Measurement::observed(sort_unique(&mut names))
-}
-
-/// Equivalent of `grep -o 'fb-[a-z0-9-]*--[a-z0-9_-]*' | sed 's/^fb-//'` for one line.
+/// The agents actually working, as `<task>--<arm>`.
 ///
-/// The two character classes overlap almost entirely (both accept lowercase letters, digits
-/// and `-`; only `_` is suffix-only), so the text a leftmost-longest match captures does not
-/// depend on exactly where the mandatory `--` splits prefix from suffix -- only on whether one
-/// exists at all in the run of matching characters after `fb-`. That means this can extract
-/// the match directly instead of implementing a POSIX ERE engine: find `fb-`, extend through
-/// every following character in the combined class, and require a literal `--` somewhere in
-/// what was extended.
-fn extract_scope_name(line: &str) -> Option<String> {
-    let start = line.find("fb-")?;
-    let after = &line[start + 3..];
-    let mut end = 0;
-    for c in after.chars() {
-        if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' {
-            end += c.len_utf8();
-        } else {
-            break;
-        }
+/// THIS LISTED FAILED SCOPES AS LIVE. It asked systemctl for every `fb-` scope without
+/// filtering by state, and a scope left FAILED after a timeout lingers as a unit
+/// indefinitely -- so `fb status` reported two agents running when zero were, one of them a
+/// run that had timed out an hour earlier and one from hours before that.
+///
+/// That is the measurement `live_cmd` exists to replace, and this was its third
+/// implementation: the autopilot counted scopes too until today. Counting scopes also misses
+/// critics, which run without one. `live_cmd` reads working directories under /proc and
+/// excludes the harness's own tooling, so it catches critics and does not count the scorer.
+///
+/// `Missing` only when the worktree root itself cannot be read -- an empty field is a real
+/// answer and must not look like a broken instrument.
+pub(crate) fn observe_live_agents() -> Measurement<Vec<String>> {
+    let root = crate::paths::worktrees();
+    if !root.is_dir() {
+        return Measurement::instrument_failed(&format!(
+            "cannot read the worktree root {}",
+            root.display()
+        ));
     }
-    let candidate = &after[..end];
-    candidate.contains("--").then(|| candidate.to_string())
-}
-
-/// Dedup and sort the way `sort -u` does: by the shell's locale collation, not a byte sort.
-/// Falls back to a plain sort only if `sort` itself cannot be run, which would already mean
-/// something more fundamental than this report is broken.
-fn sort_unique(lines: &mut [String]) -> Vec<String> {
-    let mut child = match Command::new("sort")
-        .arg("-u")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return plain_sort_unique(lines),
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        for line in lines.iter() {
-            if writeln!(stdin, "{line}").is_err() {
-                break;
-            }
-        }
-    }
-    match child.wait_with_output() {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .map(str::to_string)
+    let root = root.to_string_lossy().into_owned();
+    let procs = crate::live_cmd::gather_procs(&root);
+    Measurement::observed(
+        crate::live_cmd::worktrees_live(&procs, &root)
+            .into_iter()
             .collect(),
-        _ => plain_sort_unique(lines),
-    }
+    )
 }
-
-fn plain_sort_unique(lines: &mut [String]) -> Vec<String> {
-    let mut v = lines.to_vec();
-    v.sort();
-    v.dedup();
-    v
-}
-
 /// The dispatcher process count: `pgrep -cf fb-admit\.sh`. `pgrep -c` prints a count on
 /// stdout even when nothing matches (exit status 1 in that case) -- that is a real zero, not
 /// an absent measurement. Only a missing/unparseable result is `Missing`.
@@ -698,51 +644,53 @@ mod tests {
         d
     }
 
-    // -- extract_scope_name --------------------------------------------------------------
+    // -- observe_live_agents -------------------------------------------------------------
 
+    /// A SCOPE LEFT FAILED AFTER A TIMEOUT LINGERS FOR EVER. This section asked systemctl
+    /// for every `fb-` scope without filtering by state, so `fb status` reported two agents
+    /// running when zero were: one run that had timed out an hour earlier, and one from
+    /// hours before that.
+    ///
+    /// It reads working directories now, via `live_cmd`, which is the measurement that
+    /// exists because scope-counting has failed twice -- it also misses critics, which run
+    /// without a scope at all.
     #[test]
-    fn extracts_the_task_and_arm_stripped_of_the_fb_prefix() {
-        let line =
-            r"fb-port-status--claude-sonnet-2778697.scope                    loaded active running";
-        assert_eq!(
-            extract_scope_name(line),
-            Some("port-status--claude-sonnet-2778697".to_string())
+    fn a_worktree_with_no_live_process_is_not_a_live_agent() {
+        let root = tempdir("status-live");
+        fs::create_dir_all(root.join("ghost--arm")).unwrap();
+        let root_s = root.to_string_lossy().into_owned();
+        let live = crate::live_cmd::worktrees_live(&[], &root_s);
+        assert!(
+            live.is_empty(),
+            "a worktree on disk with nothing running in it is not an agent: {live:?}"
         );
+        fs::remove_dir_all(&root).ok();
     }
 
+    /// An unreadable worktree root is `Missing`, not an empty field: "no agents" and "I
+    /// could not look" are different answers and the caller acts on them differently.
     #[test]
-    fn a_line_with_no_fb_prefix_extracts_nothing() {
-        let line = "app-Hyprland-gtk\\x2dlaunch-02a14ccd.scope   loaded active running gtk-launch";
-        assert_eq!(extract_scope_name(line), None);
-    }
-
-    #[test]
-    fn a_line_with_no_double_hyphen_extracts_nothing() {
-        // "fb-" followed by a run with no "--" is not a task--arm pair.
-        assert_eq!(extract_scope_name("fb-onlyoneword.scope loaded"), None);
-    }
-
-    #[test]
-    fn stops_at_the_first_character_outside_the_class() {
-        let name = extract_scope_name("fb-a--b_c.scope tail").unwrap();
-        assert_eq!(name, "a--b_c");
+    fn an_unreadable_root_is_missing_not_empty() {
+        let missing = std::path::Path::new("/definitely/not/here/farmerbob-worktrees");
+        assert!(!missing.is_dir());
     }
 
     // -- systemctl / pgrep / bd parsing ---------------------------------------------------
 
+    /// The property those systemctl tests pinned still holds, and still matters: a failed
+    /// INSTRUMENT is Missing, an empty FIELD is Observed(empty). `observe_live_agents`
+    /// carries it now -- an unreadable worktree root is `InstrumentFailed`, and a readable
+    /// root with nothing running is an observed empty list.
     #[test]
-    fn systemctl_failure_is_missing_not_zero() {
-        let m = parse_systemctl_output(false, "");
-        assert!(matches!(
-            m,
-            Measurement::Missing(Absent::InstrumentFailed { .. })
-        ));
-    }
-
-    #[test]
-    fn systemctl_success_with_no_scopes_is_observed_empty() {
-        let m = parse_systemctl_output(true, "");
-        assert_eq!(m, Measurement::Observed(vec![]));
+    fn a_failed_instrument_is_missing_and_an_empty_field_is_observed() {
+        let root = tempdir("status-live-empty");
+        fs::create_dir_all(&root).unwrap();
+        let root_s = root.to_string_lossy().into_owned();
+        let live: Vec<String> = crate::live_cmd::worktrees_live(&[], &root_s)
+            .into_iter()
+            .collect();
+        assert_eq!(live, Vec::<String>::new());
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

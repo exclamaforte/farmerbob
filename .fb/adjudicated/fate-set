@@ -1,0 +1,8 @@
+MERGED codex-luna
+PASS, 1903 tests, clippy 0, 176L. No critique: agy-sonnet-46 hit the same account-wide quota
+twelve minutes after agy-opus-46, so the subjective tier was unavailable. Read it myself.
+Clause 4 is right -- a spec declaring two created files where one exists is Runnable, because
+the arm still has the other to write. ONE DEFECT FIXED ON MERGE: with zero declarations
+`settled.len() == declaration_count` is 0 == 0 and the spec was reported STALE, which the
+boundary clause forbids and which is the dangerous direction, since a stale spec is never
+dispatched again. Unreachable through declared_all today, so latent; guarded and pinned.
