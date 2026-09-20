@@ -44,6 +44,20 @@ pub enum Format {
 /// captures the output and one that checks the exit code get the same
 /// answer.
 pub fn run(spec_path: &Path, format: Format, out: &mut dyn Write) -> i32 {
+    run_explained(spec_path, format, out, &mut std::io::sink())
+}
+
+/// Print what a spec declares, for a machine to consume.
+///
+/// `out` receives the answer and nothing else. `why` receives a human-readable
+/// diagnosis only when a marker was refused. Returns the same process exit
+/// codes as [`run`].
+pub fn run_explained(
+    spec_path: &Path,
+    format: Format,
+    out: &mut dyn Write,
+    why: &mut dyn Write,
+) -> i32 {
     let spec = match std::fs::read_to_string(spec_path) {
         Ok(spec) => spec,
         Err(_) => return 4,
@@ -55,7 +69,13 @@ pub fn run(spec_path: &Path, format: Format, out: &mut dyn Write) -> i32 {
     let declarations = match target_decl::declared_all(&spec) {
         Ok(declarations) => declarations,
         Err(NoDeclaration::Absent) => return 2,
-        Err(NoDeclaration::Ambiguous(_)) | Err(NoDeclaration::Refused { .. }) => return 3,
+        Err(NoDeclaration::Ambiguous(_)) => return 3,
+        Err(reason @ NoDeclaration::Refused { .. }) => {
+            if let Some(message) = diagnose(&reason) {
+                let _ = writeln!(why, "{message}");
+            }
+            return 3;
+        }
     };
     // One line per declaration, in the order written. A single-deliverable spec still
     // prints exactly one line, so every existing caller reads what it always did.
@@ -84,12 +104,46 @@ pub fn run(spec_path: &Path, format: Format, out: &mut dyn Write) -> i32 {
     0
 }
 
+/// Explain one refused declaration, including its 1-based line and a correct
+/// marker shape. Non-refusal outcomes intentionally have no diagnosis.
+pub fn diagnose(reason: &NoDeclaration) -> Option<String> {
+    let NoDeclaration::Refused { line, reason } = reason else {
+        return None;
+    };
+
+    let lower = reason.to_ascii_lowercase();
+    let problem = if lower.contains("no whitespace") || lower.contains("opener") {
+        "put a space after `<!--`"
+    } else if lower.contains("tab") {
+        "replace the tab with spaces"
+    } else if lower.contains("trailing text") || lower.contains("after marker closer") {
+        "remove the text after `-->`"
+    } else if lower.contains("unknown marker word") || lower.contains("unknown word") {
+        "use `creates` or `modifies` as the marker word"
+    } else if lower.contains("multiple markers") {
+        "put one marker per line"
+    } else {
+        let detail = if reason.trim().is_empty() {
+            "the marker was refused"
+        } else {
+            reason.as_str()
+        };
+        return Some(format!(
+            "line {line}: {detail}; write a marker like `<!-- fb:creates PATH -->`"
+        ));
+    };
+
+    Some(format!(
+        "line {line}: {problem}; write a marker like `<!-- fb:creates PATH -->`"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{Format, run};
-    use farmerbob_core::target_decl;
+    use super::{Format, diagnose, run, run_explained};
+    use farmerbob_core::target_decl::{self, NoDeclaration};
 
     /// A spec file on disk that removes itself when the test ends.
     struct TempSpec {
@@ -327,5 +381,83 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(run(&std::env::temp_dir(), Format::Line, &mut out), 4);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn refused_marker_is_explained_on_its_line_and_not_in_out() {
+        let spec = TempSpec::new("explained_refusal", "# heading\n<!--fb:creates a.rs -->\n");
+        let mut out = Vec::new();
+        let mut why = Vec::new();
+        assert_eq!(
+            run_explained(spec.path(), Format::Line, &mut out, &mut why),
+            3
+        );
+        let message = String::from_utf8_lossy(&why).to_ascii_lowercase();
+        assert!(out.is_empty());
+        assert!(message.contains("line 2"));
+        assert!(message.contains("space after `<!--`"));
+        assert!(message.contains("<!-- fb:creates path -->"));
+    }
+
+    #[test]
+    fn diagnosis_maps_known_reasons_and_has_a_fallback() {
+        let cases = [
+            ("tab in separator where spaces required", "tab"),
+            ("trailing text after marker closer", "text after `-->`"),
+            ("unknown marker word", "creates"),
+            ("multiple markers on a single line", "one marker per line"),
+            ("no whitespace between opener and fb:", "space after `<!--`"),
+            ("new parser reason", "new parser reason"),
+        ];
+        for (reason, expected) in cases {
+            let refusal = NoDeclaration::Refused {
+                line: 17,
+                reason: reason.to_string(),
+            };
+            let message = diagnose(&refusal).expect("refusals have diagnoses");
+            assert!(message.to_ascii_lowercase().contains(expected));
+            assert!(message.contains("17"));
+            assert!(message.contains("<!-- fb:creates PATH -->"));
+        }
+    }
+
+    #[test]
+    fn only_refusals_are_diagnosed() {
+        assert_eq!(diagnose(&NoDeclaration::Absent), None);
+        assert_eq!(
+            diagnose(&NoDeclaration::Ambiguous(vec!["a.rs".into()])),
+            None
+        );
+    }
+
+    #[test]
+    fn explained_exit_codes_and_stream_composition() {
+        let absent = TempSpec::new("explained_absent", "");
+        let valid = TempSpec::new("explained_valid", "<!-- fb:creates a.rs -->\n");
+        let missing = std::env::temp_dir().join(format!(
+            "fb_decl_cmd_{}_explained_missing.md",
+            std::process::id()
+        ));
+
+        let mut out = Vec::new();
+        let mut why = Vec::new();
+        assert_eq!(
+            run_explained(absent.path(), Format::Line, &mut out, &mut why),
+            2
+        );
+        assert!(out.is_empty() && why.is_empty());
+
+        let mut out = Vec::new();
+        let mut why = Vec::new();
+        assert_eq!(
+            run_explained(valid.path(), Format::Line, &mut out, &mut why),
+            0
+        );
+        assert!(!out.is_empty() && why.is_empty());
+
+        let mut out = Vec::new();
+        let mut why = Vec::new();
+        assert_eq!(run_explained(&missing, Format::Line, &mut out, &mut why), 4);
+        assert!(out.is_empty() && why.is_empty());
     }
 }

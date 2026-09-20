@@ -1043,7 +1043,19 @@ fn main() {
             } else {
                 decl_cmd::Format::Line
             };
-            decl_cmd::run(&spec, format, &mut std::io::stdout())
+            // `run_explained`, not `run`: the diagnosis goes to STDERR so a shell capturing
+            // stdout is unaffected, and a person running this by hand is told why a marker
+            // was refused instead of getting silence and exit 3.
+            //
+            // The spec for this work said `run` keeps its signature for compatibility and
+            // never said who would call the new function, so the capability shipped with no
+            // caller -- the same defect the task itself was about.
+            decl_cmd::run_explained(
+                &spec,
+                format,
+                &mut std::io::stdout(),
+                &mut std::io::stderr(),
+            )
         }
         Some(Command::Bench {
             dir,

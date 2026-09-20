@@ -1,0 +1,14 @@
+MERGED codex-luna
+PASS, 916 tests, clippy 0, 135L. gemini-38-flash: NO MATERIAL DEFECTS. It approved the
+stream separation (stdout empty on refusal, diagnosis to a separate stream) and the decision
+to show a canonical `<!-- fb:creates PATH -->` for every refusal rather than infer the
+intended verb from a malformed marker -- "speculative parsing that this subcommand was
+explicitly designed to avoid".
+Its one architectural observation is real and is filed: NoDeclaration::Refused stores the
+reason as a human-readable String rather than a precondition::Rejected, so diagnose() must
+string-match, and a wording change in target_decl would silently fall through to the generic
+arm with nothing reporting that the specific match broke.
+FIXED ON MERGE, and it was my spec's fault: the spec said `run` keeps its signature for
+compatibility and never said who would call `run_explained`, so the capability shipped with
+no caller -- the same defect the task was about. main.rs calls run_explained now, and the
+three refusals that were silent all explain themselves.
