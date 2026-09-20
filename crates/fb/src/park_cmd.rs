@@ -200,14 +200,38 @@ pub fn run_cmd(task: &str, arm: &str, apply: bool, default_backoff_secs: u64) ->
             );
             0
         }
+        // A REFUSAL HAPPENED AND ITS WIDTH IS UNKNOWN. This is neither a park nor a Leave:
+        // parking a credential on wording nobody taught us would be a guess, and treating
+        // it as Leave would report "says nothing about availability" about a run that was
+        // refused. Exit 3 so a caller can tell it from both.
+        Decision::UnknownBlast {
+            arm: refused,
+            evidence,
+        } => {
+            println!("{task}--{arm}: {class:?} -> REFUSED, width unknown");
+            println!("  {refused} was refused and the wording matches no known phrasing,");
+            println!("  so how far the refusal reaches cannot be decided here.");
+            println!("  evidence: {evidence}");
+            println!(
+                "  known phrasings: {}",
+                farmerbob_core::quota::known_phrasings()
+                    .iter()
+                    .map(|(p, _)| *p)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            println!("  Add the phrasing to farmerbob_core::quota, or park by hand.");
+            3
+        }
         Decision::ParkUntil { arms, blast, .. } | Decision::ParkFor { arms, blast, .. } => {
             let until_ms = match &d {
                 Decision::ParkUntil { at_ms, .. } => *at_ms,
                 Decision::ParkFor { backoff_ms, .. } => now_ms.saturating_add(*backoff_ms),
-                // `d` was matched as a park two lines above, so Leave cannot reach here.
-                // Returning the current instant rather than panicking: an unreachable! in a
-                // command that edits the registry is a crash where a no-op park would do.
-                Decision::Leave => now_ms,
+                // `d` was matched as a park two lines above, so neither of these can reach
+                // here. Returning the current instant rather than panicking: an
+                // unreachable! in a command that EDITS THE REGISTRY is a crash where a
+                // no-op park would do.
+                Decision::Leave | Decision::UnknownBlast { .. } => now_ms,
             };
             let when = format_instant(until_ms);
             println!("{task}--{arm}: {class:?}");
