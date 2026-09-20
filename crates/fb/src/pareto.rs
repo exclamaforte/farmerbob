@@ -409,6 +409,59 @@ pub fn escalation_credits(ledger: &Path) -> Measurement<BTreeMap<String, u64>> {
     Measurement::observed(by)
 }
 
+/// Every per-run cost store on disk for arms on this provider, whether or not a scored run
+/// claims it.
+///
+/// RECONCILIATION IS NOT THE LEADERBOARD. The board above counts only runs in
+/// `objective.json`, which is right: an unscored run says nothing about an arm's ability.
+/// But the provider billed for it all the same, so leaving it out makes the board look
+/// like it has lost money it can actually see.
+///
+/// Measured on this host: $0.5561 of openrouter spend sat in 19 per-run stores that no
+/// scored run claimed -- runs that happened and were never scored -- and it was counted
+/// nowhere, neither in the per-arm totals nor in the shared store.
+/// Whether a per-run state directory's spend belongs in the unclaimed total.
+///
+/// A directory is named `<task>--<arm>`. One that is not is not a run, and must not be
+/// credited to an arm named by accident: `split_once("--")` on a name without a separator
+/// would otherwise leave the whole string as the arm.
+pub fn counts_as_unclaimed(
+    run: &str,
+    claimed: &std::collections::BTreeSet<String>,
+    on_provider: &dyn Fn(&str) -> bool,
+) -> bool {
+    if claimed.contains(run) {
+        return false;
+    }
+    match run.split_once("--") {
+        Some((task, arm)) if !task.is_empty() && !arm.is_empty() => on_provider(arm),
+        _ => false,
+    }
+}
+
+pub fn unclaimed_provider_spend(
+    base: &Path,
+    claimed: &std::collections::BTreeSet<String>,
+    on_provider: &dyn Fn(&str) -> bool,
+) -> f64 {
+    let Ok(entries) = fs::read_dir(base.join("state")) else {
+        return 0.0;
+    };
+    let mut total = 0.0;
+    for e in entries.flatten() {
+        let Some(run) = e.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if !counts_as_unclaimed(&run, claimed, on_provider) {
+            continue;
+        }
+        if let Some((usd, _)) = measured(base, &run) {
+            total += usd;
+        }
+    }
+    total
+}
+
 /// Each arm's `model` string, exactly as the registry writes it.
 ///
 /// The provider lives in this string's prefix, so reconciliation asks the registry which
@@ -745,13 +798,25 @@ pub fn run_cmd(epsilon: f64, json_only: bool) -> i32 {
             .filter(|(arm, _)| on_provider(arm))
             .map(|(_, (c, _))| c)
             .sum();
+        // Spend on this provider that no scored run claims. It is real money the provider
+        // billed, and excluding it reports a shortfall the host can in fact account for.
+        let claimed: std::collections::BTreeSet<String> = runs
+            .iter()
+            .map(|r| format!("{}--{}", r.task, r.arm))
+            .collect();
+        let unclaimed = unclaimed_provider_spend(&base, &claimed, &on_provider);
         let (mut unpriced_runs, mut total_runs) = (0u32, 0u32);
         for a in arms.iter().filter(|a| on_provider(&a.arm)) {
             let (p, n) = priced.get(&a.arm).copied().unwrap_or((0, 0));
             total_runs += n;
             unpriced_runs += n.saturating_sub(p);
         }
-        match reconcile(per_run + shared_here, billed, unpriced_runs, total_runs) {
+        match reconcile(
+            per_run + shared_here + unclaimed,
+            billed,
+            unpriced_runs,
+            total_runs,
+        ) {
             Reconciliation::Drift {
                 inferred,
                 billed,
@@ -1323,5 +1388,45 @@ mod recovered_token_tests {
         assert!(!routed_via(Some("anthropic/claude"), "openrouter/"));
         // An arm the registry gives no model is not silently assigned to a provider.
         assert!(!routed_via(None, "openrouter/"));
+    }
+
+    /// RECONCILIATION IS NOT THE LEADERBOARD. The board counts only scored runs, which is
+    /// right -- an unscored run says nothing about an arm's ability -- but the provider
+    /// billed for it anyway. On this host $0.5561 of openrouter spend sat in 19 per-run
+    /// stores that no scored run claimed, counted neither in the per-arm totals nor in the
+    /// shared store, making the board look as though it had lost money it can see.
+    #[test]
+    fn spend_no_scored_run_claims_still_counts_against_the_bill() {
+        let claimed: std::collections::BTreeSet<String> =
+            ["cost--or-hy3".to_string()].into_iter().collect();
+        let on_or = |arm: &str| arm.starts_with("or-");
+        assert!(
+            counts_as_unclaimed("verify-router--or-hy3", &claimed, &on_or),
+            "an unscored run on the provider is still money it billed"
+        );
+        assert!(
+            !counts_as_unclaimed("cost--or-hy3", &claimed, &on_or),
+            "a scored run is already counted in the per-arm totals"
+        );
+    }
+
+    /// An arm on another provider is not this provider's bill.
+    #[test]
+    fn another_providers_run_is_not_counted() {
+        let claimed = std::collections::BTreeSet::new();
+        let on_or = |arm: &str| arm.starts_with("or-");
+        assert!(!counts_as_unclaimed("cost--codex-luna", &claimed, &on_or));
+    }
+
+    /// A state directory that is not a `<task>--<arm>` run names no arm. Splitting a name
+    /// without a separator would leave the WHOLE string as the arm and credit spend to
+    /// something that is not an arm at all.
+    #[test]
+    fn a_directory_that_is_not_a_run_names_no_arm() {
+        let claimed = std::collections::BTreeSet::new();
+        let on_or = |_: &str| true;
+        assert!(!counts_as_unclaimed("scratch", &claimed, &on_or));
+        assert!(!counts_as_unclaimed("--or-hy3", &claimed, &on_or));
+        assert!(!counts_as_unclaimed("task--", &claimed, &on_or));
     }
 }
