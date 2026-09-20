@@ -298,7 +298,12 @@ pub fn conflicts(wts: &[Worktree<'_>]) -> Vec<Conflict> {
 /// reapable" — the listing may be full of reapable-looking entries that a
 /// single contradiction poisons.
 pub fn safe_to_reap(wts: &[Worktree<'_>], live: &[&str], settled: &[&str]) -> Vec<String> {
-    let poisoned: Vec<String> = conflicts(wts).into_iter().map(|c| c.dir).collect();
+    // A SET, because the doc above calls this a subset relation and a linear `Vec::contains`
+    // is not one -- it is the same answer computed in a way that stops matching the
+    // description as soon as either list grows. This function decides what gets DELETED, so
+    // the implementation should read like the contract it is held to. (bead farmerbob-plgz)
+    let poisoned: std::collections::BTreeSet<String> =
+        conflicts(wts).into_iter().map(|c| c.dir).collect();
     reapable(wts, live, settled)
         .into_iter()
         .filter(|dir| !poisoned.contains(dir))
