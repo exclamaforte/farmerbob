@@ -32,7 +32,7 @@ the new recipes are not a guess to be reviewed -- they are a claim that can be c
 
 > For every arm in `sources.toml`, and for `continue_session` both false and true, the argv
 > produced from its migrated `Recipe` must equal, element for element, the argv
-> `declared_launch_argv` produced for that arm before the migration.
+> `declared_launch_argv` produces for that arm.
 
 A port that "builds and its tests pass" is not evidence it does its job; a port checked
 against the thing it replaces is. (This project has the precedent in writing: a rival
@@ -42,10 +42,11 @@ build, scope, clippy and its own tests.)
 ## The exact API
 
 ```rust
-/// The argv the retired `declared_launch_argv` produced, kept ONLY so the migration can be
-/// checked against it. Marked `#[deprecated]` and called by nothing but the test below.
+/// `declared_launch_argv` already exists in `launch.rs` and is private. Make it `pub` and
+/// mark it `#[deprecated]`, so the migration can be checked against it and nothing else
+/// calls it. Do not rename it and do not write a second copy.
 #[deprecated = "the oracle for the registry migration; delete once every entry has a cmd"]
-pub fn legacy_launch_argv(
+pub fn declared_launch_argv(
     text: &str, arm: &str, wd: &Path, prompt: &str, continue_session: bool,
 ) -> Option<Vec<String>>;
 
@@ -61,7 +62,7 @@ pub fn arms_in(text: &str) -> Vec<String>;
    `"{prompt}"`. Pin by iterating `arms_in`: no arm may be without a recipe.
 
 2. **The oracle test.** For every arm in the real `sources.toml`, and for `continue_session`
-   in `[false, true]`, `argv_for` equals `legacy_launch_argv`. Pin it as ONE test that
+   in `[false, true]`, `argv_for` equals `declared_launch_argv`. Pin it as ONE test that
    iterates every arm and names the first arm that differs, both vectors, in the failure
    message -- not one test per arm, and not a sampled subset.
 
@@ -94,10 +95,25 @@ pub fn arms_in(text: &str) -> Vec<String>;
 `arms_in` returns one entry per `[source.*]` table, in file order, never deduplicated --
 the file is the record, and a duplicated key is a fault to see rather than to tidy.
 
+## Placeholders you may use
+
+`expand_placeholders` in `launch.rs` knows exactly `{prompt}` and `{worktree}`, and passes
+ANY OTHER brace expression through UNTOUCHED -- deliberately, so an unknown placeholder is
+visible rather than silently blanked.
+
+**Do not invent a new placeholder.** A first attempt at this task used `{continue}` in the
+recipes and taught its own copy of `launch.rs` to expand it; against the launcher that
+actually shipped, every one of 66 oracle comparisons differed and every arm would have been
+launched with a literal `{continue}` argument. Resumption is expressed by `continue_args`,
+which clause 4 pins.
+
+If you believe a new placeholder is genuinely needed, say so in the handoff and do NOT use
+it; adding one is a change to `expand_placeholders` and to every caller's expectations.
+
 ## Rules
 
 Do NOT change any arm's behaviour. Every recipe must reproduce what that arm already runs;
-clause 2 is how you know. `legacy_launch_argv` is retained only as the oracle and must be
+clause 2 is how you know. `declared_launch_argv` is retained only as the oracle and must be
 called by nothing else. Keep the workspace rustfmt-clean and clippy-clean and every existing
 test passing.
 
