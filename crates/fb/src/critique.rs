@@ -13,12 +13,118 @@
 //! stage that genuinely needs two implementations; this one never did.
 
 use farmerbob_core::gate::{Observation, Verdict, judge};
+use farmerbob_core::limit_signal::{Classification, SignalRules, classify};
 use farmerbob_core::measurement::Measurement;
 use farmerbob_core::stage_cast::{Casting, Stage, Uncast, cast};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+/// Why a critic produced no review.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoReview {
+    /// The critic ran and chose to write nothing.
+    Declined,
+    /// The provider refused the critic, with the classifier's evidence.
+    Refused { evidence: String },
+    /// The critic outlived its timeout and was killed.
+    TimedOut { after_s: u64 },
+    /// The launcher could not start the critic.
+    NotLaunched { reason: String },
+    /// A review file exists but is empty.
+    Empty,
+}
+
+fn refusal_rules() -> SignalRules {
+    SignalRules::new(0)
+        .with_pattern("error: individual quota reached")
+        .with_pattern("error: quota exceeded")
+        .with_pattern("error: rate limit exceeded")
+        .with_pattern("rate limit exceeded")
+        .with_pattern("quota exceeded")
+}
+
+fn no_review_from_launch(reason: &str, timeout_s: u64) -> NoReview {
+    let lower = reason.to_ascii_lowercase();
+    if lower.contains("timeout") || lower.contains("timed out") || lower.contains("runtime max") {
+        return NoReview::TimedOut { after_s: timeout_s };
+    }
+    match classify(&refusal_rules(), 1, reason, 0) {
+        Classification::Limited { evidence, .. } | Classification::Ambiguous { evidence } => {
+            NoReview::Refused { evidence }
+        }
+        Classification::Normal => NoReview::NotLaunched {
+            reason: reason.to_string(),
+        },
+    }
+}
+
+/// Run one critic under the same confinement as an implementer.
+pub fn run_critic(
+    arm: &str,
+    prompt: &str,
+    worktree: &Path,
+    timeout_s: u64,
+) -> Result<String, NoReview> {
+    if timeout_s == 0 {
+        return Err(NoReview::NotLaunched {
+            reason: "critic timeout is zero".to_string(),
+        });
+    }
+    let state = match state_root() {
+        Measurement::Observed(root) => root,
+        Measurement::Missing(reason) => {
+            return Err(NoReview::NotLaunched {
+                reason: format!("{reason:?}"),
+            });
+        }
+    };
+    let run = format!("critic--{}--{}", arm, std::process::id());
+    let [data_home, state_home, cache_home] = environment_paths(&state, &run);
+    for directory in [&data_home, &state_home, &cache_home] {
+        if let Err(error) = fs::create_dir_all(directory) {
+            return Err(NoReview::NotLaunched {
+                reason: format!("cannot create {}: {error}", directory.display()),
+            });
+        }
+    }
+    let env = [
+        ("XDG_DATA_HOME", data_home),
+        ("XDG_STATE_HOME", state_home),
+        ("XDG_CACHE_HOME", cache_home),
+    ];
+    let unit = format!("fb-critic-{}-{}", arm, std::process::id());
+    let launched = crate::launch::launch_in(
+        arm,
+        prompt,
+        worktree,
+        false,
+        &env,
+        Some(crate::launch::Scope {
+            unit: &unit,
+            memory_max: std::env::var("FB_MEM_MAX").unwrap_or_else(|_| "3G".to_string()),
+            runtime_max_s: timeout_s,
+        }),
+    );
+    match launched {
+        Measurement::Missing(reason) => {
+            return Err(no_review_from_launch(&format!("{reason:?}"), timeout_s));
+        }
+        Measurement::Observed(output) => match classify(&refusal_rules(), 0, &output, 0) {
+            Classification::Limited { evidence, .. } | Classification::Ambiguous { evidence } => {
+                return Err(NoReview::Refused { evidence });
+            }
+            Classification::Normal => {}
+        },
+    }
+    let path = worktree.join(".fb/critique.md");
+    match fs::read_to_string(path) {
+        Ok(text) if text.is_empty() => Err(NoReview::Empty),
+        Ok(text) => Ok(text),
+        Err(_) => Err(NoReview::Declined),
+    }
+}
 
 fn read_text(path: &Path) -> Measurement<String> {
     match fs::read_to_string(path) {
@@ -117,7 +223,8 @@ fn candidates(bead: &str, target: &str) -> Measurement<Vec<String>> {
     Measurement::observed(arms)
 }
 
-fn patch_for(worktree: &Path, target: &str) -> Measurement<String> {
+/// Read one declared deliverable's patch.
+pub fn patch_for(worktree: &Path, target: &str) -> Measurement<String> {
     let diff = command_text(
         Command::new("git")
             .current_dir(worktree)
@@ -127,8 +234,29 @@ fn patch_for(worktree: &Path, target: &str) -> Measurement<String> {
         Measurement::Observed(text) if !text.is_empty() => text,
         Measurement::Observed(_) => {
             let path = worktree.join(target);
-            if !path.is_file() {
-                return Measurement::nothing_to_measure("declared target does not exist");
+            match fs::metadata(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Measurement::observed(format!("=== ABSENT TARGET: {target} ===\n"));
+                }
+                Err(error) => {
+                    return Measurement::instrument_failed(&format!(
+                        "cannot inspect declared target {target}: {error}"
+                    ));
+                }
+                Ok(metadata) if !metadata.is_file() => {
+                    return Measurement::instrument_failed(&format!(
+                        "declared target {target} is not a file"
+                    ));
+                }
+                Ok(_) => {}
+            }
+            let tracked = Command::new("git")
+                .current_dir(worktree)
+                .args(["ls-files", "--error-unmatch", "--", target])
+                .output()
+                .is_ok_and(|output| output.status.success());
+            if tracked {
+                return Measurement::observed(format!("=== UNCHANGED TARGET: {target} ==="));
             }
             let lines = match line_count(&path) {
                 Measurement::Observed(lines) => lines,
@@ -143,6 +271,30 @@ fn patch_for(worktree: &Path, target: &str) -> Measurement<String> {
         Measurement::Missing(reason) => return Measurement::Missing(reason),
     };
     Measurement::observed(patch)
+}
+
+/// Concatenate every declared deliverable's patch in declaration order.
+pub fn patches_for(worktree: &Path, targets: &[String]) -> Measurement<String> {
+    if targets.is_empty() {
+        return Measurement::nothing_to_measure("no declared targets");
+    }
+    if targets.len() == 1 {
+        return patch_for(worktree, &targets[0]);
+    }
+    let mut combined = String::new();
+    for target in targets {
+        match patch_for(worktree, target) {
+            Measurement::Observed(patch) => {
+                combined.push_str(&format!("=== TARGET: {target} ===\n{patch}\n"));
+            }
+            Measurement::Missing(_) => {
+                return Measurement::nothing_to_measure(&format!(
+                    "declared target is unreadable: {target}"
+                ));
+            }
+        }
+    }
+    Measurement::observed(combined)
 }
 
 fn outside_files(worktree: &Path, target: &str) -> Measurement<Vec<String>> {
@@ -258,49 +410,6 @@ fn state_root() -> Measurement<PathBuf> {
     }
 }
 
-fn launch(arm: &str, text: &str, worktree: &Path, run: &str, log: &Path) -> Measurement<()> {
-    // A test that reaches the launcher spends money and hangs.
-    if cfg!(test) {
-        return Measurement::instrument_failed("launcher disabled under cargo test");
-    }
-    let state_root = match state_root() {
-        Measurement::Observed(root) => root,
-        Measurement::Missing(reason) => return Measurement::Missing(reason),
-    };
-    let [data_home, state_home, cache_home] = environment_paths(&state_root, run);
-    for directory in [&data_home, &state_home, &cache_home] {
-        if let Err(error) = fs::create_dir_all(directory) {
-            return Measurement::instrument_failed(&format!(
-                "cannot create {}: {error}",
-                directory.display()
-            ));
-        }
-    }
-    // crate::launch, not fb-launch.sh. One launcher table, in Rust, tested.
-    let env = [
-        ("XDG_DATA_HOME", data_home),
-        ("XDG_STATE_HOME", state_home),
-        ("XDG_CACHE_HOME", cache_home),
-    ];
-    match crate::launch::launch(arm, text, worktree, false, &env) {
-        Measurement::Observed(said) => {
-            let _ = fs::write(
-                log,
-                if said.is_empty() {
-                    "(the launcher wrote nothing to stdout or stderr)\n".to_string()
-                } else {
-                    said
-                },
-            );
-            Measurement::observed(())
-        }
-        Measurement::Missing(reason) => {
-            let _ = fs::write(log, format!("{reason:?}\n"));
-            Measurement::Missing(reason)
-        }
-    }
-}
-
 fn format_result(critic: &str, subject: &str, critique: &Path) -> Measurement<String> {
     if !critique.is_file() {
         return Measurement::observed(format!(
@@ -321,6 +430,17 @@ fn format_result(critic: &str, subject: &str, critique: &Path) -> Measurement<St
     Measurement::observed(format!(
         "  {critic:<22} reviewed {subject:<22} {claims} claims, {words} words"
     ))
+}
+
+fn render_no_review(critic: &str, subject: &str, outcome: &NoReview) -> String {
+    let detail = match outcome {
+        NoReview::Declined => "declined to write a review".to_string(),
+        NoReview::Refused { evidence } => format!("refused ({evidence})"),
+        NoReview::TimedOut { after_s } => format!("timed out after {after_s}s"),
+        NoReview::NotLaunched { reason } => format!("not launched ({reason})"),
+        NoReview::Empty => "review file was empty".to_string(),
+    };
+    format!("  {critic:<22} reviewed {subject:<22} ({detail})")
 }
 
 /// A file from the repository root: `FB_REPO` when it holds one, else the same
@@ -569,7 +689,7 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
             }
         };
         let sw = wt.join(format!("{bead}--{subject}"));
-        let mut patch = match patch_for(&sw, target) {
+        let mut patch = match patches_for(&sw, &[target.to_string()]) {
             Measurement::Observed(patch) => patch,
             Measurement::Missing(_) => {
                 eprintln!(
@@ -643,16 +763,18 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
             Measurement::Observed(s) => s,
             Measurement::Missing(_) => continue,
         };
-        let log = log_dir.join(format!("{critic}.log"));
-        let run = format!("{bead}--{critic}");
-        if let Measurement::Missing(reason) = launch(critic, &prompt_text, &cw, &run, &log) {
-            // `let _ =` here discarded this for as long as the stage existed, so a critic
-            // that never started and a critic that started and wrote nothing produced the
-            // identical line: "(no critique written)".
-            eprintln!("  {critic}: launcher did not complete -- {reason:?}");
-        }
-        if let Measurement::Observed(line) = format_result(critic, subject, &critique_path) {
-            println!("{line}");
+        let timeout_s = std::env::var("FB_RUN_TIMEOUT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2700);
+        match run_critic(critic, &prompt_text, &cw, timeout_s) {
+            Ok(_) => {
+                if let Measurement::Observed(line) = format_result(critic, subject, &critique_path)
+                {
+                    println!("{line}");
+                }
+            }
+            Err(outcome) => println!("{}", render_no_review(critic, subject, &outcome)),
         }
         // The report filed under logs/critiques/<bead>/ is what promote, adjudicate and
         // followups read, and its stem is where the critic's credit lives: the critic and
@@ -675,7 +797,9 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{environment_paths, format_result, run_cmd};
+    use super::{
+        NoReview, environment_paths, format_result, patches_for, render_no_review, run_cmd,
+    };
     use farmerbob_core::measurement::Measurement;
     use farmerbob_core::stage_cast::{Stage, Uncast, cast};
     use std::fs;
@@ -695,6 +819,117 @@ mod tests {
             )
         );
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn zero_timeout_is_not_launched() {
+        let result = super::run_critic("critic", "prompt", Path::new("."), 0);
+        assert_eq!(
+            result,
+            Err(NoReview::NotLaunched {
+                reason: "critic timeout is zero".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn refusal_and_decline_render_differently() {
+        let refused = render_no_review(
+            "critic",
+            "subject",
+            &NoReview::Refused {
+                evidence: "quota exceeded".to_string(),
+            },
+        );
+        let declined = render_no_review("critic", "subject", &NoReview::Declined);
+        assert!(refused.contains("refused"));
+        assert!(refused.contains("quota exceeded"));
+        assert!(!declined.contains("refused"));
+    }
+
+    #[test]
+    fn empty_target_set_is_missing() {
+        assert!(matches!(
+            patches_for(Path::new("."), &[]),
+            Measurement::Missing(_)
+        ));
+    }
+
+    #[test]
+    fn absent_target_is_named_and_observed() {
+        let targets = vec!["a-target-that-is-not-present".to_string()];
+        let result = patches_for(Path::new("."), &targets);
+        match result {
+            Measurement::Observed(text) => assert!(text.contains(&targets[0])),
+            Measurement::Missing(reason) => panic!("unexpected missing measurement: {reason:?}"),
+        }
+    }
+
+    #[test]
+    fn tracked_unchanged_target_is_not_dumped() {
+        let result = super::patch_for(Path::new("."), "Cargo.toml");
+        match result {
+            Measurement::Observed(text) => {
+                assert!(text.contains("UNCHANGED TARGET"), "{text}");
+                assert!(!text.contains("//! Cross-review"), "{text}");
+            }
+            Measurement::Missing(reason) => panic!("unexpected missing measurement: {reason:?}"),
+        }
+    }
+
+    #[test]
+    fn timeout_is_not_decline() {
+        assert_eq!(
+            super::no_review_from_launch("systemd runtime timeout", 19),
+            NoReview::TimedOut { after_s: 19 }
+        );
+    }
+
+    #[test]
+    fn provider_refusal_preserves_classifier_evidence() {
+        let evidence = "error: quota exceeded";
+        assert_eq!(
+            super::no_review_from_launch(evidence, 19),
+            NoReview::Refused {
+                evidence: evidence.to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn scoped_critic_uses_given_timeout() {
+        let source = fs::read_to_string("crates/fb/src/critique.rs")
+            .or_else(|_| fs::read_to_string("src/critique.rs"))
+            .expect("critique.rs source text");
+        assert!(source.contains("launch_in("));
+        assert!(source.contains("Some(crate::launch::Scope"));
+        assert!(source.contains("runtime_max_s: timeout_s"));
+    }
+
+    #[test]
+    fn two_targets_are_concatenated_in_declared_order() {
+        let root = std::env::temp_dir().join(format!("fb-critique-patches-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create patch fixture");
+        fs::write(root.join("first.rs"), "first\n").expect("write first fixture");
+        fs::write(root.join("second.rs"), "second\n").expect("write second fixture");
+        git(&["init", "-q"], &root);
+        git(&["config", "user.email", "fb@example.com"], &root);
+        git(&["config", "user.name", "fb"], &root);
+        git(&["add", "-A"], &root);
+        git(&["commit", "-qm", "fixture"], &root);
+        fs::write(root.join("second.rs"), "second changed\n").expect("change second fixture");
+        let targets = vec!["first.rs".to_string(), "second.rs".to_string()];
+        let result = patches_for(&root, &targets);
+        let Measurement::Observed(text) = result else {
+            panic!("patch fixture should be readable");
+        };
+        assert!(
+            text.find("first.rs")
+                .is_some_and(|first| { text[first..].find("second.rs").is_some() })
+        );
+        assert!(text.contains("second changed"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

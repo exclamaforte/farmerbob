@@ -100,6 +100,26 @@ fn section(body: &str, name: &str) -> String {
     out.join("\n").trim().to_string()
 }
 
+/// The sections carried by a critique, including sections after an absent CLAIMS section.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Sections {
+    /// The CLAIMS section body.
+    pub claims: String,
+    /// The JUDGEMENTS section body.
+    pub judgements: String,
+    /// The FOLLOWUPS section body.
+    pub followups: String,
+}
+
+/// Split a critique into its CLAIMS, JUDGEMENTS, and FOLLOWUPS sections.
+pub fn sections_of(body: &str) -> Sections {
+    Sections {
+        claims: section(body, "CLAIM"),
+        judgements: section(body, "JUDGEMENT"),
+        followups: section(body, "FOLLOWUP"),
+    }
+}
+
 fn judgements(task: &str) -> Vec<Judgement> {
     let dir = logs().join("critiques").join(task);
     let mut out = Vec::new();
@@ -127,13 +147,12 @@ fn judgements(task: &str) -> Vec<Judgement> {
         // re-read as opinion here. FOLLOWUPS is carried too: nothing else in the pipeline
         // reads it, so until now the only transport from that section to `fb ledger` was the
         // adjudicator happening to open the file by hand.
-        let text = section(&body, "JUDGEMENT");
-        let followups = section(&body, "FOLLOWUP");
+        let sections = sections_of(&body);
         out.push(Judgement {
             critic: critic.into(),
             subject: subject.into(),
-            text,
-            followups,
+            text: sections.judgements,
+            followups: sections.followups,
         });
     }
     out
@@ -392,6 +411,16 @@ pub fn run(task: &str, epsilon: f64, allow_missing_critique: bool) -> i32 {
 
 #[cfg(test)]
 mod frozen_suite_is_not_mere_existence {
+    use super::sections_of;
+
+    #[test]
+    fn sections_keep_judgements_without_claims() {
+        let sections = sections_of("### JUDGEMENTS\nimportant review\n### FOLLOWUPS\nask again");
+        assert_eq!(sections.claims, "");
+        assert_eq!(sections.judgements, "important review");
+        assert_eq!(sections.followups, "ask again");
+    }
+
     /// The predicate under test, in the form it must keep: a file is a suite only when it
     /// holds at least one test. Exercised on strings rather than the filesystem so it says
     /// something about the rule instead of about a temp directory.

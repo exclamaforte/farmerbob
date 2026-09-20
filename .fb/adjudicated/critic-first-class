@@ -1,0 +1,19 @@
+MERGED codex-luna (after one follow-up turn)
+PASS, +10 tests, clippy 0, 329L. The T7 group: five beads in one spec, because they were one
+defect -- a critic got none of the protections an implementer gets, and none of the reporting.
+Critics now launch through launch_in with Some(Scope{unit, memory_max, runtime_max_s}), so
+they are confined, capped, timed and visible to admission control. NoReview separates
+Declined / Refused / TimedOut / NotLaunched / Empty, where every one of them used to print
+"no critique written". Refusal detection uses limit_signal rather than a second detector.
+sections_of renders JUDGEMENTS and FOLLOWUPS when a critique filed no CLAIMS. patches_for
+shows every declared deliverable, not just the first.
+gemini-38-flash filed a CLAIM that exposed a CONTRADICTION IN MY SPEC: clause 7 said an
+absent target contributes a named absence, the Composition section said return Missing if any
+target could not be read. The arm implemented the second, the critic cited the first, and both
+were faithful. Corrected: non-existence is a fact about the candidate and stays Observed;
+unreadability is an instrument failure and is Missing.
+Its second judgement was also right and is fixed: an unmodified tracked target hit patch_for's
+empty-diff fallback and dumped the whole file at the critic as a NEW FILE.
+Two findings were out of scope and are filed: launch_in stringifies its failure so a systemd
+SIGTERM timeout misclassifies as NotLaunched (P2), and scope_cmd::parse_target_from_spec takes
+only the first declaration (P1, found independently by two critics today).
