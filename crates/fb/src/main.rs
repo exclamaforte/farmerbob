@@ -163,6 +163,10 @@ enum Command {
         prompt: String,
         #[arg(default_value = "farmerbob-core")]
         krate: String,
+        /// Hand this back to the arm as a follow-up turn: keep its worktree and its
+        /// session instead of provisioning a new run over them.
+        #[arg(long = "continue")]
+        continue_session: bool,
     },
     /// Claim a queued matrix and run it, detached by default.
     Wave {
@@ -970,7 +974,14 @@ fn main() {
             task,
             prompt,
             krate,
-        }) => dispatch_cmd::run(&arm, &task, std::path::Path::new(&prompt), &krate),
+            continue_session,
+        }) => dispatch_cmd::run_in(
+            &arm,
+            &task,
+            std::path::Path::new(&prompt),
+            &krate,
+            continue_session,
+        ),
         Some(Command::Wave { matrix, foreground }) => {
             wave_cmd::run(std::path::Path::new(&matrix), !foreground)
         }

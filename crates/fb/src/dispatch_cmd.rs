@@ -195,7 +195,52 @@ pub fn seed_credentials(state_data: &Path) -> Result<(), String> {
 }
 
 /// Dispatch one arm on one task.
+/// What a dispatch must do to the arm's worktree and session before it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Provisioning {
+    /// A new run: tear the worktree down, recreate it from the base, wipe the session.
+    Fresh,
+    /// A follow-up turn: leave the worktree and the session exactly as the arm left them.
+    Resume,
+    /// Asked to resume a worktree that is not there.
+    NoWorktree(String),
+}
+
+/// Decide between starting a run and continuing one.
+///
+/// RESUMING MUST NEVER FALL BACK TO FRESH. A fresh dispatch runs `git worktree remove
+/// --force`, `git branch -D` and `remove_dir_all` over the session directory -- it destroys
+/// the arm's work and the session that makes resumption possible. That is the correct thing
+/// to do when starting, and the exact opposite of what a follow-up turn wants: the whole
+/// point is to hand the arm back the code a critic just reviewed.
+///
+/// So a `--continue` whose worktree has gone is REFUSED by name rather than quietly
+/// becoming a first run. Silently starting over would look like the follow-up being
+/// addressed while the reviewed code was deleted underneath it.
+pub fn provisioning(continue_session: bool, worktree_exists: bool) -> Provisioning {
+    match (continue_session, worktree_exists) {
+        (false, _) => Provisioning::Fresh,
+        (true, true) => Provisioning::Resume,
+        (true, false) => Provisioning::NoWorktree(
+            "asked to continue, but the arm's worktree is gone -- refusing rather than \
+             silently starting a fresh run over the code the follow-up is about"
+                .to_string(),
+        ),
+    }
+}
+
 pub fn run(arm: &str, task: &str, prompt_file: &Path, krate: &str) -> i32 {
+    run_in(arm, task, prompt_file, krate, false)
+}
+
+/// `run`, with the choice between a first run and a follow-up turn made explicit.
+pub fn run_in(
+    arm: &str,
+    task: &str,
+    prompt_file: &Path,
+    krate: &str,
+    continue_session: bool,
+) -> i32 {
     let repo = crate::paths::repo();
     let wt_root = crate::paths::worktrees();
     let logs = crate::paths::logs();
@@ -215,30 +260,48 @@ pub fn run(arm: &str, task: &str, prompt_file: &Path, krate: &str) -> i32 {
             .unwrap_or(false)
     };
     let wt_s = wt.to_string_lossy().to_string();
-    let _ = git(&["worktree", "remove", "--force", &wt_s]);
-    let _ = git(&["worktree", "prune"]);
-    let _ = git(&["branch", "-D", &branch]);
-    if !git(&["worktree", "add", "-q", "-b", &branch, &wt_s, &base]) {
-        println!("{arm}: worktree failed");
+    let mode = provisioning(continue_session, wt.is_dir());
+    if let Provisioning::NoWorktree(why) = &mode {
+        println!("{arm}: {why}");
         return 1;
+    }
+    let resuming = mode == Provisioning::Resume;
+    if !resuming {
+        let _ = git(&["worktree", "remove", "--force", &wt_s]);
+        let _ = git(&["worktree", "prune"]);
+        let _ = git(&["branch", "-D", &branch]);
+        if !git(&["worktree", "add", "-q", "-b", &branch, &wt_s, &base]) {
+            println!("{arm}: worktree failed");
+            return 1;
+        }
     }
 
     let Ok(spec) = fs::read_to_string(prompt_file) else {
         println!("{arm}: cannot read {}", prompt_file.display());
         return 1;
     };
-    // The precondition is checked against the WORKTREE, which is the base the arm will
-    // actually see.
-    let exists = |p: &str| wt.join(p).exists();
-    if let Precondition::Invalid(why) = precondition(&spec, &exists) {
-        println!("{arm:<24} {:<13} {why}", "TASK-INVALID");
-        return 0;
+    if !resuming {
+        // The precondition is checked against the WORKTREE, which is the base the arm will
+        // actually see.
+        //
+        // It is checked ONLY on a fresh run. An `fb:creates` precondition asserts the file
+        // does NOT exist yet, and on a follow-up turn it does -- the arm wrote it. Checking
+        // here would refuse every continuation of a creates-task as TASK-INVALID, which is
+        // the arm being punished for having done the work.
+        let exists = |p: &str| wt.join(p).exists();
+        if let Precondition::Invalid(why) = precondition(&spec, &exists) {
+            println!("{arm:<24} {:<13} {why}", "TASK-INVALID");
+            return 0;
+        }
+        let _ = fs::write(wt.join(".fb-task.md"), &spec);
+        strip(&wt);
     }
 
-    let _ = fs::write(wt.join(".fb-task.md"), &spec);
-    strip(&wt);
-
-    for read in reads_of(&spec) {
+    for read in if resuming {
+        Vec::new()
+    } else {
+        reads_of(&spec)
+    } {
         match read {
             Ok(path) => {
                 let src = repo.join(&path);
@@ -260,7 +323,11 @@ pub fn run(arm: &str, task: &str, prompt_file: &Path, krate: &str) -> i32 {
     }
 
     let state = crate::paths::state().join("state").join(&run);
-    let _ = fs::remove_dir_all(&state);
+    // The session directory is what makes a continuation possible at all: it holds the
+    // launcher's own record of the turn the arm is being asked to resume.
+    if !resuming {
+        let _ = fs::remove_dir_all(&state);
+    }
     for sub in ["data", "state", "cache"] {
         let _ = fs::create_dir_all(state.join(sub));
     }
@@ -276,7 +343,10 @@ pub fn run(arm: &str, task: &str, prompt_file: &Path, krate: &str) -> i32 {
         .join(task)
         .join(format!("{arm}.findings.md"))
         .is_file();
-    let prompt = if critiqued {
+    let prompt = if resuming {
+        println!("{arm}: continuing its session on this task -- worktree and session kept");
+        spec.clone()
+    } else if critiqued {
         println!("{arm}: continuing its spec-critique session");
         continuation_prompt(&spec)
     } else {
@@ -294,7 +364,8 @@ pub fn run(arm: &str, task: &str, prompt_file: &Path, krate: &str) -> i32 {
         arm,
         &prompt,
         &wt,
-        critiqued,
+        // Either kind of continuation asks the launcher to resume rather than start.
+        resuming || critiqued,
         &env,
         Some(crate::launch::Scope {
             unit: &unit,
@@ -417,5 +488,37 @@ mod tests {
         assert!(p.contains("IMPLEMENTATION turn"), "{p}");
         assert!(p.contains("Do not critique the spec"), "{p}");
         assert!(p.ends_with("TASK BODY"), "the task is last");
+    }
+
+    /// RESUMING MUST NEVER FALL BACK TO FRESH. A fresh dispatch runs `git worktree remove
+    /// --force`, `git branch -D` and wipes the session directory. That is right when
+    /// starting and is the exact opposite of a follow-up turn, whose whole point is to hand
+    /// the arm back the code a critic just reviewed.
+    #[test]
+    fn continuing_a_missing_worktree_is_refused_not_restarted() {
+        assert!(matches!(
+            provisioning(true, false),
+            Provisioning::NoWorktree(_)
+        ));
+        assert_eq!(provisioning(true, true), Provisioning::Resume);
+    }
+
+    /// A first run provisions whether or not anything is there: that is what makes it a
+    /// first run, and a leftover worktree from a previous wave must not be inherited.
+    #[test]
+    fn a_first_run_provisions_either_way() {
+        assert_eq!(provisioning(false, false), Provisioning::Fresh);
+        assert_eq!(provisioning(false, true), Provisioning::Fresh);
+    }
+
+    /// The refusal SAYS why. "worktree failed" would read as a git problem rather than as
+    /// the harness declining to destroy the work the follow-up is about.
+    #[test]
+    fn the_refusal_names_what_it_is_protecting() {
+        let Provisioning::NoWorktree(why) = provisioning(true, false) else {
+            panic!("expected a refusal");
+        };
+        assert!(why.contains("refusing"), "{why}");
+        assert!(why.contains("fresh run"), "{why}");
     }
 }
