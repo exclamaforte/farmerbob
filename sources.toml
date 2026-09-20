@@ -696,6 +696,7 @@ Ten days before registration. Same handling as oc-deepseek-v4-pro."""
 
 [source.oc-cerebras-gptoss]
 status     = "disabled"   # 2026-09-19: cerebras answers "Payment required ... visit your billing tab"
+disabled_reason = 'cerebras answers "Payment required ... visit your billing tab" on the free route; measured 2026-09-19, and the same reply on both routes shows it is the key/account, not the model id.'
 kind       = "opencode"
 launcher   = "opencode"
 model      = "cerebras/gpt-oss-120b"
@@ -706,6 +707,7 @@ notes      = "Owner: 1M tokens. Separate bucket from the qwen route, per the own
 
 [source.oc-cerebras-qwen]
 status     = "disabled"   # 2026-09-19: same "Payment required" answer as the gptoss route
+disabled_reason = 'cerebras answers "Payment required ... visit your billing tab" on the free route; measured 2026-09-19, and the same reply on both routes shows it is the key/account, not the model id.'
 kind       = "opencode"
 launcher   = "opencode"
 model      = "cerebras/qwen-3.8-27b"
