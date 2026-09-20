@@ -54,16 +54,36 @@ impl Declared {
     }
 }
 
+/// The handoff every spec REQUIRES the arm to write.
+///
+/// `_handoff.md` is appended to every dispatched spec and says, under the heading
+/// "Handoff (required)": *write `.fb/handoff.md` in the repository root*.
+///
+/// The harness does not provision this file -- the arm writes it -- so it is correctly not
+/// `harness_owned`. But being the arm's own work is not the same as being OUT OF SCOPE: the
+/// harness commanded it. Until 2026-09-19 the scope gate only looked inside `crates/`, so
+/// it never saw the handoff; widening the universe (bead farmerbob-0s8x) made it visible
+/// and every obedient arm was immediately marked OUT-OF-SCOPE for obeying.
+pub const REQUIRED_OUTPUT: &str = ".fb/handoff.md";
+
+/// Whether a path is output the spec REQUIRED, so producing it is never a departure.
+pub fn required_output(path: &str) -> bool {
+    path == REQUIRED_OUTPUT
+}
+
 /// A path that is permitted even though it is not the target.
 ///
-/// This enum names the grants [`assess`] may apply. There is exactly one:
-/// [`Allowance::ModuleDeclaration`]. No function returns an `Allowance`;
-/// the enum exists so the grant has a name in the type system.
+/// This enum names the grants [`assess`] may apply. The list is CLOSED: a third grant would
+/// be a change to this enum, not an extension of it. No function returns an `Allowance`;
+/// the enum exists so each grant has a name in the type system.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Allowance {
+    /// The handoff `_handoff.md` requires of every arm. Penalising an arm for writing a
+    /// file the harness told it to write measures obedience as a fault.
+    RequiredHandoff,
     /// The `lib.rs` in the same directory as the target. Adding
     /// `pub mod y;` to the crate's own `lib.rs` is required to make a new
-    /// module compile, so it is not a violation. This is the only allowance.
+    /// module compile, so it is not a violation.
     ModuleDeclaration,
 }
 
@@ -216,6 +236,13 @@ pub fn assess(declared: &Declared, changes: &[Change]) -> Scope {
         } else {
             Kind::Semantic
         };
+
+        // The harness told the arm to write this. Producing it cannot be a departure, and
+        // a DELETION of it is not either -- there is nothing there to protect.
+        if required_output(&change.path) {
+            scope.allowed.push(change.path.clone());
+            continue;
+        }
 
         if declared.covers(&change.path) {
             // A task asks for a file to exist; deleting it is not
@@ -1055,5 +1082,67 @@ mod binary_crate_roots {
         );
         assert!(!sc.target_changed);
         assert_eq!(sc.departures.len(), 1);
+    }
+
+    /// THE HARNESS COMMANDED THIS FILE. `_handoff.md` is appended to every dispatched spec
+    /// and says, under "Handoff (required)", to write `.fb/handoff.md`. Marking an arm
+    /// OUT-OF-SCOPE for doing so measures obedience as a fault, and the verdict feeds the
+    /// bandit.
+    ///
+    /// It went unnoticed because the gate only looked inside `crates/` until 2026-09-19.
+    /// Widening the universe (farmerbob-0s8x) made the handoff visible, and the very next
+    /// run -- novelty/codex-luna, which wrote a 7-line handoff exactly as instructed --
+    /// came back OUT-OF-SCOPE with that as its only departure.
+    #[test]
+    fn writing_the_required_handoff_is_never_a_departure() {
+        let declared = Declared::one("crates/farmerbob-core/src/novelty.rs");
+        let changes = vec![
+            Change {
+                path: "crates/farmerbob-core/src/novelty.rs".to_string(),
+                formatting_only: false,
+                deleted: false,
+            },
+            Change {
+                path: ".fb/handoff.md".to_string(),
+                formatting_only: false,
+                deleted: false,
+            },
+        ];
+        let scope = assess(&declared, &changes);
+        assert!(
+            scope.departures.is_empty(),
+            "the handoff is required output: {:?}",
+            scope.departures
+        );
+        assert!(scope.allowed.contains(&".fb/handoff.md".to_string()));
+        assert!(scope.target_changed);
+    }
+
+    /// Only THAT path. A different file under `.fb/` is not required output, and letting
+    /// the allowance be a prefix would hand every arm the whole harness directory.
+    #[test]
+    fn the_allowance_is_the_one_path_and_not_a_prefix() {
+        assert!(required_output(".fb/handoff.md"));
+        assert!(!required_output(".fb/handoff.md.bak"));
+        assert!(!required_output(".fb/prompts/x.md"));
+        assert!(!required_output(".fb"));
+        assert!(!required_output(""));
+    }
+
+    /// A handoff alone is not the task. The allowance stops it counting AGAINST the arm; it
+    /// must not make an untouched deliverable look changed.
+    #[test]
+    fn a_handoff_alone_does_not_count_as_touching_the_target() {
+        let declared = Declared::one("crates/x/src/y.rs");
+        let scope = assess(
+            &declared,
+            &[Change {
+                path: ".fb/handoff.md".to_string(),
+                formatting_only: false,
+                deleted: false,
+            }],
+        );
+        assert!(!scope.target_changed, "the deliverable was never written");
+        assert!(scope.departures.is_empty());
     }
 }
