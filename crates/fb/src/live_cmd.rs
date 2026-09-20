@@ -47,6 +47,9 @@ pub fn worktrees_live(procs: &[Proc], root: &str) -> std::collections::BTreeSet<
     }
     let root_path = Path::new(root);
     for p in procs {
+        if is_harness_tool(&p.comm) {
+            continue;
+        }
         let Some(cwd) = &p.cwd else { continue };
         let Ok(rel) = Path::new(cwd).strip_prefix(root_path) else {
             continue;
@@ -141,6 +144,56 @@ pub fn gather_procs(root: &str) -> Vec<Proc> {
 }
 
 /// Returns true if the executable name matches candidate agent binaries.
+/// Whether a process is the HARNESS's own tooling rather than an agent.
+///
+/// EXCLUSION, NOT INCLUSION, AND THAT ASYMMETRY IS THE POINT. This module used to hold a
+/// list of launcher names and count only those; the list was a hand-kept second copy of the
+/// launcher table and was already wrong -- the zcode launcher runs as `zcode-cli`, so every
+/// glm arm was invisible and the count used for ADMISSION under-reported, which lets the
+/// harness dispatch past its own memory cap.
+///
+/// An inclusion list fails UNSAFE: a launcher nobody added is an agent nobody counts.
+/// An exclusion list fails SAFE: a tool nobody added is counted as an agent, which
+/// over-reports and holds a slot back. Over-reporting costs throughput; under-reporting
+/// costs the machine.
+///
+/// What it excludes is the scorer, which runs `cargo test` INSIDE the candidate's worktree.
+/// `fb score` on blast-width made that finished worktree read as a live agent for the whole
+/// of a four-minute compile, eight minutes after its arm had exited.
+///
+/// A cargo test binary is named `<crate>-<16 hex digits>`, which is why the hash shape is
+/// matched rather than any particular crate name.
+fn is_harness_tool(comm: &str) -> bool {
+    const TOOLS: [&str; 7] = [
+        "cargo",
+        "rustc",
+        "rustfmt",
+        "clippy-driver",
+        "git",
+        "bwrap",
+        "fb",
+    ];
+    if TOOLS.contains(&comm) {
+        return true;
+    }
+    // A cargo test binary is `<crate>-<16 hex digits>`. `comm` is TRUNCATED TO 15 BYTES by
+    // the kernel, so what actually appears for `farmerbob_core-1b360807fb9539bc` is
+    // `farmerbob_core-` -- the hash cut off entirely, leaving a trailing dash. Requiring a
+    // hash matched nothing, and the scorer went on counting as an agent.
+    //
+    // A trailing dash is therefore the truncated case, and no launcher is named that way.
+    if comm.ends_with('-') {
+        return true;
+    }
+    match comm.rsplit_once('-') {
+        Some((stem, hash)) if !stem.is_empty() && !hash.is_empty() => {
+            // A full hash, or a partial one on a name the kernel truncated at 15 bytes.
+            hash.chars().all(|c| c.is_ascii_hexdigit()) && (hash.len() >= 8 || comm.len() == 15)
+        }
+        _ => false,
+    }
+}
+
 /// Launcher names seen in this project, used ONLY to decide whether an unreadable process
 /// is worth reporting as unclassified. It never decides what counts as live -- that is the
 /// worktree.
@@ -497,5 +550,76 @@ mod tests {
         }];
         assert_eq!(count_live(&procs, ""), 0);
         assert!(worktrees_live(&procs, "").is_empty());
+    }
+
+    /// THE SCORER RUNS INSIDE THE CANDIDATE'S WORKTREE. `fb score` runs `cargo test` there,
+    /// so a finished worktree read as a live agent for the whole of a four-minute compile --
+    /// eight minutes after its arm had exited. That over-counts the field, and the autopilot
+    /// holds slots back for agents that are not there.
+    #[test]
+    fn the_scorers_own_cargo_is_not_an_agent() {
+        let root = "/wt";
+        let procs = vec![
+            Proc {
+                pid: 1,
+                comm: "cargo".into(),
+                cwd: Some("/wt/task--arm".into()),
+            },
+            Proc {
+                pid: 2,
+                comm: "farmerbob_core-1b360807fb95".into(),
+                cwd: Some("/wt/task--arm".into()),
+            },
+        ];
+        assert_eq!(count_live(&procs, root), 0, "only the scorer is in there");
+    }
+
+    /// The exclusion must not swallow a real agent that happens to sit beside the scorer.
+    #[test]
+    fn an_agent_beside_the_scorer_is_still_counted() {
+        let root = "/wt";
+        let procs = vec![
+            Proc {
+                pid: 1,
+                comm: "cargo".into(),
+                cwd: Some("/wt/a--x".into()),
+            },
+            Proc {
+                pid: 2,
+                comm: "zcode-cli".into(),
+                cwd: Some("/wt/b--y".into()),
+            },
+        ];
+        assert_eq!(count_live(&procs, root), 1);
+        assert_eq!(
+            worktrees_live(&procs, root).into_iter().collect::<Vec<_>>(),
+            vec!["b--y"]
+        );
+    }
+
+    /// EXCLUSION FAILS SAFE. A tool nobody added is counted as an agent, which holds a slot
+    /// back; an INCLUSION list would miss it and let the harness dispatch past its cap. The
+    /// previous design was an inclusion list and it was already wrong about `zcode-cli`.
+    #[test]
+    fn an_unknown_process_counts_as_an_agent() {
+        assert!(!is_harness_tool("some-new-launcher"));
+        assert!(!is_harness_tool("zcode-cli"));
+        assert!(!is_harness_tool("codex-code-mode"));
+    }
+
+    /// A cargo test binary is `<crate>-<hex>`; an arm's CLI is not.
+    #[test]
+    fn a_test_binary_is_told_apart_from_a_launcher() {
+        assert!(is_harness_tool("farmerbob_core-1b360807fb95"));
+        assert!(is_harness_tool("fb-1b360807fb9539bc"));
+        // THE TRUNCATED CASE, which is the one that actually appears. `comm` is capped at
+        // 15 bytes, so `farmerbob_core-1b360807fb9539bc` shows up as `farmerbob_core-`
+        // with the hash gone. Requiring a hash matched nothing and the scorer kept counting.
+        assert!(is_harness_tool("farmerbob_core-"));
+        assert!(
+            !is_harness_tool("zcode-node-repl"),
+            "not hex, not a test binary"
+        );
+        assert!(!is_harness_tool("agy-opus"), "too short to be a hash");
     }
 }
