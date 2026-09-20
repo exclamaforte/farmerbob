@@ -1,0 +1,17 @@
+NOT MERGED codex-luna -- stale base, my fault
+TESTS-FAIL, tests -5 (924 in crate), 175L. The arm did the work it was asked: all 38 entries
+gained a cmd and args, and its oracle test is exactly as specified -- every arm, both
+continue_session values, the arm named in the failure message, and a non-empty guard reading
+"an empty registry would make this oracle vacuous".
+IT IS NOT MERGEABLE BECAUSE I INVALIDATED ITS BASE MID-FLIGHT. Dispatched 19:29 against
+44958bc; I merged launch-from-registry (e9c4b4a, which rewrote launch.rs) at 19:35. The arm
+wrote its own registry reader against the pre-merge file, without the ancestor walk that merge
+introduced, so from crates/fb it finds no registry and every arm reads as unknown -- which is
+what broke the doctor coverage tests.
+THE ORACLE EARNED ITS KEEP. Running the arm's sources.toml against MASTER's launcher: 66 of 66
+comparisons differ. Its recipes use a {continue} placeholder that only its own launch.rs
+expands; master's argv_for knows only {prompt} and {worktree}, so every arm would have been
+launched with a literal "{continue}" argument. Merging the data alone would have broken every
+dispatch, and it would have looked fine -- the file parses, the tree builds.
+Its work is a PAIR, data and code, and only the pair is coherent. Re-dispatching on a current
+base rather than merging half of it. farmerbob-m71 exactly, and I walked into it.
