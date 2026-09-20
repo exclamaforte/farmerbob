@@ -405,10 +405,7 @@ fn leading_digits(text: &str) -> &str {
 ///
 /// UNITS ARE NOT OPTIONAL TO READ. This used to take the leading digits and call them
 /// seconds, which is right for an HTTP `Retry-After: 120` and wrong for every duration a
-/// provider writes for a human. agy says
-///
-///     Individual quota reached ... Resets in 3h46m52s.
-///
+/// provider writes for a human. agy says `Individual quota reached ... Resets in 3h46m52s.`
 /// and that parsed as THREE SECONDS. So a park computed from it expired the moment it was
 /// written, and the longer the refusal the more completely the park did nothing -- exactly
 /// inverted. Both agy arms were refused on 2026-09-19 with hour-scale resets, and the park
