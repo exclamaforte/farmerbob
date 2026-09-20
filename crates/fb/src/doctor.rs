@@ -99,6 +99,8 @@ fn run_all() -> Vec<Check> {
         check_git_worktree(),
         check_disk_headroom(),
         check_agent_clis(),
+        check_kernel_python(),
+        check_kernelbench_src(),
         check_rustfmt(&repo),
         check_launcher_coverage(&repo),
         check_spec_targets(&repo),
@@ -1001,6 +1003,113 @@ fn check_agent_clis() -> Check {
             )),
         )
     }
+}
+
+// ---------------------------------------------------------------- kernel benchmark checks
+//
+// The KernelBench tasks need a pinned Python env (kb-env, reusing the system
+// torch) and the KernelBench sources. Both are Warn, not Fail: their absence
+// blocks kernel work only, not the rest of the harness.
+
+/// Kernel benchmark python env: kb-env with torch + CUDA + eval deps.
+fn check_kernel_python() -> Check {
+    let home = env::var_os("HOME").unwrap_or_default();
+    let kb_python = Path::new(&home)
+        .join(".local/share/farmerbob/kb-env/bin/python")
+        .to_string_lossy()
+        .into_owned();
+    if !Path::new(&kb_python).is_file() {
+        return Check::new(
+            "kernel python",
+            Status::Warn,
+            format!("no kb-env python at {kb_python}; kernel tasks cannot run"),
+            Some(
+                "create it: python3 -m venv --system-site-packages ".to_string()
+                    + "$HOME/.local/share/farmerbob/kb-env && "
+                    + "$HOME/.local/share/farmerbob/kb-env/bin/pip install "
+                    + "\"tqdm>=4.67\" \"pydantic>=2\" \"python-dotenv>=1.2\" packaging requests",
+            ),
+        );
+    }
+    let output = match Command::new(&kb_python)
+        .args([
+            "-c",
+            "import torch, tqdm, pydantic, dotenv; print(torch.__version__, torch.cuda.is_available())",
+        ])
+        .output()
+    {
+        Ok(out) => out,
+        Err(e) => {
+            return Check::new(
+                "kernel python",
+                Status::Warn,
+                format!("kb-env python would not launch: {e}"),
+                None,
+            );
+        }
+    };
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Check::new(
+            "kernel python",
+            Status::Warn,
+            format!("kb-env python probe failed: {}", first_line(&err)),
+            Some("reinstall the kb-env deps (tqdm, pydantic, python-dotenv)".to_string()),
+        );
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut parts = text.split_whitespace();
+    match (parts.next(), parts.next()) {
+        (Some(torch), Some("True")) => Check::new(
+            "kernel python",
+            Status::Ok,
+            format!("kb-env torch {torch} with CUDA"),
+            None,
+        ),
+        (Some(torch), Some(cuda)) => Check::new(
+            "kernel python",
+            Status::Warn,
+            format!("kb-env torch {torch} but cuda available: {cuda}; kernel tasks need CUDA"),
+            None,
+        ),
+        _ => Check::new(
+            "kernel python",
+            Status::Warn,
+            format!(
+                "kb-env python probe returned unparseable output: {}",
+                text.trim()
+            ),
+            None,
+        ),
+    }
+}
+
+/// KernelBench sources: KB_SRC or the default checkout with a dataset.
+fn check_kernelbench_src() -> Check {
+    let src = env::var("KB_SRC").unwrap_or_else(|_| "/home/gabe/KernelBench/src".to_string());
+    let dataset = Path::new(&src).join("kernelbench/dataset.py");
+    let level1 = Path::new(&src)
+        .join("../KernelBench/level1")
+        .to_string_lossy()
+        .into_owned();
+    if !dataset.is_file() {
+        return Check::new(
+            "kernelbench src",
+            Status::Warn,
+            format!("no kernelbench at KB_SRC={src}; ingest cannot run"),
+            Some("clone KernelBench and set KB_SRC to its src/ directory".to_string()),
+        );
+    }
+    Check::new(
+        "kernelbench src",
+        Status::Ok,
+        format!("kernelbench at {src} (problems under {level1})"),
+        None,
+    )
+}
+
+fn first_line(text: &str) -> String {
+    text.lines().next().unwrap_or("").trim().to_string()
 }
 
 // ---------------------------------------------------------------- repository checks

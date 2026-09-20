@@ -1,6 +1,7 @@
 mod adjudicate_cmd;
 mod admit_cmd;
 mod archive_cmd;
+mod artifact_cmd;
 mod autopilot_cmd;
 mod backfill_cmd;
 mod bench_cmd;
@@ -23,6 +24,7 @@ mod followups_cmd;
 mod hooks_cmd;
 mod import;
 mod isolated_cmd;
+mod kernel_score_cmd;
 mod launch;
 mod ledger_cmd;
 mod live_cmd;
@@ -531,7 +533,7 @@ enum Command {
     },
     /// Run a benchmark task: verify once, then time it.
     Bench {
-        /// Directory holding manifest.json, verify.sh and bench.sh.
+        /// Directory holding task.toml (or legacy manifest.json), verify.sh and bench.sh.
         dir: PathBuf,
         /// Seconds before one trial is killed. 0 means no limit.
         #[arg(long, default_value_t = 0)]
@@ -542,6 +544,50 @@ enum Command {
         /// Unreadable runs tolerated before the instrument is judged unreliable.
         #[arg(long, default_value_t = 3)]
         max_bad: u32,
+    },
+    /// Score one kernel task from its baseline and fresh samples.
+    KernelScore {
+        /// Path to ref/baseline.json for the task.
+        baseline: PathBuf,
+        /// Fingerprint of the environment the samples were measured in.
+        #[arg(long)]
+        fingerprint: String,
+        /// Fresh bench samples in ms, comma separated.
+        #[arg(long)]
+        samples: String,
+        /// Whether verification passed.
+        #[arg(long, default_value_t = false)]
+        correct: bool,
+        /// Fast threshold: speedup above this counts as fast.
+        #[arg(long, default_value_t = 1.0)]
+        p: f64,
+        /// Minimum fresh samples before a task may be scored.
+        #[arg(long, default_value_t = 1)]
+        min_samples: usize,
+    },
+    /// Store bytes by content hash, pin them, collect garbage.
+    Artifact {
+        /// Collect garbage instead of storing.
+        #[arg(long)]
+        gc: bool,
+        /// List stored artifacts with pin state and retention instead.
+        #[arg(long)]
+        list: bool,
+        /// File whose bytes to store (store mode).
+        #[arg(long, default_value = "")]
+        file: String,
+        /// agent-log, kernel-source, bench-json, compiler-log, profile (store mode).
+        #[arg(long, default_value = "")]
+        kind: String,
+        /// Pin name to attach the artifact to (store mode).
+        #[arg(long, default_value = "")]
+        pin: String,
+        /// Collect artifacts older than this many days (gc mode).
+        #[arg(long, default_value_t = 30)]
+        older_than_days: u64,
+        /// Report what gc would collect without deleting.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -1070,6 +1116,82 @@ fn main() {
                 max_bad,
             };
             bench_gather::run(&dir, &plan, &mut std::io::stdout())
+        }
+        Some(Command::KernelScore {
+            baseline,
+            fingerprint,
+            samples,
+            correct,
+            p,
+            min_samples,
+        }) => {
+            let mut parsed: Vec<f64> = Vec::new();
+            for part in samples.split(',').filter(|s| !s.trim().is_empty()) {
+                match part.trim().parse::<f64>() {
+                    Ok(v) => parsed.push(v),
+                    Err(_) => {
+                        eprintln!("error: unparseable sample {part:?} in --samples");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            kernel_score_cmd::run(
+                &baseline,
+                &fingerprint,
+                &parsed,
+                correct,
+                p,
+                min_samples,
+                &mut std::io::stdout(),
+            )
+        }
+        Some(Command::Artifact {
+            gc,
+            list,
+            file,
+            kind,
+            pin,
+            older_than_days,
+            dry_run,
+        }) => {
+            let root = paths::artifacts();
+            if list {
+                let threshold = older_than_days.saturating_mul(86_400) as i64;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let rows: Vec<serde_json::Value> = artifact_cmd::list(&root, threshold, now)
+                    .into_iter()
+                    .map(|l| {
+                        serde_json::json!({
+                            "hash": l.hash,
+                            "pinned": l.pinned,
+                            "retention": match l.retention {
+                                farmerbob_core::artifact::Retention::Keep => "keep",
+                                farmerbob_core::artifact::Retention::Collect => "collect",
+                            },
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::json!(rows));
+                exit::OK
+            } else if gc {
+                let threshold = older_than_days.saturating_mul(86_400) as i64;
+                artifact_cmd::gc(&root, threshold, dry_run, &mut std::io::stdout())
+            } else {
+                if file.is_empty() || kind.is_empty() || pin.is_empty() {
+                    eprintln!("error: store mode needs --file, --kind and --pin");
+                    std::process::exit(2);
+                }
+                artifact_cmd::store(
+                    std::path::Path::new(&file),
+                    &kind,
+                    &pin,
+                    &root,
+                    &mut std::io::stdout(),
+                )
+            }
         }
         None => {
             println!("fb — farmerbob. Try `fb --help`.");

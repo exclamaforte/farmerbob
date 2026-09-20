@@ -295,3 +295,49 @@ The general rule this session keeps producing: **when a measurement bug is found
 every other implementation of that measurement.** A fix that lands in one copy while three
 others keep producing false labels is worse than no fix, because the disagreement between
 tools looks like signal.
+
+## KernelBench on the 5090: what the harness learned
+
+Bulk baseline capture (level 1, 100 tasks) taught four things, each found by
+measurement rather than by reading docs:
+
+1. **The eval import needs two stubs, not a vendor.** `kernelbench/__init__`
+   imports `utils`, which pulls `dotenv`, `openai` and `litellm`. The only
+   `__init__` side effect is the *additive* `torch.rand_mix` registration --
+   nothing patches `torch.randn`, and no eval path reads `rand_mix`. So
+   `shims/kb_shim.py` stubs exactly `openai` + `litellm` in `sys.modules`
+   and imports the package normally. Everything else (tqdm, pydantic,
+   dotenv, numpy, requests) is real, in the kb-env venv
+   (`~/.local/share/farmerbob/kb-env`, `--system-site-packages` so the
+   pinned system torch 2.14.0+cu130 is reused, not duplicated).
+
+2. **Stdout is a contract, and KernelBench breaks it.** `timing.py` prints
+   `[Profiling] ...` unconditionally, which corrupted the shim's one-JSON-
+   object stdout (found when `kb_baseline` failed to parse bench output).
+   The shim now runs eval under `redirect_stdout` and re-emits chatter on
+   stderr. Same shape as every other bug in this project: a failure state
+   that looks like something else (here, an instrument failure that was
+   really a logging leak). `bench_read`'s line-scanning parser tolerated
+   it; the strict Python parser did not -- which is how it was found.
+
+3. **OOM reports as incorrect, not as broken.** A 4096x393216 task holds
+   ~6.4GB per tensor and peaks ~26GB (input + two outputs + perf inputs).
+   On OOM the eval returns `correctness=False`, so the shim exits 1 with
+   empty stderr -- indistinguishable from a wrong kernel without the
+   capacity context. Mitigation: `PYTORCH_CUDA_ALLOC_CONF=
+   expandable_segments:True` at the shim's top (fresh process per sample,
+   so a running bulk pass picks it up without restart). Lesson for the
+   scorer: an `incorrect` on a giant task is a capacity signal until
+   proven otherwise; `fb bench` should surface peak estimates per task.
+
+4. **Scoring math lives in Rust, GPU I/O in Python.** `kb_report.py`
+   collects verify/bench samples and delegates every decision to
+   `fb kernel-score` (correctness gate, stale-baseline refusal via
+   `EnvFingerprint`, median/IQR, `min-samples` gate). One implementation
+   (T4), tested in Rust, with `fast_p` applied verbatim across rows.
+   Precedence found by review: `incorrect` beats `stale`, so a wrong
+   kernel on a changed environment still records the arm failure.
+
+Also recorded: `KernelExecResult.runtime` is **milliseconds** (from
+`get_timing_stats`), not microseconds as `eval.py`'s docstring claims.
+Units cancel in speedups, but anything storing absolute times must say ms.

@@ -1,7 +1,13 @@
 //! Benchmark task gathering and execution.
 //!
-//! This module reads a benchmark task directory, parses its `manifest.json` into a
+//! This module reads a benchmark task directory, parses its manifest into a
 //! [`TaskManifest`], and executes the benchmark via [`bench_cmd::run_bench`].
+//!
+//! The canonical manifest is `task.toml`, per the task-contract spec (a task
+//! directory holds `task.toml`, `setup.sh`, `verify.sh`, `bench.sh`, and
+//! `ref/`). `manifest.json` is accepted as a legacy fallback so task
+//! directories written before the contract was pinned keep working; when
+//! both are present `task.toml` wins.
 //!
 //! The module is not yet wired into the CLI; wiring is a separate task.
 //! `#![allow(dead_code)]` avoids compiler warnings while uncalled from `main`.
@@ -25,7 +31,31 @@ pub enum GatherError {
 }
 
 /// Read a task directory into a manifest.
+///
+/// Prefers `task.toml` (the task-contract shape); falls back to legacy
+/// `manifest.json` when no `task.toml` is present.
 pub fn manifest_in(dir: &Path) -> Result<TaskManifest, GatherError> {
+    let toml_path = dir.join("task.toml");
+    if toml_path.is_file() {
+        let content = std::fs::read_to_string(&toml_path).map_err(|e| {
+            GatherError::Unreadable(format!(
+                "could not read manifest at {}: {e}",
+                toml_path.display()
+            ))
+        })?;
+        if content.trim().is_empty() {
+            return Err(GatherError::Malformed(
+                "manifest contains only whitespace".to_string(),
+            ));
+        }
+        return TaskManifest::parse(&content).map_err(|e| {
+            GatherError::Malformed(format!(
+                "invalid TaskManifest in {}: {e}",
+                toml_path.display()
+            ))
+        });
+    }
+
     let manifest_path = dir.join("manifest.json");
     let content = match std::fs::read_to_string(&manifest_path) {
         Ok(c) => c,
@@ -429,5 +459,57 @@ mod tests {
         assert_eq!(code, 4);
         assert!(!scratch.path.join("verify_ran_marker").exists());
         assert!(!scratch.path.join("bench_ran_marker").exists());
+    }
+
+    fn task_toml(name: &str, min_trials: u32) -> String {
+        format!(
+            "name = \"{name}\"\ndescription = \"benchmark task\"\nverification = \"Benchmark\"\nmin_trials = {min_trials}\n"
+        )
+    }
+
+    #[test]
+    fn task_toml_is_the_canonical_manifest() {
+        let scratch = ScratchDir::new("toml-canonical");
+        scratch.write_file("task.toml", &task_toml("toml_task", 2));
+        let manifest = manifest_in(&scratch.path).expect("task.toml must parse");
+        assert_eq!(manifest.name.0, "toml_task");
+        assert_eq!(manifest.min_trials, 2);
+    }
+
+    #[test]
+    fn task_toml_wins_over_legacy_manifest_json() {
+        let scratch = ScratchDir::new("toml-wins");
+        scratch.write_file("task.toml", &task_toml("from_toml", 1));
+        scratch.write_file("manifest.json", &manifest_json("from_json", 1));
+        let manifest = manifest_in(&scratch.path).expect("both manifests present");
+        assert_eq!(manifest.name.0, "from_toml");
+    }
+
+    #[test]
+    fn legacy_manifest_json_still_works_alone() {
+        let scratch = ScratchDir::new("json-legacy");
+        scratch.write_file("manifest.json", &manifest_json("legacy_task", 1));
+        let manifest = manifest_in(&scratch.path).expect("legacy manifest must parse");
+        assert_eq!(manifest.name.0, "legacy_task");
+    }
+
+    #[test]
+    fn invalid_task_toml_is_malformed() {
+        let scratch = ScratchDir::new("toml-invalid");
+        scratch.write_file("task.toml", "name = \"x\"\nverification = \"Benchmark\"\n");
+        let err = manifest_in(&scratch.path).expect_err("min_trials 0 must be Malformed");
+        assert!(matches!(err, GatherError::Malformed(_)));
+    }
+
+    #[test]
+    fn task_toml_run_measures_end_to_end() {
+        let scratch = ScratchDir::new("toml-run");
+        scratch.write_file("task.toml", &task_toml("toml_run", 1));
+        scratch.write_file("verify.sh", OK_VERIFY);
+        scratch.write_file("bench.sh", "echo '{\"ms\":7.5}'\n");
+        let mut out = Vec::new();
+        let code = run(&scratch.path, &plan(&scratch.path, 0, 10, 2), &mut out);
+        assert_eq!(code, 0);
+        assert!(String::from_utf8_lossy(&out).contains("toml_run"));
     }
 }

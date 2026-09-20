@@ -56,6 +56,11 @@ pub fn worktrees() -> PathBuf {
     pick(env("FB_WT").as_deref(), state().join("worktrees"))
 }
 
+/// Content-addressed artifact store: `$FB_ARTIFACTS`, else `<state>/artifacts`.
+pub fn artifacts() -> PathBuf {
+    pick(env("FB_ARTIFACTS").as_deref(), state().join("artifacts"))
+}
+
 /// The repository root: `$FB_REPO`, else the working directory.
 pub fn repo() -> PathBuf {
     pick(
