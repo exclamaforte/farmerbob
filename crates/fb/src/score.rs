@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::scope_cmd::{arm_changed, harness_owned};
 use farmerbob_core::gate::{Observation as GateObs, Verdict, judge};
 use farmerbob_core::liveness::{Authority, Liveness, Observation as LiveObs, Tracker};
 use farmerbob_core::measurement::Measurement;
@@ -168,18 +169,13 @@ fn measure_base(wt: &Path) -> Option<String> {
 /// limit of the one-path-per-line wire format, not a choice.
 /// (bead farmerbob-7i30)
 fn deleted_paths(wt: &Path, base: &str) -> Measurement<Vec<String>> {
-    match git(
-        wt,
-        &[
-            "diff",
-            "--name-only",
-            "--diff-filter=D",
-            base,
-            "--",
-            "crates/",
-        ],
-    ) {
-        Some(out) => Measurement::observed(out.lines().map(str::to_string).collect()),
+    match git(wt, &["diff", "--name-only", "--diff-filter=D", base, "--"]) {
+        Some(out) => Measurement::observed(
+            out.lines()
+                .filter(|path| !harness_owned(path))
+                .map(str::to_string)
+                .collect(),
+        ),
         None => Measurement::instrument_failed(
             "git refused to report deleted paths, so a deletion cannot be told apart \
              from a modification",
@@ -385,14 +381,15 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
         wt,
         &["ls-files", "--others", "--exclude-standard", "crates/"],
     );
-    let tracked = base
-        .as_deref()
-        .and_then(|b| git(wt, &["diff", "--name-only", b, "--", "crates/"]));
-    let mut changed_paths: Option<Vec<String>> = None;
+    let changed = base.as_deref().map(|b| arm_changed(wt, b));
 
     let (lines, untracked, crates): (Measurement<u32>, Vec<String>, BTreeSet<String>) =
-        match (numstat, untracked_raw, tracked) {
-            (Some(ns), Some(ur), Some(tr)) => {
+        match (numstat, untracked_raw, changed.as_ref()) {
+            (
+                Some(ns),
+                Some(ur),
+                Some(farmerbob_core::measurement::Measurement::Observed(paths)),
+            ) => {
                 let mut n: u32 = ns
                     .lines()
                     .filter_map(|l| l.split_whitespace().next())
@@ -408,18 +405,12 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
                         n += body.lines().count() as u32;
                     }
                 }
-                let crates = tr
-                    .lines()
+                let crates = paths
+                    .iter()
+                    .chain(untracked.iter())
+                    .filter_map(|p| p.strip_prefix("crates/")?.split('/').next())
                     .map(str::to_string)
-                    .chain(untracked.iter().cloned())
-                    .filter_map(|p| p.split('/').nth(1).map(str::to_string))
                     .collect();
-                changed_paths = Some(
-                    tr.lines()
-                        .map(str::to_string)
-                        .chain(untracked.iter().cloned())
-                        .collect::<Vec<String>>(),
-                );
                 (Measurement::observed(n), untracked, crates)
             }
             _ => {
@@ -480,11 +471,11 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
     // named. An arm whose deletions we could not read must not read as one who deleted
     // nothing.  (bead farmerbob-7i30)
     let scope: Measurement<Scope> = match (
-        changed_paths.as_ref(),
+        changed.as_ref(),
         deleted.value(),
         if targets.is_empty() { None } else { Some(()) },
     ) {
-        (Some(paths), Some(gone), Some(())) => {
+        (Some(farmerbob_core::measurement::Measurement::Observed(paths)), Some(gone), Some(())) => {
             let changes: Vec<Change> = paths
                 .iter()
                 .map(|p| Change {
@@ -500,9 +491,11 @@ fn measure(wt: &Path, src: &str, t: &Task<'_>) -> Option<Record> {
                 &changes,
             ))
         }
-        (None, _, _) => Measurement::instrument_failed(
-            "git cannot read this worktree, so which files changed is unknown",
-        ),
+        (Some(farmerbob_core::measurement::Measurement::Missing(_)), _, _) | (None, _, _) => {
+            Measurement::instrument_failed(
+                "git cannot read this worktree, so which files changed is unknown",
+            )
+        }
         (_, _, None) => Measurement::nothing_to_measure(
             "the task spec declares no deliverable, so there is no scope to check",
         ),

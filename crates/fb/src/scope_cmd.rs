@@ -12,6 +12,7 @@
 //! - `2`: nothing could be assessed, or some worktrees were unassessable while none departed
 
 use farmerbob_core::lib_diff::{DiffLine, LibChange, classify, permitted};
+use farmerbob_core::measurement::Measurement;
 use farmerbob_core::precondition;
 use farmerbob_core::scope::{
     Change, Declared, Departure, Scope, assess, is_clean, module_declaration_for,
@@ -19,6 +20,85 @@ use farmerbob_core::scope::{
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Paths the harness removes from every worktree before an arm starts.
+pub const HARNESS_OWNED: [&str; 6] = [
+    "CLAUDE.md",
+    "AGENTS.md",
+    ".beads/",
+    ".cursor/",
+    ".codex/",
+    ".agents/",
+];
+
+/// Whether `path` is the harness's own bookkeeping rather than the arm's work.
+pub fn harness_owned(path: &str) -> bool {
+    if path == ".fb/handoff.md" {
+        return false;
+    }
+    path == ".fb"
+        || path.starts_with(".fb/")
+        || HARNESS_OWNED.iter().any(|prefix| {
+            if prefix.ends_with('/') {
+                path.starts_with(prefix)
+            } else {
+                path == *prefix || path.starts_with(&format!("{prefix}/"))
+            }
+        })
+}
+
+/// The arm's changed paths, excluding only harness-owned provisioning changes.
+pub fn arm_changed(worktree: &Path, base: &str) -> Measurement<Vec<String>> {
+    let tracked = match Command::new("git")
+        .current_dir(worktree)
+        .args(["diff", "--name-only", base, "--"])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        Ok(output) => {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            return Measurement::instrument_failed(&format!(
+                "git could not report changed paths: {}",
+                detail.trim()
+            ));
+        }
+        Err(error) => {
+            return Measurement::instrument_failed(&format!(
+                "could not run git to report changed paths: {error}"
+            ));
+        }
+    };
+    let untracked = match Command::new("git")
+        .current_dir(worktree)
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        Ok(output) => {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            return Measurement::instrument_failed(&format!(
+                "git could not report untracked paths: {}",
+                detail.trim()
+            ));
+        }
+        Err(error) => {
+            return Measurement::instrument_failed(&format!(
+                "could not run git to report untracked paths: {error}"
+            ));
+        }
+    };
+
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+    let tracked_text = String::from_utf8_lossy(&tracked.stdout);
+    let untracked_text = String::from_utf8_lossy(&untracked.stdout);
+    for path in tracked_text.lines().chain(untracked_text.lines()) {
+        if !path.is_empty() && !harness_owned(path) && seen.insert(path.to_string()) {
+            paths.push(path.to_string());
+        }
+    }
+    Measurement::observed(paths)
+}
 
 /// Read the task's declared target from prompt markdown using `precondition::declarations`.
 ///
@@ -105,49 +185,6 @@ fn find_worktrees(wt_root: &Path, task: &str) -> Vec<(String, PathBuf)> {
     result
 }
 
-/// Converts git tracked and untracked output into `Change` records.
-fn build_changes<F>(tracked_output: &str, untracked_output: &str, file_exists: F) -> Vec<Change>
-where
-    F: Fn(&str) -> bool,
-{
-    let mut changes = Vec::new();
-    let mut seen = HashSet::new();
-
-    for line in tracked_output.lines() {
-        let path = line.trim();
-        if path.is_empty() {
-            continue;
-        }
-        let deleted = !file_exists(path);
-        if seen.insert(path.to_string()) {
-            changes.push(Change {
-                path: path.to_string(),
-                deleted,
-                // Not measured here: this command reads a name list, not diffs. false is
-                // the safe direction -- it counts the departure as semantic, which is what
-                // the gate did for every departure before the distinction existed.
-                formatting_only: false,
-            });
-        }
-    }
-
-    for line in untracked_output.lines() {
-        let path = line.trim();
-        if path.is_empty() {
-            continue;
-        }
-        if seen.insert(path.to_string()) {
-            changes.push(Change {
-                path: path.to_string(),
-                deleted: false,
-                formatting_only: false,
-            });
-        }
-    }
-
-    changes
-}
-
 /// Converts unified diff text into `DiffLine` values.
 ///
 /// Strips the leading `+` or `-` marker, omitting file headers (`+++` / `---`)
@@ -217,86 +254,22 @@ fn assess_arm(wt_path: &Path, target: &str) -> ArmAssessment {
         return ArmAssessment::WorktreeMissing(wt_path.to_path_buf());
     }
 
-    // Step 2: git diff --name-only HEAD -- crates/
-    //
-    // The `crates/` pathspec is NOT decoration and its absence made this command
-    // unusable. Worktrees here are provisioned SPARSE: about sixteen entries are
-    // checked out and git reports every other file in the repository as deleted. Run
-    // without the pathspec, `fb scope` reported 777 departures for an arm that had
-    // done nothing wrong -- .beads, .agents, docs, every path the provisioner did not
-    // materialise.
-    //
-    // The two readers that already existed both scope it, and now all three agree:
-    //     fb-score.sh:67     git -C "$WT" diff --name-only HEAD -- crates/
-    //     fb-critique.sh:96  git diff --name-only HEAD -- crates/
-    //
-    // The spec pinned the command without the pathspec, so all three candidates
-    // implemented exactly what was asked and every unit test passed -- they construct
-    // `Change` values directly, because the spec's own Rules forbade shelling out to
-    // git. The defect was invisible until the merged code was run against a real
-    // worktree. (filed)
-    let diff_tracked = match Command::new("git")
-        .current_dir(wt_path)
-        .args(["diff", "--name-only", "HEAD", "--", "crates/"])
-        .output()
-    {
-        Ok(out) if out.status.success() => out,
-        Ok(out) => {
-            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let changes = match arm_changed(wt_path, "HEAD") {
+        Measurement::Observed(paths) => paths
+            .into_iter()
+            .map(|path| Change {
+                deleted: !wt_path.join(&path).exists(),
+                path,
+                formatting_only: false,
+            })
+            .collect::<Vec<_>>(),
+        Measurement::Missing(absent) => {
             return ArmAssessment::GitFailed {
                 command: "git diff --name-only HEAD".to_string(),
-                error: if err.is_empty() {
-                    format!("exit code {:?}", out.status.code())
-                } else {
-                    err
-                },
-            };
-        }
-        Err(e) => {
-            return ArmAssessment::GitFailed {
-                command: "git diff --name-only HEAD".to_string(),
-                error: e.to_string(),
+                error: format!("{absent:?}"),
             };
         }
     };
-
-    // Step 2: git ls-files --others --exclude-standard -- crates/
-    // Same pathspec, same reason: an unchecked-out file is not a change.
-    let untracked = match Command::new("git")
-        .current_dir(wt_path)
-        .args([
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "--",
-            "crates/",
-        ])
-        .output()
-    {
-        Ok(out) if out.status.success() => out,
-        Ok(out) => {
-            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            return ArmAssessment::GitFailed {
-                command: "git ls-files --others --exclude-standard".to_string(),
-                error: if err.is_empty() {
-                    format!("exit code {:?}", out.status.code())
-                } else {
-                    err
-                },
-            };
-        }
-        Err(e) => {
-            return ArmAssessment::GitFailed {
-                command: "git ls-files --others --exclude-standard".to_string(),
-                error: e.to_string(),
-            };
-        }
-    };
-
-    let tracked_text = String::from_utf8_lossy(&diff_tracked.stdout);
-    let untracked_text = String::from_utf8_lossy(&untracked.stdout);
-
-    let changes = build_changes(&tracked_text, &untracked_text, |p| wt_path.join(p).exists());
 
     // Step 3: scope::assess
     let declared = Declared::one(target);
@@ -335,7 +308,7 @@ fn assess_arm(wt_path: &Path, target: &str) -> ArmAssessment {
             // If git diff against HEAD was empty, but the file is untracked, lines are additions
             if diff_lines.is_empty()
                 && wt_path.join(lib_path).is_file()
-                && untracked_text.lines().any(|l| l.trim() == lib_path)
+                && changes.iter().any(|change| change.path == *lib_path)
                 && let Ok(content) = std::fs::read_to_string(wt_path.join(lib_path))
             {
                 for line in content.lines() {
@@ -851,31 +824,110 @@ index 1234567..89abcdef 100644
         );
     }
 
-    // build_changes detects deletions when file does not exist on disk.
     #[test]
-    fn build_changes_detects_deletions() {
-        let tracked = "crates/fb/src/exists.rs\ncrates/fb/src/deleted.rs\n";
-        let untracked = "crates/fb/src/untracked.rs\n";
-        let changes = build_changes(tracked, untracked, |p| p != "crates/fb/src/deleted.rs");
-        assert_eq!(
-            changes,
-            vec![
-                Change {
-                    path: "crates/fb/src/exists.rs".to_string(),
-                    deleted: false,
-                    formatting_only: false,
-                },
-                Change {
-                    path: "crates/fb/src/deleted.rs".to_string(),
-                    deleted: true,
-                    formatting_only: false,
-                },
-                Change {
-                    path: "crates/fb/src/untracked.rs".to_string(),
-                    deleted: false,
-                    formatting_only: false,
-                },
-            ]
+    fn harness_owned_filters_only_provisioning_paths_and_keeps_handoff() {
+        for path in [
+            ".beads/x.json",
+            "CLAUDE.md",
+            "AGENTS.md",
+            ".cursor/x",
+            ".codex/x",
+            ".agents/x",
+            ".fb/prompts/x.md",
+        ] {
+            assert!(harness_owned(path), "expected harness-owned: {path}");
+        }
+        assert!(harness_owned(".fb"), "the bare .fb boundary is owned");
+        assert!(
+            !harness_owned(".beads"),
+            "the bare .beads prefix is distinct"
         );
+        for path in ["sources.toml", "fb-dispatch.sh", ".fb/handoff.md", ""] {
+            assert!(!harness_owned(path), "expected arm-owned: {path}");
+        }
+        for path in ["./CLAUDE.md", "./.beads/x.json", "./.fb/prompts/x.md"] {
+            assert!(!harness_owned(path), "the ./ spelling is distinct: {path}");
+        }
+    }
+
+    fn git_ok_for_scope_test(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .expect("git is available");
+        assert!(output.status.success(), "git command failed: {args:?}");
+    }
+
+    fn scope_test_repo(name: &str) -> PathBuf {
+        let repo = std::env::temp_dir().join(format!("fb-scope-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).expect("scratch repository");
+        git_ok_for_scope_test(&repo, &["init", "-q"]);
+        git_ok_for_scope_test(&repo, &["config", "user.email", "test@example.com"]);
+        git_ok_for_scope_test(&repo, &["config", "user.name", "test"]);
+        for path in [
+            "CLAUDE.md",
+            "AGENTS.md",
+            ".beads/x.json",
+            ".cursor/x",
+            ".codex/x",
+            ".agents/x",
+        ] {
+            let file = repo.join(path);
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent).expect("fixture directory");
+            }
+            std::fs::write(file, "harness\n").expect("fixture file");
+        }
+        std::fs::write(repo.join("sources.toml"), "base\n").expect("fixture source");
+        git_ok_for_scope_test(&repo, &["add", "-A"]);
+        git_ok_for_scope_test(&repo, &["commit", "-q", "-m", "baseline"]);
+        repo
+    }
+
+    #[test]
+    fn arm_changed_excludes_harness_deletions_but_observes_outside_crates_edit() {
+        let repo = scope_test_repo("universe");
+        for path in [
+            "CLAUDE.md",
+            "AGENTS.md",
+            ".beads/x.json",
+            ".cursor/x",
+            ".codex/x",
+            ".agents/x",
+        ] {
+            std::fs::remove_file(repo.join(path)).expect("remove harness fixture");
+        }
+        let base = String::from_utf8(
+            Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .expect("git is available")
+                .stdout,
+        )
+        .expect("git output is utf8")
+        .trim()
+        .to_string();
+        assert_eq!(arm_changed(&repo, &base), Measurement::Observed(Vec::new()));
+
+        std::fs::write(repo.join("sources.toml"), "arm\n").expect("edit source");
+        assert_eq!(
+            arm_changed(&repo, &base),
+            Measurement::Observed(vec!["sources.toml".to_string()])
+        );
+    }
+
+    #[test]
+    fn arm_changed_on_a_plain_directory_is_missing() {
+        let dir = std::env::temp_dir().join(format!("fb-scope-plain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("plain directory");
+        let measurement = arm_changed(&dir, "HEAD");
+        assert!(!measurement.is_observed());
+        assert!(measurement.value().is_none());
     }
 }
