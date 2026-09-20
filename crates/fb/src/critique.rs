@@ -1,8 +1,16 @@
-//! Cross-review an implementation from another implementation's worktree.
+//! Cross-review a deliverable with a critic drawn from the roster.
 //!
 //! This is the Rust counterpart of `fb-critique.sh`.  I/O which can fail is kept in
 //! [`Measurement`] so that a failed instrument cannot become an observed zero or an empty
 //! patch.
+//!
+//! Critique compares nothing: it puts a model in front of a deliverable and asks what is
+//! wrong with it. That needs a second AGENT, not a second IMPLEMENTATION, so the critics
+//! come from the roster -- every arm in `sources.toml` whose status is exactly `verified`
+//! or `untested`, in file order -- while the field supplies only the subjects. The report
+//! filed under `logs/critiques/<bead>/<critic>.on.<subject>.md` names both arms, so the
+//! credit for finding what nobody else saw survives past the terminal. `crossx` is the
+//! stage that genuinely needs two implementations; this one never did.
 
 use farmerbob_core::gate::{Observation, Verdict, judge};
 use farmerbob_core::measurement::Measurement;
@@ -11,8 +19,6 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-
-const REPO: &str = "/home/gabe/Documents/farmerbob";
 
 fn read_text(path: &Path) -> Measurement<String> {
     match fs::read_to_string(path) {
@@ -58,14 +64,18 @@ fn arm_name(path: &Path, prefix: &str) -> Measurement<String> {
     }
 }
 
+/// The field: worktrees named `<bead>--<arm>` that hold a non-empty deliverable
+/// at `target` and no task file.
+///
+/// The measurement is the FIELD, not the registry. Registry status decides who may
+/// EXAMINE -- that is [`roster`]'s job -- and says nothing about who may be examined: a
+/// candidate absent from the roster is still a valid subject, which is the distinction
+/// that keeps "an empty roster" and "no candidates" different answers instead of two
+/// spellings of one. An empty root is an empty field and needs no registry to say so; an
+/// unreadable one is an instrument failure.
 fn candidates(bead: &str, target: &str) -> Measurement<Vec<String>> {
     let root = crate::paths::worktrees();
     let prefix = format!("{bead}--");
-    let registry =
-        match crate::sources::Registry::load(Path::new(REPO).join("sources.toml").as_path()) {
-            Ok(registry) => registry,
-            Err(error) => return Measurement::instrument_failed(&error),
-        };
     let entries = match fs::read_dir(&root) {
         Ok(entries) => entries,
         Err(error) => {
@@ -100,9 +110,6 @@ fn candidates(bead: &str, target: &str) -> Measurement<Vec<String>> {
         match fs::metadata(&target_path) {
             Ok(metadata) if metadata.is_file() && metadata.len() > 0 => {}
             _ => continue,
-        }
-        if !registry.eligible(&arm).is_ok() {
-            continue;
         }
         arms.push(arm);
     }
@@ -173,14 +180,6 @@ fn outside_files(worktree: &Path, target: &str) -> Measurement<Vec<String>> {
     Measurement::observed(files)
 }
 
-/// Render the critic's prompt to `prompt_path`, telling it to write its review to
-/// `out`.
-///
-/// These are TWO different paths and were one until 2026-09-19. `{OUT}` was
-/// substituted with the prompt's own path, so every critic was instructed to write
-/// its review over the prompt it had just been given. They did. The harness then
-/// looked for `.fb/critique.md`, found nothing, and printed "(no critique written)"
-/// -- while the review sat in the .prompt.md file, complete and unread. Every
 /// The first `limit` characters, and when there are more, a marker saying so.
 ///
 /// The marker is the whole point: a reviewer that cannot see the end of a patch must not
@@ -200,6 +199,14 @@ you could not see it.",
     )
 }
 
+/// Render the critic's prompt to `prompt_path`, telling it to write its review to
+/// `out`.
+///
+/// These are TWO different paths and were one until 2026-09-19. `{OUT}` was
+/// substituted with the prompt's own path, so every critic was instructed to write
+/// its review over the prompt it had just been given. They did. The harness then
+/// looked for `.fb/critique.md`, found nothing, and printed "(no critique written)"
+/// -- while the review sat in the .prompt.md file, complete and unread. Every
 /// critique this stage has ever run was reported as absent.
 fn prompt(
     template: &Path,
@@ -316,41 +323,97 @@ fn format_result(critic: &str, subject: &str, critique: &Path) -> Measurement<St
     ))
 }
 
+/// A file from the repository root: `FB_REPO` when it holds one, else the same
+/// constant this stage has always fallen back to.
+///
+/// `paths::repo()` itself falls back to the working directory, which is not the
+/// repository root under `cargo test`, so the constant keeps a test without a sandboxed
+/// repository from seeing an empty roster.
+fn repo_file(relative: &str) -> PathBuf {
+    // NO FALLBACK. This returned the hard-coded repository whenever the configured path was
+    // not a file, so an `FB_REPO` pointing at a tree with no `sources.toml` silently read
+    // the REAL roster and cast critics from it, reporting success.
+    //
+    // `FB_REPO` is the isolation override -- the whole point of `paths::repo` is that a
+    // differential or a test can be redirected away from the real artefacts -- and a
+    // fallback to the real tree defeats exactly that, while making a misconfigured run
+    // indistinguishable from a correct one.
+    //
+    // The caller reports `Missing` when the file is not there, which is the honest answer.
+    // Found by codex-luna critiquing this task.
+    crate::paths::repo().join(relative)
+}
+
+/// Every arm named by a `[source.<arm>]` header, in the order the headers appear.
+///
+/// `Registry` parses the file but stores a `BTreeMap`, which cannot express file order --
+/// and the order is load-bearing, because stage_cast casts the FIRST roster entry that is
+/// not the subject, so the order decides who reviews. A header this scan cannot read
+/// yields an arm the registry filter below will never match, so a mis-read arm drops out
+/// of the roster rather than being cast unvetted.
+fn arm_names_in_file_order(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_start();
+        let Some(rest) = line.strip_prefix("[source.") else {
+            continue;
+        };
+        let Some(end) = rest.find(']') else {
+            continue;
+        };
+        let after = rest[end + 1..].trim();
+        if !after.is_empty() && !after.starts_with('#') {
+            continue;
+        }
+        let quoted = rest[..end].trim();
+        let name = quoted
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .or_else(|| quoted.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+            .unwrap_or(quoted);
+        if !name.is_empty() {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
 /// Every arm this harness may cast as a critic, in `sources.toml` order.
 ///
-/// A critic does not need a candidate's worktree and does not need to have
-/// implemented anything: it reads the deliverable from its prompt. So the roster
-/// is the REGISTRY, not the field. That distinction is the whole of this stage --
-/// `crossx` needs two implementations and this never did.
+/// The roster is the REGISTRY, not the field: a critic does not need a candidate's
+/// worktree and does not need to have implemented anything, because it reads the
+/// deliverable from its prompt. The statuses accepted are exactly `verified` and
+/// `untested` -- anything else, `disabled` included and any status this code has never
+/// heard of, is excluded. An unrecognised status must meet the same closed door as a
+/// recognised refusal: treating an unknown status as castable is the dangerous direction,
+/// and `fb eligible` already refuses it, so the two implementations of one rule must not
+/// disagree here. A roster that cannot be read is `Missing`, and the run fails; it is not
+/// silently an empty roster.
 fn roster() -> Measurement<Vec<String>> {
-    // paths::repo() honours FB_REPO and falls back to the working directory, which is not
-    // the repository root under `cargo test`. Fall back to the same constant candidates()
-    // has always used rather than making the roster unreadable from a test.
-    let mut path = crate::paths::repo().join("sources.toml");
-    if !path.is_file() {
-        path = Path::new(REPO).join("sources.toml");
-    }
-    match crate::sources::Registry::load(&path) {
-        Ok(registry) => {
-            // Free arms first, registry order within each group. stage_cast casts the FIRST
-            // roster entry that is not the subject, so this ordering is what decides who
-            // pays for the review -- and the first run of this stage cast agy-opus-46,
-            // purely because it sits early in sources.toml.
-            let all = registry.dispatchable();
-            let mut free: Vec<String> = Vec::new();
-            let mut paid: Vec<String> = Vec::new();
-            for (name, source) in all {
-                if source.is_free() {
-                    free.push(name.to_string());
-                } else {
-                    paid.push(name.to_string());
-                }
-            }
-            free.extend(paid);
-            Measurement::observed(free)
+    let path = repo_file("sources.toml");
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            return Measurement::instrument_failed(&format!(
+                "cannot read {}: {error}",
+                path.display()
+            ));
         }
-        Err(error) => Measurement::instrument_failed(&error),
-    }
+    };
+    let registry = match crate::sources::Registry::load(&path) {
+        Ok(registry) => registry,
+        Err(error) => return Measurement::instrument_failed(&error),
+    };
+    let roster = arm_names_in_file_order(&text)
+        .into_iter()
+        .filter(|arm| {
+            matches!(
+                registry.get(arm).map(|source| source.status.as_str()),
+                Some("verified" | "untested")
+            )
+        })
+        .collect();
+    Measurement::observed(roster)
 }
 
 /// Who reviews whom, or the exit code to return instead.
@@ -369,9 +432,7 @@ fn plan(arms: &[String], roster: &[String]) -> Result<Vec<Casting>, i32> {
         // There IS work to examine and nobody free to examine it. A staffing failure is a
         // refusal, not a not-applicable, and it must not be reported as one.
         Err(Uncast::NoIndependentArm) => {
-            eprintln!(
-                "no arm in the registry can review this field: every eligible arm authored it"
-            );
+            eprintln!("no roster arm can review this field: every roster arm authored it");
             Err(1)
         }
     }
@@ -421,15 +482,17 @@ fn critic_worktree(
 /// Critique every candidate for `bead`; `crate_name` is retained for the
 /// script-compatible API.
 ///
-/// Critics come from the REGISTRY, not the field: reviewing a deliverable needs a
-/// second agent, not a second implementation. One candidate is a normal field.
+/// Who reviews whom is `stage_cast::cast`'s decision. This command measures the field,
+/// reads the roster, makes the worktrees, launches, and records; it decides nothing
+/// about pairing. One candidate is a normal, reviewable field.
 ///
 /// Exit codes:
-/// - `0` — every assignment was ATTEMPTED. A critic whose launcher fails is a gap
-///   in the evidence, recorded as "(no critique written)", not a failed stage.
-/// - `1` — the gate did not pass, the roster is unreadable, or there is work to
-///   examine and no arm free to examine it.
-/// - `4` — NOT APPLICABLE: no candidates. Nothing went wrong, nothing was written.
+/// - `0` — critiques ran and their artefacts were written: every assignment was
+///   ATTEMPTED, in the order `cast` returned them. A critic whose launcher fails is a
+///   gap in the evidence, recorded as "(no critique written)", not a failed stage.
+/// - `1` — a genuine failure: the gate did not pass, the roster could not be read,
+///   or there is work to examine and no arm free to examine it.
+/// - `4` — NOT APPLICABLE: zero candidates. Nothing went wrong, nothing was written.
 pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
     let _ = crate_name;
     let arms = match candidates(bead, target) {
@@ -452,7 +515,7 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
         // here would turn a correct answer into a refusal to answer.
         scope_departures: Some(0),
     });
-    // WHO REVIEWS. Critics come from the registry, not from the field.
+    // WHO REVIEWS. Critics come from the roster, not from the field.
     //
     // Until this change the assignment was `arms[(index + 1) % arms.len()]` -- a ring over the
     // CANDIDATES -- so a one-arm field returned 4 "need >= 2 to cross-review", and promote and
@@ -464,8 +527,8 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
     // farmerbob_core::stage_cast makes that distinction and this is its first caller.
     let roster = match roster() {
         Measurement::Observed(roster) => roster,
-        // An unreadable registry is a failure only if there is something to review. With an
-        // empty field the registry is irrelevant, and reporting 1 here would convert
+        // An unreadable roster is a failure only if there is something to review. With an
+        // empty field the roster is irrelevant, and reporting 1 here would convert
         // "nothing to review" into "the stage broke" -- the substitution this whole project
         // exists to prevent.
         Measurement::Missing(_) if arms.is_empty() => Vec::new(),
@@ -529,7 +592,7 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
             match outside_files(&sw, target) {
                 Measurement::Observed(outside) if !outside.is_empty() => {
                     let names = outside.join("\n");
-                    let siblings: Vec<String> = outside.iter().filter(|name| name.starts_with(&format!("{}/", Path::new(target).parent().unwrap_or_else(|| Path::new("." )).display())) && name.ends_with(".rs")).take(12).cloned().collect();
+                    let siblings: Vec<String> = outside.iter().filter(|name| name.starts_with(&format!("{}/", Path::new(target).parent().unwrap_or_else(|| Path::new(".")).display())) && name.ends_with(".rs")).take(12).cloned().collect();
                     for sibling in siblings {
                         let path = sw.join(&sibling);
                         if path.is_file() {
@@ -566,7 +629,7 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
         let _ = fs::remove_file(&critique_path);
         if !matches!(
             prompt(
-                Path::new(REPO).join(".fb/prompts/_critique.md").as_path(),
+                &repo_file(".fb/prompts/_critique.md"),
                 &patch,
                 &handoff,
                 &prompt_path,
@@ -591,10 +654,20 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
         if let Measurement::Observed(line) = format_result(critic, subject, &critique_path) {
             println!("{line}");
         }
-        let _ = fs::copy(
-            &critique_path,
-            log_dir.join(format!("{critic}.on.{subject}.md")),
-        );
+        // The report filed under logs/critiques/<bead>/ is what promote, adjudicate and
+        // followups read, and its stem is where the critic's credit lives: the critic and
+        // the subject are both in the name, so two critics of one subject cannot overwrite
+        // one another. A copy that fails is a lost credit, and losing one silently is how
+        // this stage used to lose every critique it ever ran.
+        if critique_path.is_file() {
+            let report = log_dir.join(format!("{critic}.on.{subject}.md"));
+            if let Err(error) = fs::copy(&critique_path, &report) {
+                eprintln!(
+                    "  {critic}: cannot file the critique at {}: {error}",
+                    report.display()
+                );
+            }
+        }
     }
     println!("-> {}/", log_dir.display());
     0
@@ -604,8 +677,10 @@ pub fn run_cmd(bead: &str, crate_name: &str, target: &str) -> i32 {
 mod tests {
     use super::{environment_paths, format_result, run_cmd};
     use farmerbob_core::measurement::Measurement;
+    use farmerbob_core::stage_cast::{Stage, Uncast, cast};
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
 
     #[test]
     fn output_format_matches_script() {
@@ -635,148 +710,8 @@ mod tests {
         assert!(first.iter().all(|path| path.starts_with(&run_root)));
     }
 
-    /// Fixture bead for tests whose candidate arm worktrees are created in
-    /// `crate::paths::worktrees()`. All directories created for the fixture are
-    /// removed on drop.
-    struct ScratchBead {
-        bead: String,
-        root: PathBuf,
-    }
-
-    impl ScratchBead {
-        fn new(tag: &str) -> Self {
-            let root = crate::paths::worktrees();
-            let bead = format!("fb-critique-na-{tag}-{}", std::process::id());
-            Self { bead, root }
-        }
-
-        fn arm(&self, name: &str, target: &str) -> PathBuf {
-            let dir = self.root.join(format!("{}--{name}", self.bead));
-            let target_path = dir.join(target);
-            if let Some(parent) = target_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let _ = fs::write(&target_path, "pub fn dummy() {}\n");
-            dir
-        }
-
-        fn critiques_dir(&self) -> PathBuf {
-            crate::paths::logs().join("critiques").join(&self.bead)
-        }
-    }
-
-    impl Drop for ScratchBead {
-        fn drop(&mut self) {
-            let prefix = format!("{}--", self.bead);
-            if let Ok(entries) = fs::read_dir(&self.root) {
-                for entry in entries.flatten() {
-                    if entry.file_name().to_string_lossy().starts_with(&prefix) {
-                        let _ = fs::remove_dir_all(entry.path());
-                    }
-                }
-            }
-            let dir = self.critiques_dir();
-            let _ = fs::remove_dir_all(&dir);
-            let _ = fs::remove_file(&dir);
-        }
-    }
-
-    /// Clause 1 and clause 7: zero candidates returns 4, and nothing is written
-    /// to the critiques directory.
-    #[test]
-    fn zero_candidates_returns_not_applicable_and_writes_nothing() {
-        let field = ScratchBead::new("zero");
-        let dir = field.critiques_dir();
-        let _ = fs::remove_dir_all(&dir);
-        assert_eq!(run_cmd(&field.bead, "fb", "crates/fb/src/critique.rs"), 4);
-        assert!(
-            !dir.exists(),
-            "a 4 return must not write to the critiques directory"
-        );
-    }
-
-    /// Clause 2 and clause 7: one candidate returns 4, and nothing is written
-    /// to the critiques directory.
-    #[test]
-    fn one_candidate_is_reviewable_by_an_arm_from_the_registry() {
-        // The inverse of the test this replaces. `one_candidate_returns_not_applicable`
-        // asserted 4, and that assertion was the whole reason the subjective tier stayed
-        // dark on every one-arm field: critique returned 4, so promote had no critiques,
-        // so prove had no claims. One candidate is a normal, reviewable field.
-        let arms = vec!["glm-53-flash".to_string()];
-        let roster = vec!["glm-53-flash".to_string(), "codex-luna".to_string()];
-        let castings = super::plan(&arms, &roster).expect("one candidate is reviewable");
-        assert_eq!(castings.len(), 1);
-        assert_eq!(
-            castings[0].arm, "codex-luna",
-            "the critic is not the author"
-        );
-        assert_eq!(castings[0].subject.as_deref(), Some("glm-53-flash"));
-    }
-
-    /// Zero candidates is still not-applicable, and it is the ONLY not-applicable.
-    #[test]
-    fn zero_candidates_is_the_only_not_applicable() {
-        let roster = vec!["codex-luna".to_string()];
-        assert_eq!(super::plan(&[], &roster), Err(4));
-    }
-
-    /// Work to examine and nobody free to examine it is a refusal, not a
-    /// not-applicable. Same field as the test above, one entry removed from the
-    /// roster: the two answers must be different.
-    #[test]
-    fn no_independent_arm_is_a_refusal_not_not_applicable() {
-        let arms = vec!["codex-luna".to_string()];
-        let roster = vec!["codex-luna".to_string()];
-        assert_eq!(super::plan(&arms, &roster), Err(1));
-    }
-
-    /// Two candidates still review each other: the ring falls out of
-    /// "first roster entry that is not the subject" rather than being coded.
-    #[test]
-    fn two_candidates_still_review_each_other() {
-        let arms = vec!["a".to_string(), "b".to_string()];
-        let roster = vec!["a".to_string(), "b".to_string()];
-        let castings = super::plan(&arms, &roster).expect("two candidates are reviewable");
-        assert_eq!(castings.len(), 2);
-        assert_eq!(castings[0].arm, "b");
-        assert_eq!(castings[0].subject.as_deref(), Some("a"));
-        assert_eq!(castings[1].arm, "a");
-        assert_eq!(castings[1].subject.as_deref(), Some("b"));
-    }
-
-    #[test]
-    fn two_candidates_passing_gate_does_not_return_not_applicable() {
-        let field = ScratchBead::new("two-pass");
-        field.arm("codex-luna", "crates/fb/src/critique.rs");
-        field.arm("glm-53-flash", "crates/fb/src/critique.rs");
-        let code = run_cmd(&field.bead, "fb", "crates/fb/src/critique.rs");
-        assert_ne!(
-            code, 4,
-            "two candidates with passing gate must not return 4"
-        );
-        assert_eq!(code, 0);
-    }
-
-    /// 4 and 1 are distinct codes, and the short field that yields 4 is now the EMPTY
-    /// one. This test asserted that a ONE-arm field returns 4; that assertion was the
-    /// contract this change exists to break.
-    #[test]
-    fn not_applicable_and_failure_are_different_codes() {
-        let empty = ScratchBead::new("short");
-        let code_na = run_cmd(&empty.bead, "fb", "crates/fb/src/critique.rs");
-        assert_eq!(code_na, 4, "an empty field is not applicable");
-
-        let lone = ScratchBead::new("lone");
-        lone.arm("codex-luna", "crates/fb/src/critique.rs");
-        let code_one = run_cmd(&lone.bead, "fb", "crates/fb/src/critique.rs");
-        assert_ne!(
-            code_one, 4,
-            "one candidate is reviewable by an arm from the registry"
-        );
-    }
-
-    /// Clause 8: the doc comment on `run_cmd` names all three codes (0, 1, 4).
+    /// Clause 8 of the documented contract: the doc comment on `run_cmd` names all
+    /// three codes (0, 1, 4).
     #[test]
     fn doc_comment_names_all_three_codes() {
         let text = fs::read_to_string("crates/fb/src/critique.rs")
@@ -802,5 +737,631 @@ mod tests {
             doc_comment.contains("4"),
             "doc comment must name exit code 4"
         );
+    }
+
+    // ---- the sandbox ----
+    //
+    // `run_cmd` resolves its tree through `crate::paths`, which reads the process
+    // environment: the seam this stage names for tests is `FB_WT` and `FB_REPO`, with
+    // `FB_LOGS` beside them. Those variables are process-global, and other tests in
+    // this binary read the REAL registry through `paths::repo()` with no lock of their
+    // own -- `fb doctor`'s launcher-coverage check and `fb eligible`'s run_cmd contract
+    // both do. A mutex here cannot protect them: an earlier version of this suite held
+    // the lock twice on one thread and deadlocked the run, and the lock it did hold did
+    // not stop `FB_REPO` from racing those readers. So every sandboxed body below runs
+    // in a CHILD COPY of this test binary, filtered to that one test and given the
+    // sandbox environment on spawn. The parent process never mutates its own
+    // environment and holds no lock, so nothing here can deadlock the suite or
+    // redirect another test's reads. No agent can run from a sandbox either: the
+    // launcher is disabled under `cargo test`, so every assignment ends as "(no
+    // critique written)" and a run that reached its assignments still returns 0.
+
+    /// Marks the child half of a sandboxed test: the parent puts the sandbox root on
+    /// the child's environment, and a test that sees the marker runs its body against
+    /// the attached sandbox instead of building one.
+    const SANDBOX_ROOT: &str = "FB_CRITIQUE_SANDBOX_ROOT";
+
+    /// Carries the bead from parent to child, so the child attaches to the same field
+    /// names without re-deriving them from a path.
+    const SANDBOX_BEAD: &str = "FB_CRITIQUE_SANDBOX_BEAD";
+
+    fn in_child() -> bool {
+        std::env::var_os(SANDBOX_ROOT).is_some()
+    }
+
+    fn git(args: &[&str], cwd: &Path) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .status()
+            .expect("git should be runnable in the test environment");
+        assert!(status.success(), "git {args:?} failed in {}", cwd.display());
+    }
+
+    fn entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = match fs::read_dir(dir) {
+            Ok(entries) => entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().to_string())
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        names.sort();
+        names
+    }
+
+    const ROSTER_B: &str = r#"
+[source.roster-b]
+status = "verified"
+"#;
+
+    const ROSTER_B_AND_C: &str = r#"
+[source.roster-b]
+status = "verified"
+
+[source.roster-c]
+status = "verified"
+"#;
+
+    const ROSTER_Z_FIRST: &str = r#"
+[source.roster-z]
+status = "verified"
+
+[source.roster-a]
+status = "verified"
+"#;
+
+    const ROSTER_A_AND_B: &str = r#"
+[source.cand-a]
+status = "verified"
+
+[source.cand-b]
+status = "verified"
+"#;
+
+    const ROSTER_ONLY_SUBJECT: &str = r#"
+[source.cand-a]
+status = "verified"
+"#;
+
+    const ROSTER_EMPTY: &str = "";
+
+    const DISABLED_FIRST: &str = r#"
+[source.switched-off]
+status = "disabled"
+disabled_reason = "operator turned it off"
+
+[source.eligible-e]
+status = "verified"
+"#;
+
+    const UNKNOWN_STATUS_FIRST: &str = r#"
+[source.hibernate-h]
+status = "hibernating"
+
+[source.eligible-e]
+status = "verified"
+"#;
+
+    const UNTESTED_ONLY: &str = r#"
+[source.fresh-f]
+status = "untested"
+"#;
+
+    /// A sandboxed field: one temporary root holding a git repository (`repo/`, with the
+    /// fixture `sources.toml` and the critic prompt template), a git worktree root
+    /// (`wt/`), and a logs root whose `critiques/<bead>/` receives the run's artefacts.
+    struct Sandbox {
+        root: PathBuf,
+        bead: String,
+        target: &'static str,
+    }
+
+    impl Sandbox {
+        /// Parent side: build the sandbox and its two git repositories. No
+        /// environment is touched -- the child gets it on spawn.
+        fn build(tag: &str, sources_toml: &str) -> Sandbox {
+            let root =
+                std::env::temp_dir().join(format!("fb-critique-{tag}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(root.join("repo/.fb/prompts")).expect("create the repo sandbox");
+            fs::create_dir_all(root.join("wt")).expect("create the worktree root");
+            fs::write(root.join("repo/sources.toml"), sources_toml)
+                .expect("write the fixture sources.toml");
+            fs::write(
+                root.join("repo/.fb/prompts/_critique.md"),
+                "review the patch:\n\n{PATCH}\n\nwrite your critique to {OUT}\n",
+            )
+            .expect("write the prompt template");
+            let repo = root.join("repo");
+            git(&["init", "-q"], &repo);
+            git(&["config", "user.email", "fb@example.com"], &repo);
+            git(&["config", "user.name", "fb"], &repo);
+            git(&["add", "-A"], &repo);
+            git(&["commit", "-qm", "sandbox", "--no-verify"], &repo);
+            let wt = root.join("wt");
+            git(&["init", "-q"], &wt);
+            git(&["config", "user.email", "fb@example.com"], &wt);
+            git(&["config", "user.name", "fb"], &wt);
+            git(
+                &["commit", "-qm", "sandbox", "--allow-empty", "--no-verify"],
+                &wt,
+            );
+            Sandbox {
+                root,
+                bead: tag.to_string(),
+                target: "deliv.rs",
+            }
+        }
+
+        /// Child side: attach to the sandbox the parent built and passed down in the
+        /// environment. Nothing is rebuilt and nothing is cleaned up here -- the
+        /// parent owns the sandbox's lifetime.
+        fn attached() -> Sandbox {
+            let root = PathBuf::from(std::env::var_os(SANDBOX_ROOT).expect("sandbox root env"));
+            let bead = std::env::var(SANDBOX_BEAD).expect("sandbox bead env");
+            Sandbox {
+                root,
+                bead,
+                target: "deliv.rs",
+            }
+        }
+
+        /// Parent side: run this test again in a child copy of the test binary,
+        /// filtered to exactly that test, with the sandbox environment attached.
+        /// Returns whether the child actually ran the one test and passed, and
+        /// removes the sandbox either way. A filter that matches nothing would
+        /// otherwise exit 0 and pass vacuously, so the child's own summary is
+        /// checked rather than trusted.
+        fn spawn_child(&self, test: &str) -> bool {
+            let exe = std::env::current_exe().expect("the test binary path");
+            // `module_path!()` inside a bin crate carries the crate name --
+            // "fb::critique::tests" -- while libtest names unit tests from the crate
+            // root -- "critique::tests::X". Strip the first segment, whatever the
+            // module this suite is compiled into, so the child's filter is a name
+            // libtest actually knows.
+            let module = module_path!()
+                .split("::")
+                .skip(1)
+                .collect::<Vec<_>>()
+                .join("::");
+            let name = format!("{module}::{test}");
+            let output = Command::new(exe)
+                .args(["--exact", &name, "--test-threads", "1"])
+                .env(SANDBOX_ROOT, self.root.as_os_str())
+                .env(SANDBOX_BEAD, self.bead.as_str())
+                .env("FB_WT", self.wt().as_os_str())
+                .env("FB_REPO", self.repo().as_os_str())
+                .env("FB_LOGS", self.root.join("logs").as_os_str())
+                .env("FB_STATE", self.root.as_os_str())
+                .output()
+                .expect("spawn the test binary");
+            let _ = fs::remove_dir_all(&self.root);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let ran = stdout.contains("ok. 1 passed") && output.status.success();
+            if !ran {
+                eprint!("{}", String::from_utf8_lossy(&output.stderr));
+            }
+            ran
+        }
+
+        /// Creates one candidate worktree holding a non-empty deliverable. The arm is
+        /// deliberately NOT registered in `sources.toml` unless the fixture says
+        /// otherwise: the roster says who may EXAMINE, not who may be examined.
+        fn arm(&self, name: &str) -> PathBuf {
+            let dir = self.subject_wt(name);
+            fs::create_dir_all(&dir).expect("create the candidate worktree");
+            fs::write(dir.join(self.target), "pub fn delivered() {}\n")
+                .expect("write the deliverable");
+            dir
+        }
+
+        fn wt(&self) -> PathBuf {
+            self.root.join("wt")
+        }
+
+        fn repo(&self) -> PathBuf {
+            self.root.join("repo")
+        }
+
+        fn subject_wt(&self, name: &str) -> PathBuf {
+            self.wt().join(format!("{}--{name}", self.bead))
+        }
+
+        fn critic_wt(&self, name: &str) -> PathBuf {
+            self.wt().join(format!("{}--critic--{name}", self.bead))
+        }
+
+        fn critiques_dir(&self) -> PathBuf {
+            self.root.join("logs").join("critiques").join(&self.bead)
+        }
+
+        fn set_sources(&self, sources_toml: &str) {
+            fs::write(self.repo().join("sources.toml"), sources_toml)
+                .expect("rewrite the fixture sources.toml");
+        }
+    }
+
+    /// Clause 1, and the inverse of the test it replaces: ONE candidate with a roster
+    /// holding other arms is a normal, reviewable field. It produces ONE critique
+    /// assignment -- the first roster arm that is not the subject gets the one scratch
+    /// worktree the stage pins at `<worktrees>/<bead>--critic--<arm>` -- and it does NOT
+    /// return 4. `one_candidate_returns_not_applicable_and_writes_nothing` asserted the
+    /// opposite, and that assertion was the whole reason the subjective tier went dark on
+    /// every one-arm field: critique returned 4, so promote had no critiques, so prove
+    /// had no claims.
+    #[test]
+    fn one_candidate_returns_zero_and_one_assignment() {
+        if in_child() {
+            one_candidate_body(&Sandbox::attached());
+            return;
+        }
+        let sb = Sandbox::build("one-cand", ROSTER_B_AND_C);
+        sb.arm("cand-a");
+        assert!(
+            sb.spawn_child("one_candidate_returns_zero_and_one_assignment"),
+            "the sandboxed body failed in the child"
+        );
+    }
+
+    fn one_candidate_body(sb: &Sandbox) {
+        let code = run_cmd(&sb.bead, "fb", sb.target);
+        assert_eq!(code, 0, "one candidate is a normal, reviewable field");
+        assert!(
+            sb.critic_wt("roster-b").is_dir(),
+            "the first roster arm that is not the subject is cast"
+        );
+        assert!(
+            !sb.critic_wt("roster-c").exists(),
+            "only the cast critic gets a working directory"
+        );
+        assert!(
+            !sb.critic_wt("cand-a").exists(),
+            "the subject is not one of its own reviewers"
+        );
+    }
+
+    /// Clause 5: the assignment is stage_cast's, not this file's arithmetic. The oracle
+    /// is `cast` called on the same field and roster the run just used; the run's one
+    /// observable -- which critic got a working directory -- has to agree with it.
+    #[test]
+    fn the_assignment_agrees_with_stage_cast() {
+        if in_child() {
+            assignment_agrees_body(&Sandbox::attached());
+            return;
+        }
+        let sb = Sandbox::build("agree-cast", ROSTER_B);
+        sb.arm("cand-a");
+        assert!(
+            sb.spawn_child("the_assignment_agrees_with_stage_cast"),
+            "the sandboxed body failed in the child"
+        );
+    }
+
+    fn assignment_agrees_body(sb: &Sandbox) {
+        let castings = cast(
+            Stage::Critique,
+            &["cand-a".to_string()],
+            &["roster-b".to_string()],
+        )
+        .expect("one candidate with an independent roster arm casts");
+        assert_eq!(castings.len(), 1);
+        assert_eq!(castings[0].arm, "roster-b");
+        assert_eq!(castings[0].subject.as_deref(), Some("cand-a"));
+        assert_eq!(run_cmd(&sb.bead, "fb", sb.target), 0);
+        assert!(
+            sb.critic_wt("roster-b").is_dir(),
+            "the run cast exactly whom stage_cast cast"
+        );
+    }
+
+    /// Clause 2 and clause 10: zero candidates is NOT APPLICABLE, and it is the empty
+    /// FIELD that makes it so -- the worktree root exists and is readable, and the
+    /// roster even has a castable arm. Nothing is written.
+    #[test]
+    fn zero_candidates_returns_not_applicable_and_writes_nothing() {
+        if in_child() {
+            zero_candidates_body(&Sandbox::attached());
+            return;
+        }
+        let sb = Sandbox::build("zero-cand", ROSTER_B);
+        assert!(
+            sb.spawn_child("zero_candidates_returns_not_applicable_and_writes_nothing"),
+            "the sandboxed body failed in the child"
+        );
+    }
+
+    fn zero_candidates_body(sb: &Sandbox) {
+        assert_eq!(run_cmd(&sb.bead, "fb", sb.target), 4);
+        let dir = sb.critiques_dir();
+        assert!(
+            !dir.exists() || fs::read_dir(&dir).map(|es| es.count()).unwrap_or(0) == 0,
+            "a not-applicable run writes nothing"
+        );
+    }
+
+    /// Clause 3: two candidates with a roster of exactly those two arms still review
+    /// each other -- the behaviour before this change, preserved. The ring itself is
+    /// gone; the pairing falls out of "the first roster entry that is not the subject".
+    #[test]
+    fn two_candidates_with_a_roster_of_exactly_those_two_review_each_other() {
+        if in_child() {
+            two_candidates_body(&Sandbox::attached());
+            return;
+        }
+        let sb = Sandbox::build("two-cand", ROSTER_A_AND_B);
+        sb.arm("cand-a");
+        sb.arm("cand-b");
+        assert!(
+            sb.spawn_child("two_candidates_with_a_roster_of_exactly_those_two_review_each_other"),
+            "the sandboxed body failed in the child"
+        );
+    }
+
+    fn two_candidates_body(sb: &Sandbox) {
+        assert_eq!(run_cmd(&sb.bead, "fb", sb.target), 0);
+        let castings = cast(
+            Stage::Critique,
+            &["cand-a".to_string(), "cand-b".to_string()],
+            &["cand-a".to_string(), "cand-b".to_string()],
+        )
+        .expect("two candidates cast against their own roster");
+        assert_eq!(castings.len(), 2, "one assignment per candidate");
+        assert_eq!(castings[0].arm, "cand-b");
+        assert_eq!(castings[0].subject.as_deref(), Some("cand-a"));
+        assert_eq!(castings[1].arm, "cand-a");
+        assert_eq!(castings[1].subject.as_deref(), Some("cand-b"));
+    }
+
+    /// Clause 4: a roster whose only entry is the sole candidate is work to examine
+    /// with nobody free to examine it -- a staffing failure is a refusal (1), not a
+    /// not-applicable (4).
+    #[test]
+    fn a_roster_of_only_the_subject_is_a_refusal_not_not_applicable() {
+        if in_child() {
+            roster_only_subject_body(&Sandbox::attached());
+            return;
+        }
+        let sb = Sandbox::build("lone-cand", ROSTER_ONLY_SUBJECT);
+        sb.arm("cand-a");
+        assert!(
+            sb.spawn_child("a_roster_of_only_the_subject_is_a_refusal_not_not_applicable"),
+            "the sandboxed body failed in the child"
+        );
+    }
+
+    fn roster_only_subject_body(sb: &Sandbox) {
+        let code = run_cmd(&sb.bead, "fb", sb.target);
+        assert_eq!(code, 1, "work to examine, nobody free to examine it");
+        assert_ne!(code, 4, "a staffing failure is not a not-applicable");
+    }
+
+    /// The boundary beside clause 4: an outright empty roster with one candidate is
+    /// the same answer for the same reason -- `cast` refuses with `NoIndependentArm`,
+    /// which run_cmd reports as 1.
+    #[test]
+    fn an_empty_roster_with_one_candidate_is_the_same_refusal() {
+        if in_child() {
+            empty_roster_body(&Sandbox::attached());
+            return;
+        }
+        let sb = Sandbox::build("empty-roster", ROSTER_EMPTY);
+        sb.arm("cand-a");
+        assert!(
+            sb.spawn_child("an_empty_roster_with_one_candidate_is_the_same_refusal"),
+            "the sandboxed body failed in the child"
+        );
+    }
+
+    fn empty_roster_body(sb: &Sandbox) {
+        assert_eq!(
+            run_cmd(&sb.bead, "fb", sb.target),
+            1,
+            "an empty roster with one candidate is the same refusal"
+        );
+        assert_eq!(
+            cast(Stage::Critique, &["cand-a".to_string()], &[]),
+            Err(Uncast::NoIndependentArm)
+        );
+    }
+
+    /// The roster is in `sources.toml` order, not sorted order: stage_cast casts the
+    /// first roster entry that is not the subject, so an implementation that lets the
+    /// registry's BTreeMap decide would cast `roster-a` where the file says `roster-z`.
+    #[test]
+    fn the_roster_is_in_file_order_not_sorted_order() {
+        if in_child() {
+            file_order_body(&Sandbox::attached());
+            return;
+        }
+        let sb = Sandbox::build("file-order", ROSTER_Z_FIRST);
+        sb.arm("cand-a");
+        assert!(
+            sb.spawn_child("the_roster_is_in_file_order_not_sorted_order"),
+            "the sandboxed body failed in the child"
+        );
+    }
+
+    fn file_order_body(sb: &Sandbox) {
+        assert_eq!(run_cmd(&sb.bead, "fb", sb.target), 0);
+        assert!(
+            sb.critic_wt("roster-z").is_dir(),
+            "the first FILE entry that is not the subject reviews it"
+        );
+        assert!(
+            !sb.critic_wt("roster-a").exists(),
+            "roster order is sources.toml order, not alphabetical"
+        );
+    }
+
+    /// Clause 6: a `disabled` arm is never cast as a critic, and it is pinned where the
+    /// first eligible arm would otherwise be chosen -- `switched-off` sits FIRST in the
+    /// file, so a roster that did not filter by status would cast it.
+    #[test]
+    fn a_disabled_arm_is_never_cast_as_critic() {
+        if in_child() {
+            disabled_first_body(&Sandbox::attached());
+            return;
+        }
+        let sb = Sandbox::build("disabled-first", DISABLED_FIRST);
+        sb.arm("cand-a");
+        assert!(
+            sb.spawn_child("a_disabled_arm_is_never_cast_as_critic"),
+            "the sandboxed body failed in the child"
+        );
+    }
+
+    fn disabled_first_body(sb: &Sandbox) {
+        assert_eq!(run_cmd(&sb.bead, "fb", sb.target), 0);
+        assert!(
+            sb.critic_wt("eligible-e").is_dir(),
+            "the first ELIGIBLE arm reviews the subject"
+        );
+        assert!(
+            !sb.critic_wt("switched-off").exists(),
+            "a disabled arm is never cast"
+        );
+    }
+
+    /// Clause 9: an unrecognised `status` is not roster-eligible. `hibernating` is a
+    /// status this specification does not name; treating it as castable would put this
+    /// implementation of the rule in disagreement with `fb eligible`, which refuses it.
+    #[test]
+    fn an_unrecognised_status_is_not_roster_eligible() {
+        if in_child() {
+            unknown_status_body(&Sandbox::attached());
+            return;
+        }
+        let sb = Sandbox::build("unknown-status", UNKNOWN_STATUS_FIRST);
+        sb.arm("cand-a");
+        assert!(
+            sb.spawn_child("an_unrecognised_status_is_not_roster_eligible"),
+            "the sandboxed body failed in the child"
+        );
+    }
+
+    fn unknown_status_body(sb: &Sandbox) {
+        assert_eq!(run_cmd(&sb.bead, "fb", sb.target), 0);
+        assert!(sb.critic_wt("eligible-e").is_dir());
+        assert!(
+            !sb.critic_wt("hibernate-h").exists(),
+            "a status the spec does not name is excluded like disabled"
+        );
+    }
+
+    /// The roster statuses accepted are exactly `verified` and `untested` -- so
+    /// `untested`, the second accepted value, must actually be accepted.
+    #[test]
+    fn an_untested_arm_is_roster_eligible() {
+        if in_child() {
+            untested_body(&Sandbox::attached());
+            return;
+        }
+        let sb = Sandbox::build("untested-only", UNTESTED_ONLY);
+        sb.arm("cand-a");
+        assert!(
+            sb.spawn_child("an_untested_arm_is_roster_eligible"),
+            "the sandboxed body failed in the child"
+        );
+    }
+
+    fn untested_body(sb: &Sandbox) {
+        assert_eq!(run_cmd(&sb.bead, "fb", sb.target), 0);
+        assert!(
+            sb.critic_wt("fresh-f").is_dir(),
+            "untested is the second accepted status"
+        );
+    }
+
+    /// Clause 7: the critic never writes into the subject's worktree -- that worktree is
+    /// the artefact being measured, and it comes out of the run exactly as it went in.
+    #[test]
+    fn the_critic_never_writes_into_the_subject_worktree() {
+        if in_child() {
+            clean_subject_body(&Sandbox::attached());
+            return;
+        }
+        let sb = Sandbox::build("clean-subject", ROSTER_B);
+        sb.arm("cand-a");
+        assert!(
+            sb.spawn_child("the_critic_never_writes_into_the_subject_worktree"),
+            "the sandboxed body failed in the child"
+        );
+    }
+
+    fn clean_subject_body(sb: &Sandbox) {
+        let subject = sb.subject_wt("cand-a");
+        let deliverable = subject.join(sb.target);
+        assert_eq!(run_cmd(&sb.bead, "fb", sb.target), 0);
+        assert_eq!(
+            entries(&subject),
+            vec![sb.target.to_string()],
+            "the subject worktree holds exactly what the candidate wrote"
+        );
+        assert_eq!(
+            fs::read_to_string(&deliverable).unwrap_or_default(),
+            "pub fn delivered() {}\n",
+            "the deliverable itself is unmodified"
+        );
+    }
+
+    /// Clause 8: two critics reviewing the same subject get two places to write, not one
+    /// overwriting the other. The critic's working directory is pinned at
+    /// `<worktrees>/<bead>--critic--<arm>`, so two critics of one subject -- one per
+    /// run, since one field casts one critic per subject -- leave two distinct paths
+    /// standing, and the report filed under `logs/critiques/<bead>/` is named
+    /// `<critic>.on.<subject>.md` for the same reason.
+    #[test]
+    fn two_critics_of_one_subject_get_two_places_to_write() {
+        if in_child() {
+            two_critics_body(&Sandbox::attached());
+            return;
+        }
+        let sb = Sandbox::build("two-critics", ROSTER_B);
+        sb.arm("cand-a");
+        assert!(
+            sb.spawn_child("two_critics_of_one_subject_get_two_places_to_write"),
+            "the sandboxed body failed in the child"
+        );
+    }
+
+    fn two_critics_body(sb: &Sandbox) {
+        assert_eq!(run_cmd(&sb.bead, "fb", sb.target), 0);
+        assert!(sb.critic_wt("roster-b").is_dir());
+        sb.set_sources(
+            r#"
+[source.roster-c]
+status = "verified"
+"#,
+        );
+        assert_eq!(run_cmd(&sb.bead, "fb", sb.target), 0);
+        assert!(sb.critic_wt("roster-c").is_dir());
+        assert!(
+            sb.critic_wt("roster-b").is_dir(),
+            "the second critic must not take the first critic's place"
+        );
+    }
+
+    /// A roster that cannot be read is a failure, not an empty roster -- and both spell
+    /// themselves 1, never 0 and never 4.
+    #[test]
+    fn an_unreadable_roster_is_a_failure_not_an_empty_roster() {
+        if in_child() {
+            unreadable_roster_body(&Sandbox::attached());
+            return;
+        }
+        let sb = Sandbox::build("bad-toml", "this is = = not toml [[");
+        sb.arm("cand-a");
+        assert!(
+            sb.spawn_child("an_unreadable_roster_is_a_failure_not_an_empty_roster"),
+            "the sandboxed body failed in the child"
+        );
+    }
+
+    fn unreadable_roster_body(sb: &Sandbox) {
+        let code = run_cmd(&sb.bead, "fb", sb.target);
+        assert_eq!(code, 1);
+        assert_ne!(code, 4);
+        assert_ne!(code, 0);
     }
 }
