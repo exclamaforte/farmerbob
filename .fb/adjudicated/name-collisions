@@ -1,0 +1,12 @@
+MERGED codex-luna (after one follow-up turn)
+PASS, 1938 tests, clippy 0, 276L. gemini-38-flash raised one CLAIM and two weaknesses, all
+three confirmed and all three fixed by the same arm in a continuation turn (133s).
+CLAIM, real and central: public_types("pub struct Foo(u32);") returned "Foo(u32)" because the
+delimiter set had no '('. That defeats the module's purpose rather than its tidiness -- a
+tuple struct Foo would never match `pub enum Foo` elsewhere, so a real collision reported as
+none. Also fixed: brace_depth counted braces inside strings and comments, so one unmatched
+brace silently dropped every later item in a file; and stacked attributes defeated the
+#[cfg(test)] exclusion.
+Run over farmerbob-core on merge: 48 colliding names. Worst are Decision (4 modules), Evidence
+(4), Fate (4 -- the bead said three), and Plan, Row, Run, Stage, Policy, Grant, Candidate,
+RunState at 3 each.
