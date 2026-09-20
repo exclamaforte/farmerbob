@@ -112,46 +112,86 @@ const CARGO_TIMEOUT: Duration = Duration::from_secs(1200);
 /// `build_verdict::tests_run` must not read a truncated log as "0 tests ran", which is a
 /// measured zero rather than a measurement that never finished.
 fn run(dir: &Path, args: &[&str]) -> (bool, String) {
-    let child = Command::new("cargo")
+    run_bounded("cargo", dir, args, CARGO_TIMEOUT)
+}
+
+/// Run a program in `dir`, bounded, draining its output while it works.
+///
+/// DRAIN THE PIPES WHILE WAITING. A pipe holds about 64KB; once it is full the child BLOCKS
+/// in `anon_pipe_write` and never exits, so a loop that polls for exit and reads only
+/// afterwards waits for ever on a process that is waiting for it. I introduced exactly that
+/// deadlock when adding the timeout -- `.output()`, which the poll loop replaced, drains
+/// both pipes concurrently, which is why the original never hit it. `cargo test` over this
+/// workspace prints far more than 64KB, so every score after that change hung until the
+/// timeout and then reported a TIMED OUT that had not happened.
+///
+/// A timeout returns `false` with the reason IN THE LOG, because the caller reads that log
+/// to decide the verdict: a killed run must not look like a test failure, and
+/// `build_verdict::tests_run` must not read a truncated log as "0 tests ran", which is a
+/// measured zero rather than a measurement that never finished.
+fn run_bounded(program: &str, dir: &Path, args: &[&str], limit: Duration) -> (bool, String) {
+    use std::io::Read;
+
+    let child = Command::new(program)
         .args(args)
         .current_dir(dir)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn();
     let mut child = match child {
         Ok(c) => c,
-        Err(e) => return (false, format!("error: cannot run cargo: {e}")),
+        Err(e) => return (false, format!("error: cannot run {program}: {e}")),
     };
+
+    let mut out = child.stdout.take();
+    let mut err = child.stderr.take();
+    let out_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = out.as_mut() {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let err_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = err.as_mut() {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+
     let started = std::time::Instant::now();
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break Some(status),
             Ok(None) => {
-                if started.elapsed() >= CARGO_TIMEOUT {
+                if started.elapsed() >= limit {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return (
-                        false,
-                        format!(
-                            "error: cargo {} did not finish within {}s and was killed -- \
-                             TIMED OUT, which is not a test result",
-                            args.join(" "),
-                            CARGO_TIMEOUT.as_secs()
-                        ),
-                    );
+                    break None;
                 }
                 std::thread::sleep(Duration::from_millis(200));
             }
-            Err(e) => return (false, format!("error: waiting on cargo: {e}")),
+            Err(e) => return (false, format!("error: waiting on {program}: {e}")),
         }
-    }
-    match child.wait_with_output() {
-        Ok(o) => {
-            let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
-            s.push_str(&String::from_utf8_lossy(&o.stderr));
-            (o.status.success(), s)
-        }
-        Err(e) => (false, format!("error: reading cargo output: {e}")),
+    };
+
+    let mut text = String::from_utf8_lossy(&out_thread.join().unwrap_or_default()).into_owned();
+    text.push_str(&String::from_utf8_lossy(
+        &err_thread.join().unwrap_or_default(),
+    ));
+
+    match status {
+        Some(s) => (s.success(), text),
+        None => (
+            false,
+            format!(
+                "{text}\nerror: {program} {} did not finish within {}s and was killed -- \
+                 TIMED OUT, which is not a test result",
+                args.join(" "),
+                limit.as_secs()
+            ),
+        ),
     }
 }
 
@@ -1886,6 +1926,54 @@ mod deleted_list {
         assert!(
             CARGO_TIMEOUT.as_secs() < 2700,
             "must expire before the arm's own scope does"
+        );
+    }
+
+    /// A PIPE HOLDS ABOUT 64KB AND THEN THE CHILD BLOCKS. Polling for exit while reading
+    /// only afterwards deadlocks: the child waits for the reader, the reader waits for the
+    /// child. I introduced that when adding the timeout, and every score hung until the
+    /// limit and then reported a TIMED OUT that had not happened -- a false measurement,
+    /// which is worse than the hang it replaced.
+    ///
+    /// 400KB is comfortably past the buffer; a deadlocked implementation never returns and
+    /// this test hangs rather than failing, which is the honest symptom.
+    #[test]
+    fn output_larger_than_a_pipe_buffer_does_not_deadlock() {
+        let (ok, text) = run_bounded(
+            "sh",
+            Path::new("/"),
+            &["-c", "yes abcdefghijklmnopqrstuvwxyz | head -c 400000"],
+            Duration::from_secs(60),
+        );
+        assert!(
+            ok,
+            "the command should have succeeded: {}",
+            &text[..80.min(text.len())]
+        );
+        assert!(
+            text.len() >= 400_000,
+            "read {} bytes, expected 400000",
+            text.len()
+        );
+    }
+
+    /// A run that outlives its bound is killed and SAYS it was killed, so the log cannot be
+    /// read as a test result.
+    #[test]
+    fn a_run_that_outlives_its_bound_is_killed_and_says_so() {
+        let (ok, text) = run_bounded(
+            "sh",
+            Path::new("/"),
+            &["-c", "sleep 30"],
+            Duration::from_millis(400),
+        );
+        assert!(!ok);
+        assert!(text.contains("TIMED OUT"), "{text}");
+        assert!(
+            farmerbob_core::build_verdict::tests_run(&text)
+                .value()
+                .is_none(),
+            "a killed run must not report a test count"
         );
     }
 }
