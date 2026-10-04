@@ -193,27 +193,15 @@ pub(crate) fn observe_live_agents() -> Measurement<Vec<String>> {
             .collect(),
     )
 }
-/// The dispatcher process count: `pgrep -cf fb-admit\.sh`. `pgrep -c` prints a count on
-/// stdout even when nothing matches (exit status 1 in that case) -- that is a real zero, not
-/// an absent measurement. Only a missing/unparseable result is `Missing`.
+/// The dispatcher process count: live `fb admit` dispatchers by executable + argv
+/// identity via `/proc` (farmerbob-sdmp). This replaces `pgrep -cf fb-admit\.sh`,
+/// which matched any command line merely CONTAINING the pattern (including the
+/// waiter's own shell) and, worse, named a retired shell script the Rust
+/// dispatcher no longer runs under -- so it reported 0 whatever was live.
+/// A zero here is observed (the scan ran); only an unreadable /proc is Missing,
+/// and /proc is always readable on Linux so this is effectively infallible.
 fn observe_dispatcher_waves() -> Measurement<u32> {
-    match Command::new("pgrep")
-        .args(["-cf", r"fb-admit\.sh"])
-        .output()
-    {
-        Ok(o) => parse_pgrep_output(true, &String::from_utf8_lossy(&o.stdout)),
-        Err(e) => Measurement::instrument_failed(&format!("pgrep: {e}")),
-    }
-}
-
-fn parse_pgrep_output(spawned: bool, stdout: &str) -> Measurement<u32> {
-    if !spawned {
-        return Measurement::instrument_failed("pgrep could not be run");
-    }
-    match stdout.lines().next().unwrap_or("").trim().parse::<u32>() {
-        Ok(n) => Measurement::observed(n),
-        Err(_) => Measurement::instrument_failed("pgrep -c did not print a count"),
-    }
+    Measurement::observed(crate::live_cmd::count_dispatchers("admit") as u32)
 }
 
 fn render_live(live: &Measurement<Vec<String>>, waves: &Measurement<u32>) -> String {
@@ -928,20 +916,12 @@ mod tests {
     }
 
     #[test]
-    fn pgrep_zero_matches_is_observed_zero_not_missing() {
-        // pgrep -c prints "0" and exits 1 when nothing matches; that is a real
-        // measurement, never absent.
-        let m = parse_pgrep_output(true, "0\n");
-        assert_eq!(m, Measurement::Observed(0));
-    }
-
-    #[test]
-    fn pgrep_unspawnable_is_missing() {
-        let m = parse_pgrep_output(false, "");
-        assert!(matches!(
-            m,
-            Measurement::Missing(Absent::InstrumentFailed { .. })
-        ));
+    fn dispatcher_waves_zero_is_observed_zero_not_missing() {
+        // farmerbob-sdmp: the /proc scan ran, so even "no dispatchers" is a
+        // real measurement, never absent. (The old pgrep -c path needed a
+        // special case because exit status 1 meant zero; the scan has none.)
+        let m = observe_dispatcher_waves();
+        assert!(matches!(m, Measurement::Observed(_)));
     }
 
     #[test]

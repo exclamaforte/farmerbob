@@ -130,17 +130,12 @@ fn run_once(repo: &Path, logs: &Path, max_waves: usize) -> bool {
     let busy = crate::live_cmd::worktrees_live(&crate::live_cmd::gather_procs(&root), &root);
     let live_tasks = live_tasks_in(&busy);
     let live = busy.len();
-    let waves = std::process::Command::new("pgrep")
-        .args(["-fc", "fb admit"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .trim()
-                .parse::<usize>()
-                .ok()
-        })
-        .unwrap_or(0);
+    // farmerbob-sdmp: dispatcher identity is executable + argv via /proc,
+    // never `pgrep -f` over a substring. The old `pgrep -fc "fb admit"`
+    // matched any command line merely CONTAINING the pattern -- including a
+    // shell wrapper or polling loop whose own command line held it -- so a
+    // finished agent could read as busy and block launches (or vice versa).
+    let waves = crate::live_cmd::count_dispatchers("admit");
     let slots = crate::admit_cmd::usable_slots(available_mb(), 3072, 1536);
 
     let target_of = |task: &str| -> Option<String> {

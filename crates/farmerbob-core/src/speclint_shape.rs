@@ -68,9 +68,19 @@ pub fn rubric_disclosed(text: &str, declares_deliverable: bool) -> Disclosure {
 pub enum Rule {
     /// A second-person decision verb and an instruction to pin, in one sentence.
     /// The spec is delegating a choice and then asking the arm to fix it.
+    /// Lexically (farmerbob-qfxv): a whole-word case-insensitive verb from
+    /// [`decision_verbs()`] BEFORE a whole-word case-insensitive `pin` in the
+    /// same sentence. `pin` itself matches whole-word only: "pinned",
+    /// "pinning" and "spinning" do not trigger.
     DelegatedDecision,
     /// An instruction to pin a FORMAT — a shape, wording, ordering or separator —
     /// that the specification has not itself fixed.
+    /// Lexically (farmerbob-qfxv): a whole-word case-insensitive `pin` followed
+    /// LATER in the same sentence by a whole-word case-insensitive noun from
+    /// [`format_nouns()`]. A noun BEFORE `pin` does not fire: "State a shape
+    /// and pin it" is a `DelegatedDecision`, not a `DelegatedFormat`; "Pin the
+    /// shape" is a `DelegatedFormat`. Order is part of the contract, which is
+    /// what makes clause 10 testable.
     DelegatedFormat,
 }
 
@@ -102,6 +112,13 @@ const FORMAT_NOUNS: [&str; 11] = [
 ///
 /// Fenced code blocks are skipped: a spec quoting an offending sentence inside
 /// ``` fences is showing an example, not issuing an instruction.
+///
+/// Matching is whole-word and case-insensitive throughout, including the
+/// trigger word `pin` itself (farmerbob-qfxv): "STATE ... PIN" fires, while
+/// "pinned", "pinning" and "spinning" do not. Within one sentence,
+/// [`Rule::DelegatedDecision`] needs verb-before-pin and
+/// [`Rule::DelegatedFormat`] needs pin-before-noun; either order reversed is
+/// clean for that rule.
 pub fn lint(text: &str) -> Vec<Lint> {
     if text.is_empty() {
         return Vec::new();
@@ -541,5 +558,58 @@ mod tests {
         let sentence = "The arm must state the shape of the output and pin it.";
         let text = format!("# Task\n\n{f}rust\n{f}rust\n{sentence}\n{f}\n");
         assert!(lint(&text).is_empty(), "{:?}", lint(&text));
+    }
+
+    /// Clauses 3, 4 and 8 (farmerbob-qfxv): the FALSE-POSITIVE guards. These
+    /// were untested in the merged suite and verified by hand only; a lint
+    /// that fired on any of them would be worthless.
+    #[test]
+    fn false_positive_guards_stay_clean() {
+        // Clause 3: decision verb with no pin.
+        assert!(lint("State your assumption in the handoff.").is_empty());
+        // Clause 4: pin with no decision verb and no format noun.
+        assert!(lint("Pin both sides of that boundary.").is_empty());
+        assert!(lint("Pin it as a property.").is_empty());
+        // Clause 8: "boundary" is not a format noun.
+        assert!(!lint("Pin both sides of that boundary.")
+            .iter()
+            .any(|l| l.rule == Rule::DelegatedFormat));
+    }
+
+    /// `pin` itself matches whole-word, case-insensitive (farmerbob-qfxv).
+    /// The spec pinned this for verbs and nouns but not for `pin`, so "State
+    /// the result is pinned." was a lint under one reading and clean under
+    /// the other. Whole-word is the contract.
+    #[test]
+    fn pin_matches_whole_word_only() {
+        assert!(lint("State the result is pinned.").is_empty());
+        assert!(lint("State the result is pinning it.").is_empty());
+        assert!(lint("Spinning the shape is fine.").is_empty());
+        assert!(!lint("STATE the choice and PIN it.").is_empty());
+    }
+
+    /// `DelegatedFormat` needs pin-BEFORE-noun (farmerbob-qfxv). "Pin the
+    /// shape" lints; "State a shape and pin it" does not fire Format (it
+    /// still fires Decision via state-before-pin). Both sides pinned so
+    /// clause 10 is testable.
+    #[test]
+    fn format_needs_pin_before_noun() {
+        let forward = lint("Pin the heading's exact shape.");
+        assert!(forward.iter().any(|l| l.rule == Rule::DelegatedFormat));
+
+        let backward = lint("State a shape and pin it.");
+        assert!(backward.iter().any(|l| l.rule == Rule::DelegatedDecision));
+        assert!(!backward.iter().any(|l| l.rule == Rule::DelegatedFormat));
+    }
+
+    /// Clause 10 (farmerbob-qfxv): a sentence triggering BOTH rules yields
+    /// TWO lints. Pinned ordering makes "both" decidable: verb before pin
+    /// AND pin before noun in the same sentence.
+    #[test]
+    fn a_sentence_triggering_both_rules_yields_two_lints() {
+        let lints = lint("State the choice and pin the shape.");
+        assert_eq!(lints.len(), 2);
+        assert!(lints.iter().any(|l| l.rule == Rule::DelegatedDecision));
+        assert!(lints.iter().any(|l| l.rule == Rule::DelegatedFormat));
     }
 }

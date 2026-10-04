@@ -612,6 +612,12 @@ enum Command {
         /// from --bench-json instead.
         #[arg(long, default_value = "")]
         samples: String,
+        /// Paired same-process reference measurements in ms, comma
+        /// separated and positionally aligned with --samples (bead
+        /// farmerbob-x81s.19). Empty takes them from --bench-json, or
+        /// scores unpaired when absent everywhere.
+        #[arg(long, default_value = "")]
+        ref_samples: String,
         /// Whether verification passed.
         #[arg(long, default_value_t = false)]
         correct: bool,
@@ -1317,6 +1323,7 @@ fn main() {
             baseline,
             fingerprint,
             samples,
+            ref_samples,
             correct,
             p,
             min_samples,
@@ -1337,11 +1344,22 @@ fn main() {
                     }
                 }
             }
+            let mut parsed_refs: Vec<f64> = Vec::new();
+            for part in ref_samples.split(',').filter(|s| !s.trim().is_empty()) {
+                match part.trim().parse::<f64>() {
+                    Ok(v) => parsed_refs.push(v),
+                    Err(_) => {
+                        eprintln!("error: unparseable sample {part:?} in --ref-samples");
+                        std::process::exit(2);
+                    }
+                }
+            }
             // Bench JSON fills whatever the flags left at their defaults:
             // explicit flags win when set. `-` reads stdin, so a wave
             // pipes bench straight into scoring.
             let mut from_file = kernel_score_cmd::BenchJsonInputs {
                 samples: Vec::new(),
+                ref_samples: Vec::new(),
                 correct: false,
                 clock: String::new(),
                 io_bytes: 0,
@@ -1373,6 +1391,9 @@ fn main() {
             }
             if parsed.is_empty() {
                 parsed = from_file.samples;
+            }
+            if parsed_refs.is_empty() {
+                parsed_refs = from_file.ref_samples;
             }
             let correct = correct || from_file.correct;
             let clock = if clock.is_empty() {
@@ -1422,6 +1443,7 @@ fn main() {
                 io_bytes,
                 specialised,
                 reference_call,
+                &parsed_refs,
                 &mut std::io::stdout(),
             )
         }

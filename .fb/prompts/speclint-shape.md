@@ -52,9 +52,14 @@ pub struct Lint {
 pub enum Rule {
     /// A second-person decision verb and an instruction to pin, in one sentence.
     /// The spec is delegating a choice and then asking the arm to fix it.
+    /// Lexically: a whole-word case-insensitive decision verb BEFORE a
+    /// whole-word case-insensitive `pin` in the same sentence.
     DelegatedDecision,
     /// An instruction to pin a FORMAT — a shape, wording, ordering or separator —
     /// that the specification has not itself fixed.
+    /// Lexically: a whole-word case-insensitive `pin` BEFORE a whole-word
+    /// case-insensitive format noun in the same sentence. A noun before `pin`
+    /// does not fire.
     DelegatedFormat,
 }
 
@@ -62,6 +67,9 @@ pub enum Rule {
 ///
 /// Fenced code blocks are skipped: a spec quoting an offending sentence inside
 /// ``` fences is showing an example, not issuing an instruction.
+///
+/// Matching is whole-word and case-insensitive throughout, including `pin`
+/// itself: "pinned" and "pinning" do not trigger.
 pub fn lint(text: &str) -> Vec<Lint>;
 
 /// The decision verbs that trigger [`Rule::DelegatedDecision`].
@@ -101,16 +109,25 @@ A `Lint`'s `line` is the line on which the sentence STARTS.
    the whole text fires on every spec ever written.
 6. A decision verb and "pin" separated by a NEWLINE but inside one sentence DOES fire. Clauses
    5 and 6 must be tested as a pair: they differ only in whether a `.` intervenes.
-7. "Pin the heading's exact shape" fires `DelegatedFormat`.
+7. "Pin the heading's exact shape" fires `DelegatedFormat`. Ordering is pinned
+   (farmerbob-qfxv): `DelegatedFormat` fires if and only if a whole-word
+   case-insensitive `pin` comes BEFORE a whole-word case-insensitive format
+   noun in the same sentence. "State a shape and pin it" does NOT fire
+   `DelegatedFormat` -- the noun precedes the pin -- though it still fires
+   `DelegatedDecision` via the verb before the pin. Pin both sides.
 8. "Pin both sides of that boundary" does not fire `DelegatedFormat`. "Boundary" is not a format
    noun.
 9. A sentence inside a ``` fenced block fires nothing, under either rule.
 10. A sentence that triggers BOTH rules yields TWO `Lint`s for that line, one per rule, and the
     order between them is not pinned — say in your handoff which you emit first and do not
-    assert on it.
-11. Matching is case-insensitive: "STATE ... PIN IT" fires.
-12. Matching is on whole words: "restated" does not contain the verb "state" for this purpose,
-    and "reorder" does not contain "order". Pin one of each.
+    assert on it. "Both" is decidable under the pinned orderings: a decision verb
+    before `pin` AND `pin` before a format noun in the same sentence, e.g.
+    "State the choice and pin the shape." Pin this example.
+11. Matching is case-insensitive, including `pin` itself: "STATE ... PIN IT" fires.
+12. Matching is on whole words, including `pin` itself (farmerbob-qfxv): "restated" does not contain the verb "state" for this purpose,
+    and "reorder" does not contain "order". Pin one of each. Likewise "pinned",
+    "pinning" and "spinning" do not contain `pin`: "State the result is pinned."
+    is clean. Pin this.
 
 ## Boundaries, at N and at zero
 

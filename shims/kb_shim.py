@@ -102,6 +102,29 @@ def _check_clock(before):
     return sorted(name for name, obj in before.items() if after.get(name) is not obj)
 
 
+def _timing_stats(raw):
+    """Copy one upstream stats dict down to JSON-safe numbers (bead
+    farmerbob-x81s.20): mean/std/min/max as floats, num_trials as int.
+    Upstream's KernelExecResult carries runtime_stats and
+    ref_runtime_stats beside the two means the shim already read; both
+    dicts were measured and then dropped on the floor, leaving every
+    speedup a bare ratio with no uncertainty attached. Anything absent
+    or malformed yields {}: perf measurement is optional upstream, and
+    a missing dispersion must read as missing, never as zero."""
+    if not isinstance(raw, dict):
+        return {}
+    try:
+        return {
+            "mean": float(raw["mean"]),
+            "std": float(raw["std"]),
+            "min": float(raw["min"]),
+            "max": float(raw["max"]),
+            "num_trials": int(raw["num_trials"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return {}
+
+
 # Correctness audit (bead farmerbob-x81s.3). What KernelBench's
 # eval_kernel_against_ref actually enforces, read from the source rather
 # than inherited: inputs cast to the precision dtype and moved to device;
@@ -835,6 +858,8 @@ def cmd_bench(args) -> int:
         "unit": "ms",
         "correctness_trials": result.metadata.get("correctness_trials", ""),
         "io_bytes": report.get("io_bytes", 0),
+        "runtime_stats": _timing_stats(getattr(result, "runtime_stats", None)),
+        "ref_runtime_stats": _timing_stats(getattr(result, "ref_runtime_stats", None)),
     }
     print(
         json.dumps(

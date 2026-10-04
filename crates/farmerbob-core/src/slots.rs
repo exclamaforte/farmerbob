@@ -58,6 +58,13 @@ impl SlotTable {
         }
     }
 
+    /// Shared predicate behind [`SlotTable::capacity`] and [`SlotTable::admit`]:
+    /// a slot that costs nothing would admit forever, so a zero budget admits
+    /// nothing. Both entry points answer from here so they cannot drift apart.
+    fn zero_budget(&self) -> bool {
+        self.budget.memory_mb == 0
+    }
+
     /// Admit `run` if the sum of active budgets plus this one still fits under
     /// `available_mb - headroom_mb`. Otherwise queue it with a reason.
     ///
@@ -66,6 +73,13 @@ impl SlotTable {
     pub fn admit(&mut self, run: RunRef, machine: &Machine) -> Admission {
         if let Some(slot) = self.run_to_slot.get(&run) {
             return Admission::Admitted(*slot);
+        }
+
+        if self.zero_budget() {
+            return Admission::Queued {
+                reason: "budget memory_mb is zero; a slot that costs nothing would admit forever"
+                    .to_owned(),
+            };
         }
 
         let ceiling = machine.available_mb.saturating_sub(machine.headroom_mb);
@@ -122,10 +136,10 @@ impl SlotTable {
     /// at zero when headroom exceeds available, and returning zero when
     /// `memory_mb` is zero to avoid division by zero.
     pub fn capacity(&self, machine: &Machine) -> usize {
-        let ceiling = machine.available_mb.saturating_sub(machine.headroom_mb);
-        if self.budget.memory_mb == 0 {
+        if self.zero_budget() {
             return 0;
         }
+        let ceiling = machine.available_mb.saturating_sub(machine.headroom_mb);
         (ceiling / self.budget.memory_mb) as usize
     }
 
@@ -190,6 +204,28 @@ mod tests {
         let table = SlotTable::new(b);
 
         assert_eq!(table.capacity(&m), 0);
+    }
+
+    #[test]
+    fn zero_budget_admits_nothing_capacity_and_admit_agree() {
+        // farmerbob-7vh: capacity() == 0 but admit() accepted 50 runs.
+        // Both answer from zero_budget(), so a zero budget queues every probe.
+        let b = budget(0);
+        let m = machine(18432, 0);
+        let mut table = SlotTable::new(b);
+
+        assert_eq!(table.capacity(&m), 0);
+        for i in 0..50 {
+            let run = RunRef(format!("run-{i}"));
+            match table.admit(run, &m) {
+                Admission::Queued { reason } => {
+                    assert!(reason.contains("zero"));
+                }
+                Admission::Admitted(_) => panic!("zero budget must admit nothing"),
+            }
+        }
+        assert_eq!(table.active(), 0);
+        assert_eq!(table.committed_mb(), 0);
     }
 
     #[test]

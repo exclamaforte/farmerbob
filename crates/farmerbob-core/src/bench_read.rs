@@ -166,6 +166,59 @@ pub fn io_bytes(output: &BenchOutput) -> Option<u64> {
     output.metrics.get("io_bytes")?.as_u64()
 }
 
+/// Read the paired same-process reference measurement from one
+/// benchmark output (bead farmerbob-x81s.19): the `ref_ms` the shim
+/// records beside every `ms`. Absent in outputs from before the shim
+/// reported it.
+pub fn ref_ms(output: &BenchOutput) -> Option<f64> {
+    output.metrics.get("ref_ms")?.as_f64()
+}
+
+/// Dispersion the instrument measured for one side of a trial (bead
+/// farmerbob-x81s.20): the upstream stats dict the shim copies into
+/// trial metrics verbatim. Carried through so a speedup can be stated
+/// with a propagated interval instead of a bare ratio.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TimingStats {
+    /// Mean of the instrument's inner trials, in ms.
+    pub mean: f64,
+    /// Standard deviation of the inner trials, in ms.
+    pub std: f64,
+    /// Fastest inner trial, in ms.
+    pub min: f64,
+    /// Slowest inner trial, in ms.
+    pub max: f64,
+    /// How many inner trials the stats summarise.
+    pub num_trials: u64,
+}
+
+/// Read one stats dict (`runtime_stats` for the candidate,
+/// `ref_runtime_stats` for the reference) from a benchmark output's
+/// metrics. Returns `None` when the dict is absent or malformed: perf
+/// measurement is optional upstream, and a missing dispersion must read
+/// as missing, never as zero.
+pub fn timing_stats(output: &BenchOutput, key: &str) -> Option<TimingStats> {
+    let raw = output.metrics.get(key)?;
+    let mean = raw.get("mean")?.as_f64()?;
+    let std = raw.get("std")?.as_f64()?;
+    let min = raw.get("min")?.as_f64()?;
+    let max = raw.get("max")?.as_f64()?;
+    let num_trials = raw.get("num_trials")?.as_u64()?;
+    if !mean.is_finite() || !std.is_finite() || !min.is_finite() || !max.is_finite() {
+        return None;
+    }
+    if mean <= 0.0 || std < 0.0 {
+        return None;
+    }
+    Some(TimingStats {
+        mean,
+        std,
+        min,
+        max,
+        num_trials,
+    })
+}
+
 /// Whether enough trials survived to score, per the manifest.
 pub fn enough(m: &TaskManifest, samples: &[f64]) -> bool {
     samples.len() >= m.min_trials as usize
@@ -476,5 +529,38 @@ mod tests {
         assert_eq!(no.deterministic, Some(false));
         let old = verify(&run(r#"{"correct":true,"detail":"ok"}"#)).expect("parse");
         assert_eq!(old.deterministic, None);
+    }
+
+    /// Timing stats ride the trial metrics beside ref_ms (bead
+    /// farmerbob-x81s.20): both stats dicts parse, absent reads as
+    /// missing, malformed reads as missing -- never as zero.
+    #[test]
+    fn timing_stats_parse_absent_and_malformed_as_missing() {
+        let stats_json = r#"{"mean":2.0,"std":0.1,"min":1.9,"max":2.2,"num_trials":10}"#;
+        let with = bench(&run(&format!(
+            r#"{{"ms":2.0,"metrics":{{"runtime_stats":{stats_json},"ref_runtime_stats":{stats_json}}}}}"#
+        )))
+        .expect("parse");
+        let want = TimingStats {
+            mean: 2.0,
+            std: 0.1,
+            min: 1.9,
+            max: 2.2,
+            num_trials: 10,
+        };
+        assert_eq!(timing_stats(&with, "runtime_stats"), Some(want.clone()));
+        assert_eq!(timing_stats(&with, "ref_runtime_stats"), Some(want));
+        let without = bench(&run(r#"{"ms":2.0}"#)).expect("parse");
+        assert_eq!(timing_stats(&without, "runtime_stats"), None);
+        let bad = bench(&run(
+            r#"{"ms":2.0,"metrics":{"runtime_stats":{"mean":2.0}}}"#,
+        ))
+        .expect("parse");
+        assert_eq!(timing_stats(&bad, "runtime_stats"), None);
+        let zero_std_is_data_not_missing = bench(&run(
+            r#"{"ms":2.0,"metrics":{"runtime_stats":{"mean":2.0,"std":0.0,"min":2.0,"max":2.0,"num_trials":10}}}"#,
+        ))
+        .expect("parse");
+        assert!(timing_stats(&zero_std_is_data_not_missing, "runtime_stats").is_some());
     }
 }

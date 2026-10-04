@@ -104,6 +104,66 @@ pub fn run(args: &[String]) -> i32 {
     0
 }
 
+/// Whether this cmdline identifies a live `fb <subcommand>` dispatcher
+/// (farmerbob-sdmp).
+///
+/// Identity is executable + argv, never a substring of a command line the
+/// harness does not own: argv[0]'s basename must be exactly `fb` and argv[1]
+/// must equal `sub`. A shell wrapper (`sh -c "fb admit ..."`, a polling loop
+/// whose own command line contains the pattern, an editor with the pattern in
+/// its arguments) has a different argv[0] basename or a different argv[1] and
+/// does not count. `pgrep -f` matched all of those, including the waiter
+/// itself, which is how one finished agent read as LIVE for 30 minutes.
+pub fn is_fb_subcommand(cmdline: &[String], sub: &str) -> bool {
+    if cmdline.len() < 2 {
+        return false;
+    }
+    if cmdline[1] != sub {
+        return false;
+    }
+    Path::new(&cmdline[0])
+        .file_name()
+        .is_some_and(|n| n == "fb")
+}
+
+/// Count live `fb <sub>` dispatchers by inspecting `/proc` (farmerbob-sdmp).
+///
+/// Reads `/proc/<pid>/cmdline` (NUL-separated argv) and counts processes
+/// where [`is_fb_subcommand`] holds. Our own pid is excluded so a caller can
+/// never count itself. This replaces the two `pgrep -f` call sites
+/// (`status.rs` dispatcher waves, `autopilot_cmd.rs` waves), which matched
+/// any command line merely CONTAINING the pattern.
+pub fn count_dispatchers(sub: &str) -> usize {
+    let me = std::process::id();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return 0;
+    };
+    let mut n = 0;
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        if pid == me {
+            continue;
+        }
+        let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+            continue;
+        };
+        let args: Vec<String> = raw
+            .split(|b| *b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .collect();
+        if is_fb_subcommand(&args, sub) {
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Gathers candidate agent processes from `/proc`.
 pub fn gather_procs(root: &str) -> Vec<Proc> {
     let mut procs = Vec::new();
@@ -621,5 +681,55 @@ mod tests {
             "not hex, not a test binary"
         );
         assert!(!is_harness_tool("agy-opus"), "too short to be a hash");
+    }
+
+    /// farmerbob-sdmp: dispatcher identity is executable + argv, never a
+    /// substring. The polling loop `until ! pgrep -f "codex exec resume"`
+    /// matched its own shell because the pattern sat in the shell's command
+    /// line; every case below is a command line `pgrep -f` would have
+    /// counted and identity must not.
+    #[test]
+    fn dispatcher_identity_is_executable_plus_argv_never_substring() {
+        let admit = |argv0: &str| {
+            is_fb_subcommand(
+                &[argv0.to_string(), "admit".to_string()],
+                "admit",
+            )
+        };
+        // Real dispatchers: argv[0] basename is fb, argv[1] is the subcommand.
+        assert!(admit("/home/gabe/.local/bin/fb"));
+        assert!(admit("target/debug/fb"));
+        assert!(is_fb_subcommand(
+            &["fb".to_string(), "admit".to_string(), "--help".to_string()],
+            "admit"
+        ));
+        // Wrong subcommand, too few args, wrong binary: not a dispatcher.
+        assert!(!is_fb_subcommand(
+            &["/home/gabe/.local/bin/fb".to_string(), "autopilot".to_string()],
+            "admit"
+        ));
+        assert!(!is_fb_subcommand(&["/home/gabe/.local/bin/fb".to_string()], "admit"));
+        assert!(!is_fb_subcommand(
+            &["/usr/bin/fbx".to_string(), "admit".to_string()],
+            "admit"
+        ));
+        // The bead's self-match family: the pattern appears in the command
+        // line but argv[0] is not fb, so identity says no.
+        assert!(!is_fb_subcommand(
+            &[
+                "sh".to_string(),
+                "-c".to_string(),
+                "pgrep -fc \"fb admit\"".to_string()
+            ],
+            "admit"
+        ));
+        assert!(!is_fb_subcommand(
+            &["vim".to_string(), "notes: fb admit is stuck".to_string()],
+            "admit"
+        ));
+        assert!(!is_fb_subcommand(
+            &["sh".to_string(), "-c".to_string(), "until ! pgrep -f \"fb admit\"".to_string()],
+            "admit"
+        ));
     }
 }

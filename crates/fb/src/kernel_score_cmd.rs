@@ -34,6 +34,22 @@ pub struct TaskScore {
     pub iqr_ms: Option<f64>,
     /// Baseline median. Present when the baseline was readable.
     pub baseline_ms: Option<f64>,
+    /// Median of the paired same-process reference measurements
+    /// (bead farmerbob-x81s.19). Present when scored from pairs.
+    pub ref_median_ms: Option<f64>,
+    /// Reference drift vs the stored baseline, in percent: positive when
+    /// the paired reference runs slower than the baseline captured. The
+    /// baseline is a drift check, not the denominator.
+    pub drift_pct: Option<f64>,
+    /// Fresh trial count behind the score. Present when scored.
+    pub fresh_n: Option<usize>,
+    /// Trial count behind the stored baseline median, when recorded.
+    pub baseline_trials: Option<u64>,
+    /// Lower end of the speedup's 95% interval (bead
+    /// farmerbob-x81s.20). Present when scored with two or more trials.
+    pub speedup_lo: Option<f64>,
+    /// Upper end of the speedup's 95% interval. Present alongside `lo`.
+    pub speedup_hi: Option<f64>,
     /// True when scored and faster than `p`.
     pub fast: bool,
     /// Human-readable detail, never empty.
@@ -48,6 +64,12 @@ impl TaskScore {
             "median_ms": self.median_ms,
             "iqr_ms": self.iqr_ms,
             "baseline_ms": self.baseline_ms,
+            "ref_median_ms": self.ref_median_ms,
+            "drift_pct": self.drift_pct,
+            "fresh_n": self.fresh_n,
+            "baseline_trials": self.baseline_trials,
+            "speedup_lo": self.speedup_lo,
+            "speedup_hi": self.speedup_hi,
             "fast": self.fast,
             "detail": self.detail,
         })
@@ -88,6 +110,7 @@ pub fn score(
     io_bytes: u64,
     specialised: bool,
     reference_call: bool,
+    ref_samples: &[f64],
 ) -> TaskScore {
     score_with_trust(
         baseline_json,
@@ -101,6 +124,7 @@ pub fn score(
         io_bytes,
         specialised,
         reference_call,
+        ref_samples,
     )
 }
 
@@ -153,6 +177,7 @@ pub fn score_with_trust(
     io_bytes: u64,
     specialised: bool,
     reference_call: bool,
+    ref_samples: &[f64],
 ) -> TaskScore {
     if !tampered.is_empty() {
         let lines: Vec<String> = tampered
@@ -167,6 +192,12 @@ pub fn score_with_trust(
             baseline_ms: baseline_json
                 .get("median_ms")
                 .and_then(serde_json::Value::as_f64),
+            ref_median_ms: None,
+            drift_pct: None,
+            fresh_n: None,
+            baseline_trials: None,
+            speedup_lo: None,
+            speedup_hi: None,
             fast: false,
             detail: lines.join("; "),
         };
@@ -180,6 +211,12 @@ pub fn score_with_trust(
             baseline_ms: baseline_json
                 .get("median_ms")
                 .and_then(serde_json::Value::as_f64),
+            ref_median_ms: None,
+            drift_pct: None,
+            fresh_n: None,
+            baseline_trials: None,
+            speedup_lo: None,
+            speedup_hi: None,
             fast: false,
             detail: clock.to_string(),
         };
@@ -193,6 +230,12 @@ pub fn score_with_trust(
             baseline_ms: baseline_json
                 .get("median_ms")
                 .and_then(serde_json::Value::as_f64),
+            ref_median_ms: None,
+            drift_pct: None,
+            fresh_n: None,
+            baseline_trials: None,
+            speedup_lo: None,
+            speedup_hi: None,
             fast: false,
             detail: "executed the task's own reference code during the run: measured the answer key, not the arm".to_string(),
         };
@@ -206,6 +249,12 @@ pub fn score_with_trust(
             baseline_ms: baseline_json
                 .get("median_ms")
                 .and_then(serde_json::Value::as_f64),
+            ref_median_ms: None,
+            drift_pct: None,
+            fresh_n: None,
+            baseline_trials: None,
+            speedup_lo: None,
+            speedup_hi: None,
             fast: false,
             detail: "passed the visible inputs and failed the held-out set: input specialisation, not ordinary incorrectness".to_string(),
         };
@@ -227,6 +276,12 @@ pub fn score_with_trust(
             median_ms: None,
             iqr_ms: None,
             baseline_ms,
+            ref_median_ms: None,
+            drift_pct: None,
+            fresh_n: None,
+            baseline_trials: None,
+            speedup_lo: None,
+            speedup_hi: None,
             fast: false,
             detail: "unparseable fingerprint; refusing to compare".to_string(),
         };
@@ -238,6 +293,12 @@ pub fn score_with_trust(
             median_ms: None,
             iqr_ms: None,
             baseline_ms,
+            ref_median_ms: None,
+            drift_pct: None,
+            fresh_n: None,
+            baseline_trials: None,
+            speedup_lo: None,
+            speedup_hi: None,
             fast: false,
             detail: "wrong kernel scores zero regardless of speed".to_string(),
         };
@@ -249,10 +310,19 @@ pub fn score_with_trust(
             median_ms: None,
             iqr_ms: None,
             baseline_ms,
+            ref_median_ms: None,
+            drift_pct: None,
+            fresh_n: None,
+            baseline_trials: None,
+            speedup_lo: None,
+            speedup_hi: None,
             fast: false,
             detail: reason,
         };
     }
+    let baseline_trials = baseline_json
+        .get("trials")
+        .and_then(serde_json::Value::as_u64);
     let baseline_ms = match baseline_ms {
         Some(m) if m.is_finite() && m > 0.0 => m,
         _ => {
@@ -262,6 +332,12 @@ pub fn score_with_trust(
                 median_ms: None,
                 iqr_ms: None,
                 baseline_ms,
+                ref_median_ms: None,
+                drift_pct: None,
+                fresh_n: None,
+                baseline_trials: None,
+                speedup_lo: None,
+                speedup_hi: None,
                 fast: false,
                 detail: "baseline median is not a positive measurement".to_string(),
             };
@@ -274,6 +350,12 @@ pub fn score_with_trust(
             median_ms: None,
             iqr_ms: None,
             baseline_ms: Some(baseline_ms),
+            ref_median_ms: None,
+            drift_pct: None,
+            fresh_n: None,
+            baseline_trials: None,
+            speedup_lo: None,
+            speedup_hi: None,
             fast: false,
             detail: "samples contain a non-positive or non-finite measurement".to_string(),
         };
@@ -285,6 +367,12 @@ pub fn score_with_trust(
             median_ms: None,
             iqr_ms: None,
             baseline_ms: Some(baseline_ms),
+            ref_median_ms: None,
+            drift_pct: None,
+            fresh_n: None,
+            baseline_trials: None,
+            speedup_lo: None,
+            speedup_hi: None,
             fast: false,
             detail: format!(
                 "too few samples: {} measured, {min_samples} required",
@@ -299,6 +387,12 @@ pub fn score_with_trust(
             median_ms: None,
             iqr_ms: None,
             baseline_ms: Some(baseline_ms),
+            ref_median_ms: None,
+            drift_pct: None,
+            fresh_n: None,
+            baseline_trials: None,
+            speedup_lo: None,
+            speedup_hi: None,
             fast: false,
             detail: "no samples were measured".to_string(),
         };
@@ -310,6 +404,12 @@ pub fn score_with_trust(
             median_ms: Some(summary.median),
             iqr_ms: Some(summary.iqr),
             baseline_ms: Some(baseline_ms),
+            ref_median_ms: None,
+            drift_pct: None,
+            fresh_n: None,
+            baseline_trials: None,
+            speedup_lo: None,
+            speedup_hi: None,
             fast: false,
             detail: format!(
                 "IQR {} ms is wide relative to median {} ms",
@@ -335,6 +435,12 @@ pub fn score_with_trust(
             median_ms: Some(summary.median),
             iqr_ms: Some(summary.iqr),
             baseline_ms: Some(baseline_ms),
+            ref_median_ms: None,
+            drift_pct: None,
+            fresh_n: None,
+            baseline_trials: None,
+            speedup_lo: None,
+            speedup_hi: None,
             fast: false,
             detail: format!(
                 "measured {} ms below physics floor {:.3} ms ({} bytes at {} GB/s)",
@@ -342,10 +448,196 @@ pub fn score_with_trust(
             ),
         };
     }
+    // Paired scoring (bead farmerbob-x81s.19): when the same eval call
+    // measured the reference beside the candidate, the ratio is computed
+    // per trial and the stored baseline demotes to a drift check. A
+    // paired ratio is robust to the common-mode confounds (temperature,
+    // clocks, fragmentation, residency) that an unpaired comparison
+    // across time cannot separate from a real 5-10% effect.
+    if !ref_samples.is_empty() {
+        if ref_samples.len() != samples.len() {
+            return TaskScore {
+                status: "unreliable",
+                speedup: None,
+                median_ms: Some(summary.median),
+                iqr_ms: Some(summary.iqr),
+                baseline_ms: Some(baseline_ms),
+                ref_median_ms: None,
+                drift_pct: None,
+                fresh_n: Some(samples.len()),
+                baseline_trials,
+                speedup_lo: None,
+                speedup_hi: None,
+                fast: false,
+                detail: format!(
+                    "ref samples ({}) do not pair with candidate samples ({}): no ratio computed",
+                    ref_samples.len(),
+                    samples.len()
+                ),
+            };
+        }
+        if ref_samples.iter().any(|s| !s.is_finite() || *s <= 0.0) {
+            return TaskScore {
+                status: "unreliable",
+                speedup: None,
+                median_ms: Some(summary.median),
+                iqr_ms: Some(summary.iqr),
+                baseline_ms: Some(baseline_ms),
+                ref_median_ms: None,
+                drift_pct: None,
+                fresh_n: Some(samples.len()),
+                baseline_trials,
+                speedup_lo: None,
+                speedup_hi: None,
+                fast: false,
+                detail: "ref samples contain a non-positive or non-finite measurement".to_string(),
+            };
+        }
+        let ratios: Vec<f64> = ref_samples
+            .iter()
+            .zip(samples.iter())
+            .map(|(r, m)| r / m)
+            .collect();
+        let Some(ratio_summary) = kernel_score::summarize(&ratios) else {
+            return TaskScore {
+                status: "unreliable",
+                speedup: None,
+                median_ms: Some(summary.median),
+                iqr_ms: Some(summary.iqr),
+                baseline_ms: Some(baseline_ms),
+                ref_median_ms: None,
+                drift_pct: None,
+                fresh_n: Some(samples.len()),
+                baseline_trials,
+                speedup_lo: None,
+                speedup_hi: None,
+                fast: false,
+                detail: "no paired ratios to summarise".to_string(),
+            };
+        };
+        if !kernel_score::reliable(&ratio_summary, 0.5) {
+            return TaskScore {
+                status: "unreliable",
+                speedup: None,
+                median_ms: Some(summary.median),
+                iqr_ms: Some(summary.iqr),
+                baseline_ms: Some(baseline_ms),
+                ref_median_ms: None,
+                drift_pct: None,
+                fresh_n: Some(samples.len()),
+                baseline_trials,
+                speedup_lo: None,
+                speedup_hi: None,
+                fast: false,
+                detail: format!(
+                    "paired-ratio IQR {} is wide relative to median {}",
+                    ratio_summary.iqr, ratio_summary.median
+                ),
+            };
+        }
+        let ref_median = kernel_score::summarize(ref_samples)
+            .map(|s| s.median)
+            .unwrap_or(0.0);
+        // Unit coherence (bead farmerbob-x81s.27): the paired reference
+        // and the stored baseline are the same quantity in the same unit.
+        // A hundredfold disagreement is not drift, it is a broken unit
+        // (or the wrong task): refuse to compare. Unreliable, not stale:
+        // the baseline's fingerprint matched, so the machine is right
+        // and the number is wrong.
+        let coherence = ref_median / baseline_ms;
+        if !(0.01..=100.0).contains(&coherence) {
+            return TaskScore {
+                status: "unreliable",
+                speedup: None,
+                median_ms: Some(summary.median),
+                iqr_ms: Some(summary.iqr),
+                baseline_ms: Some(baseline_ms),
+                ref_median_ms: Some(ref_median),
+                drift_pct: None,
+                fresh_n: Some(samples.len()),
+                baseline_trials,
+                speedup_lo: None,
+                speedup_hi: None,
+                fast: false,
+                detail: format!(
+                    "paired reference median {ref_median:.3} ms incoherent with stored baseline {baseline_ms} ms (ratio {coherence:.1}): refusing to compare",
+                ),
+            };
+        }
+        let drift_pct = (ref_median - baseline_ms) / baseline_ms * 100.0;
+        // The drift check: the stored baseline is no longer the
+        // denominator, but it still guards the comparison. A reference
+        // more than a quarter away from the baseline means the machine
+        // (clocks, driver, throttling) or the task moved under us: the
+        // paired ratio is precise but unanchored, so no score. The detail
+        // names the remedy: recapture the baseline.
+        if drift_pct.abs() > 25.0 {
+            return TaskScore {
+                status: "unreliable",
+                speedup: None,
+                median_ms: Some(summary.median),
+                iqr_ms: Some(summary.iqr),
+                baseline_ms: Some(baseline_ms),
+                ref_median_ms: Some(ref_median),
+                drift_pct: Some(drift_pct),
+                fresh_n: Some(samples.len()),
+                baseline_trials,
+                speedup_lo: None,
+                speedup_hi: None,
+                fast: false,
+                detail: format!(
+                    "ref drift {drift_pct:+.1}% vs baseline {baseline_ms} ms exceeds 25%: recapture the baseline",
+                ),
+            };
+        }
+        let speedup = ratio_summary.median;
+        // The interval rides the scored statistic (bead
+        // farmerbob-x81s.20): the median of the same per-trial ratios
+        // the speedup is, with the ratio_ci assumption stated there.
+        let (speedup_lo, speedup_hi) = match kernel_score::ratio_ci(&ratios) {
+            Some((_, lo, hi)) => (Some(lo), Some(hi)),
+            None => (None, None),
+        };
+        let fast = TaskOutcome {
+            correct: true,
+            speedup: Some(speedup),
+            speedup_lo,
+            speedup_hi,
+        };
+        let fast = kernel_score::fast_p(std::slice::from_ref(&fast), p) > 0.0;
+        return TaskScore {
+            status: "scored",
+            speedup: Some(speedup),
+            median_ms: Some(summary.median),
+            iqr_ms: Some(summary.iqr),
+            baseline_ms: Some(baseline_ms),
+            ref_median_ms: Some(ref_median),
+            drift_pct: Some(drift_pct),
+            fresh_n: Some(samples.len()),
+            baseline_trials,
+            speedup_lo,
+            speedup_hi,
+            fast,
+            detail: format!(
+                "paired speedup {speedup:.3} (ref median {ref_median:.2} / cand median {:.2}, n={}); ref drift {drift_pct:+.1}% vs baseline {baseline_ms} ms",
+                summary.median,
+                samples.len(),
+            ),
+        };
+    }
     let speedup = baseline_ms / summary.median;
+    // Unpaired interval: the candidate samples' own interval mapped
+    // through the division. A slower candidate upper bound means a lower
+    // speedup lower bound: the ends cross, which the swap states openly.
+    let (speedup_lo, speedup_hi) = match kernel_score::ratio_ci(samples) {
+        Some((_, lo_c, hi_c)) if lo_c > 0.0 => (Some(baseline_ms / hi_c), Some(baseline_ms / lo_c)),
+        _ => (None, None),
+    };
     let fast = TaskOutcome {
         correct: true,
         speedup: Some(speedup),
+        speedup_lo,
+        speedup_hi,
     };
     let fast = kernel_score::fast_p(std::slice::from_ref(&fast), p) > 0.0;
     TaskScore {
@@ -354,6 +646,12 @@ pub fn score_with_trust(
         median_ms: Some(summary.median),
         iqr_ms: Some(summary.iqr),
         baseline_ms: Some(baseline_ms),
+        ref_median_ms: None,
+        drift_pct: None,
+        fresh_n: Some(samples.len()),
+        baseline_trials,
+        speedup_lo,
+        speedup_hi,
         fast,
         detail: format!("speedup {speedup:.3} over baseline {baseline_ms} ms"),
     }
@@ -383,6 +681,7 @@ pub fn run(
     io_bytes: u64,
     specialised: bool,
     reference_call: bool,
+    ref_samples: &[f64],
     out: &mut dyn Write,
 ) -> i32 {
     let content = match std::fs::read_to_string(baseline_path) {
@@ -425,6 +724,12 @@ pub fn run(
                     median_ms: None,
                     iqr_ms: None,
                     baseline_ms: None,
+                    ref_median_ms: None,
+                    drift_pct: None,
+                    fresh_n: None,
+                    baseline_trials: None,
+                    speedup_lo: None,
+                    speedup_hi: None,
                     fast: false,
                     detail,
                 }
@@ -445,6 +750,12 @@ pub fn run(
                     median_ms: None,
                     iqr_ms: None,
                     baseline_ms: None,
+                    ref_median_ms: None,
+                    drift_pct: None,
+                    fresh_n: None,
+                    baseline_trials: None,
+                    speedup_lo: None,
+                    speedup_hi: None,
                     fast: false,
                     detail: format!("baseline at {} is not JSON: {e}", baseline_path.display()),
                 }
@@ -472,6 +783,7 @@ pub fn run(
         && io_bytes == 0
         && !specialised
         && !reference_call
+        && ref_samples.is_empty()
     {
         score(
             &baseline_json,
@@ -484,6 +796,7 @@ pub fn run(
             io_bytes,
             specialised,
             reference_call,
+            ref_samples,
         )
     } else {
         score_with_trust(
@@ -498,6 +811,7 @@ pub fn run(
             io_bytes,
             specialised,
             reference_call,
+            ref_samples,
         )
     };
     let code = match scored.status {
@@ -532,6 +846,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "scored");
         assert_eq!(s.speedup, Some(2.0));
@@ -552,6 +867,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "incorrect");
         assert_eq!(s.speedup, None);
@@ -572,6 +888,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "stale");
         assert_eq!(s.speedup, None);
@@ -592,6 +909,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "incorrect");
     }
@@ -609,6 +927,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "unreliable");
         assert_eq!(s.speedup, None);
@@ -628,6 +947,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "scored");
         assert_eq!(s.speedup, Some(0.5));
@@ -636,8 +956,116 @@ mod tests {
 
     #[test]
     fn empty_samples_are_unreliable() {
-        let s = score(&baseline(), FP, &[], true, 1.0, 1, "", 0, false, false);
+        let s = score(&baseline(), FP, &[], true, 1.0, 1, "", 0, false, false, &[]);
         assert_eq!(s.status, "unreliable");
+    }
+
+    /// Paired scoring (bead farmerbob-x81s.19): with per-trial reference
+    /// samples the speedup is the median of the per-trial ref/cand
+    /// ratios -- the machine's mood that trial divides out -- and the
+    /// record carries the fresh reference median, the drift against the
+    /// stored baseline, the fresh trial count, and the baseline's own
+    /// trial count.
+    #[test]
+    fn paired_samples_score_from_per_trial_ratios() {
+        let b = serde_json::json!({"fingerprint": FP, "median_ms": 2.0, "trials": 5});
+        let s = score(
+            &b,
+            FP,
+            &[1.0, 1.0, 1.0],
+            true,
+            1.0,
+            1,
+            "",
+            0,
+            false,
+            false,
+            &[2.0, 2.0, 2.0],
+        );
+        assert_eq!(s.status, "scored");
+        assert_eq!(s.speedup, Some(2.0));
+        assert_eq!(s.ref_median_ms, Some(2.0));
+        assert_eq!(s.fresh_n, Some(3));
+        assert_eq!(s.baseline_trials, Some(5));
+        assert!(s.drift_pct.is_some());
+        assert!(s.drift_pct.unwrap().abs() < 1e-9);
+        // Identical ratios: zero dispersion, degenerate interval at the
+        // point estimate (bead farmerbob-x81s.20).
+        assert_eq!(s.speedup_lo, Some(2.0));
+        assert_eq!(s.speedup_hi, Some(2.0));
+    }
+
+    /// The stored baseline is a drift check once fresh references exist:
+    /// a baseline far from today's reference refuses the score instead
+    /// of reporting a speedup against a stale number.
+    #[test]
+    fn paired_drift_against_stale_baseline_is_unreliable() {
+        let b = serde_json::json!({"fingerprint": FP, "median_ms": 200.0, "trials": 5});
+        let s = score(
+            &b,
+            FP,
+            &[1.0, 1.0, 1.0],
+            true,
+            1.0,
+            1,
+            "",
+            0,
+            false,
+            false,
+            &[2.0, 2.0, 2.0],
+        );
+        assert_eq!(s.status, "unreliable");
+        assert!(s.detail.contains("drift"));
+        // No speedup is reported: a drifted baseline scores nothing.
+        assert_eq!(s.speedup, None);
+    }
+
+    /// A partial pairing is no pairing: mismatched trial counts refuse
+    /// the score instead of computing a misaligned ratio. The detail
+    /// names both counts, so a pipeline that drops samples can be found.
+    #[test]
+    fn mismatched_ref_lengths_refuse_not_misalign() {
+        let s = score(
+            &baseline(),
+            FP,
+            &[1.0, 1.0, 1.0],
+            true,
+            1.0,
+            1,
+            "",
+            0,
+            false,
+            false,
+            &[2.0, 2.0],
+        );
+        assert_eq!(s.status, "unreliable");
+        assert_eq!(s.speedup, None);
+        assert!(s.detail.contains("do not pair"));
+    }
+
+    /// The coherence guard (bead farmerbob-x81s.27): a paired reference
+    /// no kernel could produce beside this baseline -- here a hundred
+    /// and fifty times the stored number on the same box -- is an
+    /// instrument failure, not a breakthrough. It fires before the drift
+    /// check: this is not drift, it is the wrong unit or the wrong task.
+    #[test]
+    fn absurd_paired_ratio_is_unreliable() {
+        let s = score(
+            &baseline(),
+            FP,
+            &[1.0, 1.0, 1.0],
+            true,
+            1.0,
+            1,
+            "",
+            0,
+            false,
+            false,
+            &[300.0, 300.0, 300.0],
+        );
+        assert_eq!(s.status, "unreliable");
+        assert!(s.detail.contains("incoherent"));
+        assert_eq!(s.speedup, None);
     }
 
     #[test]
@@ -653,6 +1081,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "unreliable");
         assert!(s.detail.contains("too few samples"));
@@ -667,6 +1096,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "scored");
     }
@@ -688,6 +1118,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
             &mut out,
         );
         assert_eq!(code, 4);
@@ -715,6 +1146,7 @@ mod tests {
                 0,
                 false,
                 false,
+                &[],
                 &mut out
             ),
             0
@@ -733,6 +1165,7 @@ mod tests {
                 0,
                 false,
                 false,
+                &[],
                 &mut out
             ),
             1
@@ -764,6 +1197,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "void");
         assert_eq!(s.speedup, None);
@@ -796,6 +1230,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "void");
     }
@@ -821,6 +1256,7 @@ mod tests {
                 0,
                 false,
                 false,
+                &[],
                 &mut out
             ),
             1
@@ -849,6 +1285,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "clock");
         assert_eq!(s.speedup, None);
@@ -873,6 +1310,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "clock");
         let s = score_with_trust(
@@ -887,6 +1325,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "void");
     }
@@ -913,6 +1352,7 @@ mod tests {
                 0,
                 false,
                 false,
+                &[],
                 &mut out
             ),
             1
@@ -943,6 +1383,7 @@ mod tests {
             8_589_934_592,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "unreliable");
         assert_eq!(s.speedup, None);
@@ -969,6 +1410,7 @@ mod tests {
             1_000_000,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "scored");
         assert_eq!(s.speedup, Some(2.0));
@@ -991,6 +1433,7 @@ mod tests {
             0,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "scored");
         let other_fp = FP.replace("RTX5090", "H100");
@@ -1007,6 +1450,7 @@ mod tests {
             8_589_934_592,
             false,
             false,
+            &[],
         );
         assert_eq!(s.status, "scored");
     }
@@ -1027,6 +1471,7 @@ mod tests {
             0,
             true,
             false,
+            &[],
         );
         assert_eq!(s.status, "specialised");
         assert_eq!(s.speedup, None);
@@ -1050,6 +1495,7 @@ mod tests {
             0,
             true,
             false,
+            &[],
         );
         assert_eq!(s.status, "specialised");
         let s = score_with_trust(
@@ -1064,6 +1510,7 @@ mod tests {
             0,
             true,
             false,
+            &[],
         );
         assert_eq!(s.status, "void");
         let s = score_with_trust(
@@ -1078,6 +1525,7 @@ mod tests {
             0,
             true,
             false,
+            &[],
         );
         assert_eq!(s.status, "clock");
     }
@@ -1106,6 +1554,7 @@ mod tests {
                 0,
                 true,
                 false,
+                &[],
                 &mut out
             ),
             1
@@ -1131,6 +1580,7 @@ mod tests {
             0,
             false,
             true,
+            &[],
         );
         assert_eq!(s.status, "reference");
         assert_eq!(s.speedup, None);
@@ -1154,6 +1604,7 @@ mod tests {
             0,
             true,
             true,
+            &[],
         );
         assert_eq!(both.status, "reference");
         let clocked = score_with_trust(
@@ -1168,6 +1619,7 @@ mod tests {
             0,
             false,
             true,
+            &[],
         );
         assert_eq!(clocked.status, "clock");
         let voided = score_with_trust(
@@ -1182,6 +1634,7 @@ mod tests {
             0,
             false,
             true,
+            &[],
         );
         assert_eq!(voided.status, "void");
     }
@@ -1208,6 +1661,7 @@ mod tests {
                 0,
                 false,
                 true,
+                &[],
                 &mut out
             ),
             1
@@ -1251,6 +1705,7 @@ mod tests {
                 0,
                 false,
                 false,
+                &[],
                 &mut out
             ),
             4
@@ -1273,6 +1728,7 @@ mod tests {
                 0,
                 false,
                 false,
+                &[],
                 &mut out
             ),
             4
@@ -1291,6 +1747,10 @@ mod tests {
 pub struct BenchJsonInputs {
     /// Fresh bench samples in ms.
     pub samples: Vec<f64>,
+    /// Paired same-process reference measurements, positionally aligned
+    /// with `samples` (bead farmerbob-x81s.19). Empty when the bench run
+    /// predates them.
+    pub ref_samples: Vec<f64>,
     /// Whether verification passed.
     pub correct: bool,
     /// Clock verdict, `""` when clean.
@@ -1304,27 +1764,34 @@ pub struct BenchJsonInputs {
 }
 
 /// Parse bench JSON. Missing keys default to the fail-closed values
-/// (incorrect, clean clock, no bytes, no flags): a bench object that
-/// cannot say what it measured must never score.
+/// (incorrect, clean clock, no bytes, no flags, no pairs): a bench object
+/// that cannot say what it measured must never score.
 pub fn parse_bench_json(text: &str) -> Result<BenchJsonInputs, String> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("bench JSON is not JSON: {e}"))?;
-    let samples = match value.get("samples") {
-        None => Vec::new(),
-        Some(list) => {
-            let Some(items) = list.as_array() else {
-                return Err("bench JSON samples is not an array".to_string());
-            };
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                let Some(ms) = item.as_f64() else {
-                    return Err(format!("bench JSON sample is not a number: {item}"));
+    fn numbers(value: &serde_json::Value, key: &str) -> Result<Vec<f64>, String> {
+        match value.get(key) {
+            // Missing AND explicit null both mean absent: render_json
+            // emits null for stats-less outcomes, and absent must read
+            // the same as null, never as an error.
+            None | Some(serde_json::Value::Null) => Ok(Vec::new()),
+            Some(list) => {
+                let Some(items) = list.as_array() else {
+                    return Err(format!("bench JSON {key} is not an array"));
                 };
-                out.push(ms);
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    let Some(ms) = item.as_f64() else {
+                        return Err(format!("bench JSON {key} entry is not a number: {item}"));
+                    };
+                    out.push(ms);
+                }
+                Ok(out)
             }
-            out
         }
-    };
+    }
+    let samples = numbers(&value, "samples")?;
+    let ref_samples = numbers(&value, "ref_samples")?;
     let verify = value.get("verify");
     let flag = |key: &str| {
         verify
@@ -1334,6 +1801,7 @@ pub fn parse_bench_json(text: &str) -> Result<BenchJsonInputs, String> {
     };
     Ok(BenchJsonInputs {
         samples,
+        ref_samples,
         correct: flag("correct"),
         clock: value
             .get("clock")
@@ -1395,5 +1863,18 @@ mod bench_json_tests {
         assert!(parse_bench_json("not json").is_err());
         assert!(parse_bench_json(r#"{"samples":{}}"#).is_err());
         assert!(parse_bench_json(r#"{"samples":["fast"]}"#).is_err());
+    }
+
+    /// Explicit null reads as absent, never as an error (bead
+    /// farmerbob-x81s.20): render_json emits null for stats-less
+    /// outcomes, and the pipe must not break on them.
+    #[test]
+    fn explicit_null_arrays_parse_as_absent() {
+        let inputs = parse_bench_json(
+            r#"{"task":"t","status":"instrument","samples":[],"ref_samples":null,"verify":null,"clock":null,"io_bytes":null,"detail":"x"}"#,
+        )
+        .expect("parse");
+        assert!(inputs.samples.is_empty());
+        assert!(inputs.ref_samples.is_empty());
     }
 }

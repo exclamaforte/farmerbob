@@ -75,6 +75,44 @@ pub struct TaskOutcome {
     /// Candidate median ms divided into the baseline median ms. `None` when
     /// the task was never measured (incorrect, unreliable, or missing).
     pub speedup: Option<f64>,
+    /// Lower end of the speedup's 95% interval, when one was computed
+    /// (bead farmerbob-x81s.20). `None` means no interval, never a
+    /// zero-width one.
+    pub speedup_lo: Option<f64>,
+    /// Upper end of the speedup's 95% interval, when one was computed.
+    pub speedup_hi: Option<f64>,
+}
+
+/// Median of per-trial ratios with an empirical 95% interval (bead
+/// farmerbob-x81s.20): returns `(median, lo, hi`).
+///
+/// The stated assumption: the trial ratios are treated as approximately
+/// normal draws, so the standard error of their centre is the sample
+/// standard deviation over the square root of the trial count, and the
+/// interval is the median plus or minus 1.96 standard errors. This is
+/// deliberately NOT a t-interval and NOT a bootstrap: with three to five
+/// trials neither buys rigour, and a named approximation beats a quiet
+/// one. Fewer than two ratios yield `None`: one trial carries no
+/// dispersion, and an interval from it would be fiction.
+pub fn ratio_ci(ratios: &[f64]) -> Option<(f64, f64, f64)> {
+    if ratios.len() < 2 {
+        return None;
+    }
+    if ratios.iter().any(|r| !r.is_finite()) {
+        return None;
+    }
+    let mut sorted = ratios.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let median = median_of(&sorted)?;
+    let n = ratios.len() as f64;
+    let mean = ratios.iter().sum::<f64>() / n;
+    let var = ratios.iter().map(|r| (r - mean) * (r - mean)).sum::<f64>() / (n - 1.0);
+    let se = (var / n).sqrt();
+    if !se.is_finite() {
+        return None;
+    }
+    let half = 1.96 * se;
+    Some((median, median - half, median + half))
 }
 
 /// Fraction of tasks both correct and faster than `p` times the baseline.
@@ -90,6 +128,30 @@ pub fn fast_p(outcomes: &[TaskOutcome], p: f64) -> f64 {
     let fast = outcomes
         .iter()
         .filter(|o| o.correct && o.speedup.is_some_and(|s| s.is_finite() && s > p))
+        .count();
+    fast as f64 / outcomes.len() as f64
+}
+
+/// Fraction of tasks whose speedup exceeds `p` with the interval excluding
+/// `p` (bead farmerbob-x81s.20): the reviewable sibling of [`fast_p`].
+/// A task counts when it is correct, its point speedup clears `p`, AND
+/// its interval's lower end clears `p` too -- the effect is separable
+/// from noise at roughly 95% confidence under the [`ratio_ci`]
+/// assumption. Tasks without an interval never count here: an
+/// unmeasured dispersion is not a tight one. The point-estimate
+/// [`fast_p`] stays beside it for comparability with published
+/// KernelBench numbers.
+pub fn fast_p_interval(outcomes: &[TaskOutcome], p: f64) -> f64 {
+    if outcomes.is_empty() {
+        return 0.0;
+    }
+    let fast = outcomes
+        .iter()
+        .filter(|o| {
+            o.correct
+                && o.speedup.is_some_and(|s| s.is_finite() && s > p)
+                && o.speedup_lo.is_some_and(|lo| lo.is_finite() && lo > p)
+        })
         .count();
     fast as f64 / outcomes.len() as f64
 }
@@ -176,18 +238,26 @@ mod tests {
             TaskOutcome {
                 correct: true,
                 speedup: Some(2.0),
+                speedup_lo: None,
+                speedup_hi: None,
             },
             TaskOutcome {
                 correct: true,
                 speedup: Some(1.0),
+                speedup_lo: None,
+                speedup_hi: None,
             },
             TaskOutcome {
                 correct: false,
                 speedup: Some(9.0),
+                speedup_lo: None,
+                speedup_hi: None,
             },
             TaskOutcome {
                 correct: true,
                 speedup: None,
+                speedup_lo: None,
+                speedup_hi: None,
             },
         ];
         assert_eq!(fast_p(&outcomes, 1.0), 0.25);
@@ -199,6 +269,8 @@ mod tests {
         let outcomes = vec![TaskOutcome {
             correct: false,
             speedup: Some(100.0),
+            speedup_lo: None,
+            speedup_hi: None,
         }];
         assert_eq!(fast_p(&outcomes, 1.0), 0.0);
     }
@@ -206,6 +278,55 @@ mod tests {
     #[test]
     fn fast_p_empty_is_zero_not_nan() {
         assert_eq!(fast_p(&[], 1.0), 0.0);
+        assert_eq!(fast_p_interval(&[], 1.0), 0.0);
+    }
+
+    #[test]
+    fn ratio_ci_centres_on_the_median_with_named_arithmetic() {
+        // Ratios 1.9..2.1: median 2.0, mean 2.0, sample var 0.025/4,
+        // SE = sqrt(0.00625/5) = sqrt(0.00125) ~= 0.0354, half ~= 0.0693.
+        let (median, lo, hi) = ratio_ci(&[1.9, 1.95, 2.0, 2.05, 2.1]).expect("ci");
+        assert_eq!(median, 2.0);
+        assert!((lo - (2.0 - 1.96 * 0.00125_f64.sqrt())).abs() < 1e-12);
+        assert!((hi - (2.0 + 1.96 * 0.00125_f64.sqrt())).abs() < 1e-12);
+        assert!(lo < median && median < hi);
+    }
+
+    #[test]
+    fn ratio_ci_needs_two_trials_and_finite_ratios() {
+        assert_eq!(ratio_ci(&[]), None);
+        assert_eq!(ratio_ci(&[2.0]), None);
+        assert_eq!(ratio_ci(&[2.0, f64::INFINITY]), None);
+        assert_eq!(ratio_ci(&[2.0, f64::NAN]), None);
+    }
+
+    #[test]
+    fn fast_p_interval_counts_only_effects_clear_of_noise() {
+        let outcomes = vec![
+            // Clearly fast: interval excludes 1.0.
+            TaskOutcome {
+                correct: true,
+                speedup: Some(2.0),
+                speedup_lo: Some(1.9),
+                speedup_hi: Some(2.1),
+            },
+            // Point estimate fast, interval straddles 1.0: noise, not a claim.
+            TaskOutcome {
+                correct: true,
+                speedup: Some(1.05),
+                speedup_lo: Some(0.95),
+                speedup_hi: Some(1.15),
+            },
+            // No interval: unmeasured dispersion is not a tight one.
+            TaskOutcome {
+                correct: true,
+                speedup: Some(3.0),
+                speedup_lo: None,
+                speedup_hi: None,
+            },
+        ];
+        assert_eq!(fast_p(&outcomes, 1.0), 1.0);
+        assert_eq!(fast_p_interval(&outcomes, 1.0), 1.0 / 3.0);
     }
 
     #[test]

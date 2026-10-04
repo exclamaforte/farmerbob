@@ -147,6 +147,9 @@ pub fn render_json(task: &str, o: &Outcome) -> String {
             verify,
             samples,
             io_bytes,
+            ref_samples,
+            cand_stats,
+            ref_stats,
         } => serde_json::json!({
             "task": task,
             "status": "measured",
@@ -154,6 +157,17 @@ pub fn render_json(task: &str, o: &Outcome) -> String {
             "verify": verify_json(verify),
             "clock": serde_json::Value::Null,
             "io_bytes": io_bytes_json(io_bytes),
+            "ref_samples": ref_samples.as_ref().map(|refs| {
+                serde_json::Value::Array(
+                    refs.iter().map(|ms| serde_json::json!(ms)).collect(),
+                )
+            }).unwrap_or(serde_json::Value::Null),
+            "cand_stats": cand_stats.as_ref().map(|st| {
+                serde_json::to_value(st).unwrap_or(serde_json::Value::Null)
+            }).unwrap_or(serde_json::Value::Null),
+            "ref_stats": ref_stats.as_ref().map(|st| {
+                serde_json::to_value(st).unwrap_or(serde_json::Value::Null)
+            }).unwrap_or(serde_json::Value::Null),
             "detail": verify.detail,
         }),
         Outcome::Incorrect(verify) => serde_json::json!({
@@ -163,6 +177,9 @@ pub fn render_json(task: &str, o: &Outcome) -> String {
             "verify": verify_json(verify),
             "clock": serde_json::Value::Null,
             "io_bytes": serde_json::Value::Null,
+            "ref_samples": serde_json::Value::Null,
+            "cand_stats": serde_json::Value::Null,
+            "ref_stats": serde_json::Value::Null,
             "detail": verify.detail,
         }),
         Outcome::Specialised(verify) => serde_json::json!({
@@ -172,6 +189,9 @@ pub fn render_json(task: &str, o: &Outcome) -> String {
             "verify": verify_json(verify),
             "clock": serde_json::Value::Null,
             "io_bytes": serde_json::Value::Null,
+            "ref_samples": serde_json::Value::Null,
+            "cand_stats": serde_json::Value::Null,
+            "ref_stats": serde_json::Value::Null,
             "detail": verify.detail,
         }),
         Outcome::ReferenceCall(verify) => serde_json::json!({
@@ -181,6 +201,9 @@ pub fn render_json(task: &str, o: &Outcome) -> String {
             "verify": verify_json(verify),
             "clock": serde_json::Value::Null,
             "io_bytes": serde_json::Value::Null,
+            "ref_samples": serde_json::Value::Null,
+            "cand_stats": serde_json::Value::Null,
+            "ref_stats": serde_json::Value::Null,
             "detail": verify.detail,
         }),
         Outcome::Clock(verdict) => serde_json::json!({
@@ -190,6 +213,9 @@ pub fn render_json(task: &str, o: &Outcome) -> String {
             "verify": serde_json::Value::Null,
             "clock": verdict,
             "io_bytes": serde_json::Value::Null,
+            "ref_samples": serde_json::Value::Null,
+            "cand_stats": serde_json::Value::Null,
+            "ref_stats": serde_json::Value::Null,
             "detail": verdict,
         }),
         Outcome::Instrument(reason) => serde_json::json!({
@@ -199,6 +225,9 @@ pub fn render_json(task: &str, o: &Outcome) -> String {
             "verify": serde_json::Value::Null,
             "clock": serde_json::Value::Null,
             "io_bytes": serde_json::Value::Null,
+            "ref_samples": serde_json::Value::Null,
+            "cand_stats": serde_json::Value::Null,
+            "ref_stats": serde_json::Value::Null,
             "detail": reason,
         }),
     };
@@ -574,6 +603,9 @@ mod tests {
             },
             samples: vec![10.2, 11.4],
             io_bytes: Some(1_000_000),
+            ref_samples: Some(vec![10.0, 11.0]),
+            cand_stats: None,
+            ref_stats: None,
         };
         let r_measured = render("task_m", &measured);
         assert!(!r_measured.is_empty());

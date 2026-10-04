@@ -35,6 +35,70 @@ pub struct BenchPlan {
     pub max_bad: u32,
 }
 
+/// Pool per-trial upstream stats into one dispersion per side (bead
+/// farmerbob-x81s.20): the law of total variance. The pooled mean is the
+/// mean of the trial means; the pooled variance is the mean of the inner
+/// variances plus the variance of the trial means -- within-trial noise
+/// plus run-to-run movement, both counted once. Min/max span the trials,
+/// num_trials sums them. Trials without stats are skipped; when none
+/// reported any, the answer is `None`: a missing dispersion reads as
+/// missing, never as zero.
+fn pool_stats(
+    trial_means: &[f64],
+    per_trial: &[Option<bench_read::TimingStats>],
+) -> Option<bench_read::TimingStats> {
+    let pairs: Vec<(f64, &bench_read::TimingStats)> = trial_means
+        .iter()
+        .zip(per_trial.iter())
+        .filter_map(|(m, st)| st.as_ref().map(|s| (*m, s)))
+        .collect();
+    if pairs.is_empty() {
+        return None;
+    }
+    let n = pairs.len() as f64;
+    let pooled_mean = pairs.iter().map(|(m, _)| m).sum::<f64>() / n;
+    let mean_inner_var = pairs.iter().map(|(_, s)| s.std * s.std).sum::<f64>() / n;
+    let var_of_means = pairs
+        .iter()
+        .map(|(m, _)| (m - pooled_mean) * (m - pooled_mean))
+        .sum::<f64>()
+        / n;
+    Some(bench_read::TimingStats {
+        mean: pooled_mean,
+        std: (mean_inner_var + var_of_means).sqrt(),
+        min: pairs
+            .iter()
+            .map(|(_, s)| s.min)
+            .fold(f64::INFINITY, f64::min),
+        max: pairs
+            .iter()
+            .map(|(_, s)| s.max)
+            .fold(f64::NEG_INFINITY, f64::max),
+        num_trials: pairs.iter().map(|(_, s)| s.num_trials).sum(),
+    })
+}
+
+/// Pool reference stats over the trials that reported BOTH a reference
+/// measurement and reference stats: a stat without its trial mean has
+/// nothing to pool against.
+fn pool_ref_stats(
+    refs: &[Option<f64>],
+    per_trial: &[Option<bench_read::TimingStats>],
+) -> Option<bench_read::TimingStats> {
+    let pairs: Vec<(f64, bench_read::TimingStats)> = refs
+        .iter()
+        .zip(per_trial.iter())
+        .filter_map(|(r, st)| match (r, st) {
+            (Some(m), Some(s)) => Some((*m, s.clone())),
+            _ => None,
+        })
+        .collect();
+    let means: Vec<f64> = pairs.iter().map(|(m, _)| *m).collect();
+    let stats: Vec<Option<bench_read::TimingStats>> =
+        pairs.into_iter().map(|(_, s)| Some(s)).collect();
+    pool_stats(&means, &stats)
+}
+
 /// What a whole benchmark run produced.
 #[derive(Debug)]
 pub enum Outcome {
@@ -48,6 +112,20 @@ pub enum Outcome {
         /// shim records it in trial metrics). First present value wins;
         /// every trial of one task measures the same tensors.
         io_bytes: Option<u64>,
+        /// Paired same-process reference measurements, positionally
+        /// aligned with `samples` (bead farmerbob-x81s.19). Present only
+        /// when EVERY good trial reported one: a partial pairing is no
+        /// pairing, and the run scores unpaired instead of misaligned.
+        ref_samples: Option<Vec<f64>>,
+        /// Pooled candidate dispersion across the good trials (bead
+        /// farmerbob-x81s.20): the law-of-total-variance aggregate of the
+        /// per-trial upstream stats (mean of inner variances plus
+        /// variance of trial means). `None` when no good trial reported
+        /// stats: perf measurement is optional upstream.
+        cand_stats: Option<bench_read::TimingStats>,
+        /// Pooled reference dispersion, aggregated over the good trials
+        /// that reported reference stats. `None` when none did.
+        ref_stats: Option<bench_read::TimingStats>,
     },
     /// Verification ran and said the implementation is INCORRECT. This is a
     /// result about the candidate, and no trials were attempted.
@@ -230,6 +308,9 @@ pub fn run_bench(m: &TaskManifest, p: &BenchPlan) -> Outcome {
     };
     let mut samples = Vec::new();
     let mut io_bytes: Option<u64> = None;
+    let mut refs: Vec<Option<f64>> = Vec::new();
+    let mut cand_stats: Vec<Option<bench_read::TimingStats>> = Vec::new();
+    let mut ref_stats: Vec<Option<bench_read::TimingStats>> = Vec::new();
     loop {
         match trial_plan::next(m, &progress, p.max_attempts, p.max_bad) {
             Next::Run => {
@@ -249,6 +330,9 @@ pub fn run_bench(m: &TaskManifest, p: &BenchPlan) -> Outcome {
                         if io_bytes.is_none() {
                             io_bytes = bench_read::io_bytes(&output);
                         }
+                        refs.push(bench_read::ref_ms(&output));
+                        cand_stats.push(bench_read::timing_stats(&output, "runtime_stats"));
+                        ref_stats.push(bench_read::timing_stats(&output, "ref_runtime_stats"));
                     }
                     Err(_) => {
                         if let Some(verdict) = bench_read::clock_verdict(&run) {
@@ -259,10 +343,16 @@ pub fn run_bench(m: &TaskManifest, p: &BenchPlan) -> Outcome {
                 }
             }
             Next::Enough(_) => {
+                let ref_samples: Option<Vec<f64>> = refs.iter().cloned().collect();
+                let cand_stats = pool_stats(&samples, &cand_stats);
+                let ref_stats = pool_ref_stats(&refs, &ref_stats);
                 return Outcome::Measured {
                     verify,
                     samples,
                     io_bytes,
+                    ref_samples,
+                    cand_stats,
+                    ref_stats,
                 };
             }
             Next::Abandon(_) => {
@@ -340,6 +430,35 @@ mod tests {
         );
     }
 
+    /// Pooling follows the law of total variance (bead
+    /// farmerbob-x81s.20): mean of trial means, mean inner variance
+    /// plus variance of trial means, extrema spanned, trial counts
+    /// summed. Here means 10/12 (var of means 1) with inner std 1
+    /// each: pooled mean 11, pooled var 1 + 1 = 2.
+    #[test]
+    fn pool_stats_aggregates_within_and_between_trial_dispersion() {
+        let st = |mean: f64| {
+            Some(bench_read::TimingStats {
+                mean,
+                std: 1.0,
+                min: mean - 1.0,
+                max: mean + 1.0,
+                num_trials: 10,
+            })
+        };
+        let pooled = pool_stats(&[10.0, 12.0], &[st(10.0), st(12.0)]).expect("pooled");
+        assert_eq!(pooled.mean, 11.0);
+        assert!((pooled.std - 2.0_f64.sqrt()).abs() < 1e-12);
+        assert_eq!(pooled.min, 9.0);
+        assert_eq!(pooled.max, 13.0);
+        assert_eq!(pooled.num_trials, 20);
+        // Trials without stats are skipped; none at all is missing.
+        assert!(pool_stats(&[10.0], &[None]).is_none());
+        let partial = pool_stats(&[10.0, 12.0], &[st(10.0), None]).expect("partial");
+        assert_eq!(partial.mean, 10.0);
+        assert_eq!(partial.num_trials, 10);
+    }
+
     /// Clauses 1 and 5: enough good trials yield `Measured` with every
     /// sample, the loop stops at exactly `min_trials` executions, and the
     /// samples keep production order.
@@ -354,6 +473,9 @@ mod tests {
                 verify,
                 samples,
                 io_bytes,
+                ref_samples: _,
+                cand_stats: _,
+                ref_stats: _,
             } => {
                 assert!(verify.correct);
                 assert_eq!(verify.detail, "ok");
